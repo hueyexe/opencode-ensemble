@@ -21,7 +21,7 @@ Key SDK primitives:
 - client.session.abort() — cancel/shutdown teammates
 - client.session.status() — poll session idle/busy state
 - event hook — subscribe to session.status events for state transitions
-- tool hook — register the 11 team tools
+- tool hook — register the 13 team tools
 - tool.execute.before hook — rate limiting + sub-agent isolation
 
 ### Storage
@@ -56,7 +56,7 @@ populated from session events. When a team tool call arrives from an unknown
 session, walks the parent chain (max depth 10). If any ancestor is a team
 member, the call is blocked. This covers sub-agents at arbitrary depth.
 
-## The 11 Tools
+## The 13 Tools
 
 | Tool                | Who Can Use | Purpose                              |
 |---------------------|-------------|--------------------------------------|
@@ -71,12 +71,14 @@ member, the call is blocked. This covers sub-agents at arbitrary depth.
 | team_approve_plan   | Lead only   | Approve or reject teammate's plan    |
 | team_shutdown       | Lead only   | Request teammate shutdown            |
 | team_cleanup        | Lead only   | Archive team and clean up resources  |
+| team_status         | Any member  | View members, statuses, task summary |
+| team_view           | Any member  | Navigate TUI to teammate's session   |
 
 ## Settled Decisions (Do Not Re-Debate)
 
 1. SQLite via bun:sqlite — not file JSON, not in-memory-only
 2. promptAsync for message delivery — not session injection, not polling
-3. 11 separate tools — not a unified action tool, no exceptions
+3. 13 separate tools — not a unified action tool, no exceptions
 4. Fire-and-forget spawn — not blocking, not tmux
 5. tool.execute.before for rate limiting — token bucket, in-memory
 6. tool.execute.before for sub-agent isolation — full descendant tracking via parent chain

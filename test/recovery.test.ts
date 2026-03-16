@@ -38,6 +38,10 @@ function mockClient(): PluginClient & { calls: Array<{ method: string; args: unk
       async abort(options) { calls.push({ method: "session.abort", args: [options] }); return {} },
       async status() { calls.push({ method: "session.status", args: [] }); return { data: {} } },
     },
+    tui: {
+      async showToast(options) { calls.push({ method: "tui.showToast", args: [options] }); return {} },
+      async selectSession(options) { calls.push({ method: "tui.selectSession", args: [options] }); return {} },
+    },
   }
 }
 

@@ -14,15 +14,44 @@ describe("team_shutdown", () => {
   })
 
   test("sets member to shutdown_requested and calls abort", async () => {
+    // Mock status returns busy — session still running
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "busy" } } }
+    }
+
     const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
     expect(result).toContain("Shutdown requested")
     expect(result).toContain("alice")
 
-    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
-    expect(row.status).toBe("shutdown_requested")
-
     const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
     expect(abortCalls).toHaveLength(1)
+  })
+
+  test("transitions to shutdown when session is already idle after abort", async () => {
+    // Mock status to return idle for alice's session
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "idle" } } }
+    }
+
+    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    expect(row.status).toBe("shutdown")
+  })
+
+  test("stays shutdown_requested when session is still busy after abort", async () => {
+    // Mock status to return busy for alice's session
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "busy" } } }
+    }
+
+    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    expect(row.status).toBe("shutdown_requested")
   })
 
   test("rejects if caller is not the lead", async () => {
@@ -72,7 +101,7 @@ describe("team_cleanup", () => {
     deps.registry.register("t1", "alice", "sess-alice")
 
     await expect(executeTeamCleanup(deps, { force: false }, "lead-sess"))
-      .rejects.toThrow("non-shutdown")
+      .rejects.toThrow("still active")
   })
 
   test("force=true aborts active members and archives", async () => {
