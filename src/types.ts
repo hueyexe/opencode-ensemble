@@ -1,0 +1,73 @@
+import type { Database } from "bun:sqlite"
+import type { MemberRegistry, DescendantTracker } from "./state"
+
+/**
+ * Shared dependencies injected into every tool's execute function.
+ * This avoids global state and makes tools testable with mocks.
+ */
+export interface ToolDeps {
+  db: Database
+  registry: MemberRegistry
+  tracker: DescendantTracker
+  /** The OpenCode SDK client — used for session.create, promptAsync, abort, etc. */
+  client: PluginClient
+}
+
+/**
+ * Minimal interface for the OpenCode client methods we actually use.
+ * This is a subset of OpencodeClient, typed for our needs.
+ * Makes mocking trivial in tests.
+ */
+export interface PluginClient {
+  session: {
+    create(options: { body?: { parentID?: string; title?: string } }): Promise<{ data?: { id: string } }>
+    promptAsync(options: {
+      path: { id: string }
+      body: { parts: Array<{ type: "text"; text: string }>; model?: { providerID: string; modelID: string } }
+    }): Promise<unknown>
+    abort(options: { path: { id: string } }): Promise<unknown>
+    status(): Promise<{ data?: Record<string, { type: string }> }>
+  }
+}
+
+/**
+ * Look up which team a session belongs to (as lead or member).
+ * Returns team info or undefined.
+ */
+export function findTeamBySession(
+  db: Database,
+  registry: MemberRegistry,
+  sessionId: string,
+): { teamId: string; teamName: string; role: "lead" | "member"; memberName?: string } | undefined {
+  // Check if session is a team member
+  const entry = registry.getBySession(sessionId)
+  if (entry) {
+    const team = db.query("SELECT name FROM team WHERE id = ? AND status = 'active'").get(entry.teamId) as { name: string } | null
+    if (team) return { teamId: entry.teamId, teamName: team.name, role: "member", memberName: entry.memberName }
+  }
+
+  // Check if session is a team lead
+  const leadTeam = db.query("SELECT id, name FROM team WHERE lead_session_id = ? AND status = 'active'").get(sessionId) as { id: string; name: string } | null
+  if (leadTeam) return { teamId: leadTeam.id, teamName: leadTeam.name, role: "lead" }
+
+  return undefined
+}
+
+/**
+ * Get the session ID for a recipient by name.
+ * "lead" resolves to the team's lead_session_id.
+ * Otherwise looks up the member registry.
+ */
+export function resolveRecipientSession(
+  db: Database,
+  registry: MemberRegistry,
+  teamId: string,
+  recipientName: string,
+): string | undefined {
+  if (recipientName === "lead") {
+    const team = db.query("SELECT lead_session_id FROM team WHERE id = ?").get(teamId) as { lead_session_id: string } | null
+    return team?.lead_session_id
+  }
+  const entry = registry.getByName(teamId, recipientName)
+  return entry?.sessionId
+}
