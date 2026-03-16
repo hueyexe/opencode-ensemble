@@ -35,6 +35,16 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
         return { data: {} }
       },
     },
+    tui: {
+      async showToast(options) {
+        calls.push({ method: "tui.showToast", args: [options] })
+        return {}
+      },
+      async selectSession(options) {
+        calls.push({ method: "tui.selectSession", args: [options] })
+        return {}
+      },
+    },
   }
 }
 

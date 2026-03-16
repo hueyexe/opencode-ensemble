@@ -21,7 +21,7 @@ export async function executeTeamCleanup(
 
   if (active.length > 0 && !args.force) {
     const names = active.map(m => m.name).join(", ")
-    throw new Error(`Cannot clean up team "${teamInfo.teamName}": ${active.length} non-shutdown member(s): ${names}. Shut them down first, or use force: true.`)
+    throw new Error(`Cannot clean up team "${teamInfo.teamName}": ${active.length} member(s) still active: ${names}. Use team_shutdown on each member first, or call team_cleanup with force: true to abort them immediately.`)
   }
 
   // Force-abort active members

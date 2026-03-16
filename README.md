@@ -1,8 +1,26 @@
 # opencode-ensemble
 
-Agent teams for [OpenCode](https://opencode.ai). Multiple agents running in parallel with peer-to-peer communication, shared task management, and coordinated execution.
+Agent teams for [OpenCode](https://opencode.ai). Run multiple agents in parallel with messaging, shared tasks, and coordinated execution.
 
-Built as a plugin using the public OpenCode SDK — no internal dependencies.
+This is a plugin. It uses the public OpenCode SDK with zero internal dependencies. Install it, create a team, spawn teammates, and let them work together.
+
+## What it does
+
+You tell the lead agent what you want done. The lead breaks the work into pieces, spawns teammates, and coordinates them. Each teammate runs in its own session with its own context window. They communicate through direct messages and a shared task board.
+
+```
+You: "Refactor the auth module and update the tests."
+
+Lead creates a team, spawns two teammates:
+  alice (build) -> refactors src/auth/
+  bob   (build) -> updates test/auth/
+
+alice messages bob: "New token format is JWT with RS256, see src/auth/token.ts"
+bob messages lead: "Tests updated and passing."
+Lead shuts down both, cleans up the team.
+```
+
+The lead keeps you informed throughout. Toast notifications appear when teammates spawn, finish work, or hit errors. You can check team status at any time, or switch to a teammate's session to see exactly what they're doing.
 
 ## Install
 
@@ -22,104 +40,93 @@ Add to your OpenCode config (`.opencode/config.json`):
 }
 ```
 
-## How It Works
+Or for local development, drop a file in `.opencode/plugins/`:
 
-A **lead** agent creates a team and spawns **teammates** — each teammate runs in its own OpenCode session, working in parallel. Agents communicate through direct messages and broadcasts, coordinate via a shared task board, and the lead manages the team lifecycle.
-
+```ts
+export { default } from "opencode-ensemble"
 ```
-Lead Session                    Teammate Sessions
-┌──────────────┐               ┌──────────────┐
-│  team_create │               │   alice       │
-│  team_spawn  │──promptAsync──│   (build)     │
-│  team_spawn  │──promptAsync──│              │
-│              │               ├──────────────┤
-│  ◄───────────│──team_message─│   bob         │
-│  team_message│──promptAsync──│   (explore)   │
-│  team_shutdown│              │              │
-│  team_cleanup│               └──────────────┘
-└──────────────┘
-```
-
-All state lives in SQLite. Messages are delivered via `promptAsync` — a single atomic operation that injects a message and starts the prompt loop if idle.
 
 ## Tools
 
-The plugin registers 11 tools:
+The plugin registers 13 tools. The lead agent has access to all of them. Teammates get a subset (no spawning, no shutdown, no cleanup).
 
-| Tool | Who | What |
-|------|-----|------|
-| `team_create` | Any | Create a team, caller becomes lead |
-| `team_spawn` | Lead | Spawn a teammate with a prompt |
-| `team_message` | Any member | Send a message to a teammate or lead |
-| `team_broadcast` | Any member | Message all team members |
-| `team_tasks_list` | Any member | View the shared task board |
-| `team_tasks_add` | Any member | Add tasks to the board |
-| `team_tasks_complete` | Any member | Mark a task done, unblock dependents |
-| `team_claim` | Any member | Atomically claim a pending task |
-| `team_approve_plan` | Lead | Approve or reject a teammate's plan |
-| `team_shutdown` | Lead | Request a teammate to stop |
-| `team_cleanup` | Lead | Archive the team and free resources |
+**Team lifecycle**
 
-## Usage Example
+| Tool | What it does |
+|------|-------------|
+| `team_create` | Create a team. Caller becomes the lead. |
+| `team_spawn` | Start a new teammate with a task. |
+| `team_shutdown` | Ask a teammate to stop. |
+| `team_cleanup` | Remove the team after everyone is done. |
 
-Once installed, the lead agent can use team tools naturally:
+**Communication**
 
-```
-User: Refactor the auth module and update the tests in parallel.
+| Tool | What it does |
+|------|-------------|
+| `team_message` | Send a direct message to a teammate or the lead. |
+| `team_broadcast` | Message everyone on the team. |
 
-Agent (lead):
-1. team_create({ name: "auth-refactor" })
-2. team_spawn({ name: "alice", agent: "build", prompt: "Refactor src/auth/ to use JWT..." })
-3. team_spawn({ name: "bob", agent: "build", prompt: "Update test/auth/ to match..." })
-4. [waits for messages from teammates]
-5. team_shutdown({ member: "alice" })
-6. team_shutdown({ member: "bob" })
-7. team_cleanup({ force: false })
-```
+**Task board**
 
-Teammates communicate back to the lead and to each other:
+| Tool | What it does |
+|------|-------------|
+| `team_tasks_list` | See all tasks with status and assignee. |
+| `team_tasks_add` | Add tasks to the shared board. |
+| `team_tasks_complete` | Mark a task done. Unblocks dependents. |
+| `team_claim` | Claim a pending task. Atomic, no double-claims. |
 
-```
-alice: team_message({ to: "lead", text: "Refactoring complete. Changed 12 files." })
-bob:   team_message({ to: "alice", text: "What's the new token format?" })
-alice: team_message({ to: "bob", text: "JWT with RS256, see src/auth/token.ts" })
-bob:   team_message({ to: "lead", text: "Tests updated and passing." })
-```
+**Coordination**
+
+| Tool | What it does |
+|------|-------------|
+| `team_approve_plan` | Approve or reject a teammate's plan before they write code. |
+| `team_status` | See all members, their status, and a task summary. |
+| `team_view` | Switch the TUI to a teammate's session to see their work. |
+
+## How it works
+
+**Storage**: SQLite via `bun:sqlite`. Four tables: teams, members, tasks, messages. WAL mode for concurrent access. Survives restarts.
+
+**Messaging**: Messages go through `promptAsync`, which injects a user message into the recipient's session and starts their prompt loop if idle. One API call does both delivery and wake-up.
+
+**Sub-agent isolation**: Teammates can spawn sub-agents (via the `task` tool), but those sub-agents cannot use team tools. The plugin tracks the full session parent chain and blocks team tool calls from any descendant session.
+
+**Recovery**: If OpenCode restarts mid-session, the plugin scans for members stuck in "busy" status and marks them as errored. Undelivered messages are redelivered on startup.
+
+**Rate limiting**: A token bucket controls how many concurrent tool calls can fire per second. Configurable via environment variable.
 
 ## Configuration
 
-### Rate Limiting
-
-Control how many concurrent tool calls can execute per second. Useful when running multiple agents through a single gateway.
-
 ```bash
-# Set capacity (default: 10 tokens, refills 2/sec)
+# Rate limit capacity (default: 10 tokens, refills 2/sec)
 OPENCODE_ENSEMBLE_RATE_LIMIT=20
 
-# Disable rate limiting
+# Disable rate limiting entirely
 OPENCODE_ENSEMBLE_RATE_LIMIT=0
 ```
 
-## Architecture
+## Limitations
 
-- **Storage**: SQLite via `bun:sqlite` (WAL mode). Four tables: `team`, `team_member`, `team_task`, `team_message`.
-- **Message delivery**: `client.session.promptAsync()` — fire-and-forget, queues if session is busy.
-- **State machines**: Two-level per member (member status + execution status), driven by `session.status` events.
-- **Sub-agent isolation**: `tool.execute.before` hook walks the parent chain to block team tools for sub-agents at arbitrary depth.
-- **Recovery**: On plugin init, stale busy members are marked as error. Undelivered messages are redelivered via `promptAsync`.
+This is a plugin, not a core feature. There are things it cannot do:
 
-See [AGENTS.md](./AGENTS.md) for the full architectural reference.
+- **No persistent team panel in the TUI.** You get toast notifications and the `team_status` tool, but there's no always-visible sidebar showing member status. That requires changes to OpenCode's TUI itself. There are [open PRs](https://github.com/sst/opencode) working on native team support.
+
+- **Teammate messages look like user messages.** When a teammate sends a message to the lead, it arrives as a `[Team message from alice]` text block. The TUI doesn't distinguish these from regular user input.
+
+- **No custom UI components.** The plugin can show toasts, set tool titles, and navigate between sessions. It cannot render custom panels, buttons, or interactive elements.
+
+If you need the full Claude Code-style team experience with a dedicated team panel and member cards, watch the upstream OpenCode PRs. This plugin provides the backend coordination that those PRs will eventually build a native UI on top of.
 
 ## Development
 
 ```bash
 bun install
-bun run typecheck    # TypeScript type checking
-bun test             # Run all tests
-bun run build        # Bundle to dist/
+bun run typecheck
+bun test
+bun run build
 ```
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
 ## License
 

@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/anomalyco/opencode-ensemble.git
+git clone https://github.com/hueyexe/opencode-ensemble.git
 cd opencode-ensemble
 bun install
 ```
@@ -55,7 +55,7 @@ src/
 ├── rate-limit.ts     # Token bucket rate limiter
 ├── types.ts          # Shared types + helper functions
 ├── util.ts           # ID generation + name validation
-└── tools/            # One file per tool (11 total)
+└── tools/            # One file per tool (13 total)
 
 test/
 ├── helpers.ts        # Shared test utilities (setupDb, mockClient, etc.)
