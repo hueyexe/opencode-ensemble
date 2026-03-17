@@ -79,26 +79,38 @@ Lead: "All validation and tests are complete. 5 endpoints validated,
 
 ## Install
 
-```bash
-bun add opencode-ensemble
-```
+Add the plugin to your OpenCode config. This can be project-level or global.
 
-Add to your OpenCode config (`.opencode/config.json`):
+**Project-level** — `opencode.json` in your project root:
 
 ```json
 {
-  "plugins": {
-    "ensemble": {
-      "module": "opencode-ensemble"
-    }
-  }
+  "plugin": ["@hueyexe/opencode-ensemble"]
 }
 ```
 
-For local development, create `.opencode/plugins/ensemble.ts`:
+**Global** — `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "plugin": ["@hueyexe/opencode-ensemble"]
+}
+```
+
+That's it. OpenCode auto-installs npm plugins at startup (cached in `~/.cache/opencode/node_modules/`). No `npm install` or `bun add` needed.
+
+### Local development
+
+For working on the plugin itself, create `.opencode/plugins/ensemble.ts` in your project:
 
 ```ts
-export { default } from "opencode-ensemble"
+export { default } from "@hueyexe/opencode-ensemble"
+```
+
+Or point directly at the source checkout:
+
+```ts
+export { default } from "/path/to/opencode-ensemble/src/index.ts"
 ```
 
 ## Tools
