@@ -6,7 +6,7 @@ import { createDb, getDbPath } from "./db"
 import { recoverStaleMembers } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
-import { notifyTeamEvent } from "./notify"
+import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamMessage } from "./tools/team-message"
@@ -85,6 +85,9 @@ const plugin: Plugin = async (input) => {
           } else if (transition.to === "error") {
             notifyTeamEvent(client, "error", { memberName: transition.memberName })
           }
+
+          // Show working progress after every transition so the user sees who's still active
+          await notifyWorkingProgress(client, db, transition.teamId)
         }
       }
 

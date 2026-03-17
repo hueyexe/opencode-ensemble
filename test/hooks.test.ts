@@ -86,6 +86,147 @@ describe("handleSessionStatusEvent", () => {
     const row = db.query("SELECT status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
     expect(row.status).toBe("busy") // unchanged
   })
+
+  test("returns undefined when team row is missing from DB", () => {
+    // Member registered in memory but team row deleted/missing from DB
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "idle")
+    expect(result).toBeUndefined()
+  })
+
+  test("returns undefined when member row is missing from DB", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    // Register in memory but don't insert member row into DB
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "idle")
+    expect(result).toBeUndefined()
+  })
+
+  test("returns undefined when idle event and member is already ready (no-op)", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "ready", "idle")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "idle")
+    expect(result).toBeUndefined()
+
+    const row = db.query("SELECT status, execution_status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
+    expect(row.status).toBe("ready")
+    expect(row.execution_status).toBe("idle")
+  })
+
+  test("transitions error member to busy when session becomes busy", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "error", "idle")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
+
+    expect(result).toEqual({
+      memberName: "alice",
+      teamId: "t1",
+      from: "error",
+      to: "busy",
+    })
+    const row = db.query("SELECT status, execution_status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
+    expect(row.status).toBe("busy")
+    expect(row.execution_status).toBe("running")
+  })
+
+  test("ignores busy event when member is shutdown_requested (not ready/error)", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "shutdown_requested", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
+    expect(result).toBeUndefined()
+
+    const row = db.query("SELECT status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
+    expect(row.status).toBe("shutdown_requested") // unchanged
+  })
+
+  test("ignores busy event when member is already busy", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
+    expect(result).toBeUndefined()
+  })
+
+  test("returns undefined for retry status (no transition)", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "retry")
+    expect(result).toBeUndefined()
+
+    const row = db.query("SELECT status, execution_status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
+    expect(row.status).toBe("busy") // unchanged
+    expect(row.execution_status).toBe("running") // unchanged
+  })
+
+  test("returns StatusTransition on successful idle transition", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "idle")
+
+    expect(result).toEqual({
+      memberName: "alice",
+      teamId: "t1",
+      from: "busy",
+      to: "ready",
+    })
+  })
+
+  test("returns StatusTransition on successful busy transition", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "ready", "idle")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
+
+    expect(result).toEqual({
+      memberName: "alice",
+      teamId: "t1",
+      from: "ready",
+      to: "busy",
+    })
+  })
+
+  test("returns StatusTransition with shutdown on idle when shutdown_requested", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "shutdown_requested", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "idle")
+
+    expect(result).toEqual({
+      memberName: "alice",
+      teamId: "t1",
+      from: "shutdown_requested",
+      to: "shutdown",
+    })
+  })
+
+  test("returns undefined for unknown sessions", () => {
+    const result = handleSessionStatusEvent(db, registry, "unknown-sess", "idle")
+    expect(result).toBeUndefined()
+  })
+
+  test("returns undefined for archived teams", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess", "archived")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "idle")
+    expect(result).toBeUndefined()
+  })
 })
 
 describe("handleSessionCreatedEvent", () => {
@@ -152,5 +293,44 @@ describe("checkToolIsolation", () => {
     // Non-team tools (like "bash", "read", etc.) should never be blocked
     expect(() => checkToolIsolation(registry, tracker, "bash", "sub-agent-sess")).not.toThrow()
     expect(() => checkToolIsolation(registry, tracker, "read", "sub-agent-sess")).not.toThrow()
+  })
+
+  test("allows team tools for unrelated session when registry has members", () => {
+    // Registry has a member, but the calling session is neither that member
+    // nor a descendant — e.g. the lead session or another unrelated session
+    registry.register("t1", "alice", "sess-1")
+
+    expect(() => checkToolIsolation(registry, tracker, "team_create", "lead-sess")).not.toThrow()
+    expect(() => checkToolIsolation(registry, tracker, "team_spawn", "other-sess")).not.toThrow()
+  })
+
+  test("allows team tools when registry is empty (no team members yet)", () => {
+    // Before any teammates are spawned, any session should be able to call team tools
+    expect(() => checkToolIsolation(registry, tracker, "team_create", "any-sess")).not.toThrow()
+  })
+
+  test("blocks all team tool variants for sub-agents", () => {
+    registry.register("t1", "alice", "sess-1")
+    tracker.track("sub-agent", "sess-1")
+
+    // Every team_* tool should be blocked for sub-agents
+    const teamTools = [
+      "team_create", "team_spawn", "team_message", "team_broadcast",
+      "team_tasks_list", "team_tasks_add", "team_tasks_complete",
+      "team_claim", "team_approve_plan", "team_shutdown", "team_cleanup",
+      "team_status", "team_view",
+    ]
+    for (const tool of teamTools) {
+      expect(() => checkToolIsolation(registry, tracker, tool, "sub-agent"))
+        .toThrow("Team tools are not available to sub-agents")
+    }
+  })
+
+  test("allows tools with 'team' in name but not starting with 'team_'", () => {
+    registry.register("t1", "alice", "sess-1")
+    tracker.track("sub-agent", "sess-1")
+
+    // A tool named "my_team_helper" should not be blocked — only "team_*" prefix matters
+    expect(() => checkToolIsolation(registry, tracker, "my_team_helper", "sub-agent")).not.toThrow()
   })
 })

@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite"
 import type { PluginClient } from "./types"
 
 type TeamEventType = "spawn" | "message" | "completed" | "error" | "shutdown"
@@ -48,6 +49,46 @@ export async function notifyTeamEvent(
       variant: config.variant,
       duration: config.duration,
     })
+  } catch {
+    // TUI may not be available — silently ignore
+  }
+}
+
+/**
+ * Fire a toast showing which teammates are still working.
+ * Called on every session.status transition so the user sees live progress.
+ * Does nothing if the team has no members.
+ */
+export async function notifyWorkingProgress(
+  client: PluginClient,
+  db: Database,
+  teamId: string,
+): Promise<void> {
+  const members = db.query(
+    "SELECT name, status FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
+  ).all(teamId) as Array<{ name: string; status: string }>
+
+  if (members.length === 0) return
+
+  const busy = members.filter(m => m.status === "busy")
+
+  try {
+    if (busy.length === 0) {
+      await client.tui.showToast({
+        title: "Team",
+        message: "All teammates finished",
+        variant: "success",
+        duration: 4000,
+      })
+    } else {
+      const names = busy.map(m => m.name).join(", ")
+      await client.tui.showToast({
+        title: "Team",
+        message: `Working: ${names} (${busy.length}/${members.length})`,
+        variant: "info",
+        duration: 5000,
+      })
+    }
   } catch {
     // TUI may not be available — silently ignore
   }

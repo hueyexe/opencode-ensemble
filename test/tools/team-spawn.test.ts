@@ -70,4 +70,65 @@ describe("team_spawn", () => {
       prompt: "Fix the tests",
     }, "lead-sess")).rejects.toThrow("reserved")
   })
+
+  test("context message instructs teammate to mark tasks complete before messaging lead", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    expect(promptCall).toBeTruthy()
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    // Should instruct to mark task complete
+    expect(text).toContain("team_tasks_complete")
+    // Should NOT have the old "STOP" as step 2 without mentioning task completion first
+    expect(text).toMatch(/mark.*complete.*team_message/s)
+  })
+
+  test("context message includes assigned task when claim_task is provided", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      claim_task: "task-123",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    expect(promptCall).toBeTruthy()
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    expect(text).toContain("task-123")
+    expect(text).toContain("Mark it complete when done")
+  })
+
+  test("context message does NOT include assigned task line when claim_task is absent", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    expect(promptCall).toBeTruthy()
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    expect(text).not.toContain("You have been assigned task")
+  })
+
+  test("response string tells lead not to poll team_status", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("Teammates will message you when done")
+    expect(result).toContain("Do not poll team_status")
+  })
 })

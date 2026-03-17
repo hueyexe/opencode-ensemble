@@ -4,7 +4,7 @@ import { applyMigrations } from "../src/schema"
 import { recoverStaleMembers, recoverUndeliveredMessages } from "../src/recovery"
 import type { PluginClient } from "../src/types"
 import { MemberRegistry } from "../src/state"
-import { sendMessage } from "../src/messaging"
+import { sendMessage, broadcastMessage } from "../src/messaging"
 
 function setupDb(): Database {
   const db = new Database(":memory:")
@@ -192,5 +192,60 @@ describe("recoverUndeliveredMessages", () => {
     const result = await recoverUndeliveredMessages(db, client, registry)
     // One succeeded, one failed
     expect(result.redelivered).toBe(1)
+  })
+
+  test("skips broadcast messages (to_name is NULL)", async () => {
+    broadcastMessage(db, { teamId: "t1", from: "alice", content: "hey everyone" })
+
+    const result = await recoverUndeliveredMessages(db, client, registry)
+    expect(result.redelivered).toBe(0)
+
+    // No promptAsync calls should have been made
+    const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+
+    // Message should remain undelivered
+    const msgs = db.query("SELECT delivered FROM team_message WHERE team_id = ?").all("t1") as Array<{ delivered: number }>
+    expect(msgs[0]!.delivered).toBe(0)
+  })
+
+  test("skips messages to unknown recipients not in registry", async () => {
+    sendMessage(db, { teamId: "t1", from: "alice", to: "charlie", content: "hello" })
+
+    const result = await recoverUndeliveredMessages(db, client, registry)
+    expect(result.redelivered).toBe(0)
+
+    const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+  })
+
+  test("returns zero when no active teams exist", async () => {
+    db.run("UPDATE team SET status = 'archived' WHERE id = ?", ["t1"])
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
+
+    const result = await recoverUndeliveredMessages(db, client, registry)
+    expect(result.redelivered).toBe(0)
+  })
+
+  test("recovers messages across multiple active teams", async () => {
+    // Set up a second team
+    db.run(
+      "INSERT INTO team (id, name, lead_session_id, status, delegate, time_created, time_updated) VALUES (?, ?, ?, 'active', 0, ?, ?)",
+      ["t2", "team-two", "lead-sess-2", Date.now(), Date.now()]
+    )
+    db.run(
+      "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, time_created, time_updated) VALUES (?, ?, ?, 'build', 'ready', 'idle', ?, ?)",
+      ["t2", "charlie", "sess-charlie", Date.now(), Date.now()]
+    )
+    registry.register("t2", "charlie", "sess-charlie")
+
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "msg for t1" })
+    sendMessage(db, { teamId: "t2", from: "charlie", to: "lead", content: "msg for t2" })
+
+    const result = await recoverUndeliveredMessages(db, client, registry)
+    expect(result.redelivered).toBe(2)
+
+    const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(2)
   })
 })

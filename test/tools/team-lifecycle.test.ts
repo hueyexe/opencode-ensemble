@@ -132,4 +132,26 @@ describe("team_cleanup", () => {
     const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
     expect(result).toContain("cleaned up")
   })
+
+  test("treats shutdown_requested members as inactive (cleanup succeeds without force)", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown_requested", "idle")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("cleaned up")
+
+    const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
+    expect(team.status).toBe("archived")
+  })
+
+  test("treats error members as inactive (cleanup succeeds without force)", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "error", "failed")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("cleaned up")
+
+    const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
+    expect(team.status).toBe("archived")
+  })
 })

@@ -28,5 +28,5 @@ export async function executeTeamCreate(
     [id, args.name, sessionId, now, now]
   )
 
-  return `Team "${args.name}" created (ID: ${id}). You are the lead. Use team_spawn to add teammates.`
+  return `Team "${args.name}" created (ID: ${id}). You are the lead. Use team_spawn to add teammates. Teammates will message you when done — do not poll team_status repeatedly.`
 }

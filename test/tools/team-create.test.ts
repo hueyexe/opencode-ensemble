@@ -42,4 +42,10 @@ describe("team_create", () => {
     await expect(executeTeamCreate(deps, { name: "" }, "lead-sess"))
       .rejects.toThrow()
   })
+
+  test("response string tells lead not to poll team_status", async () => {
+    const result = await executeTeamCreate(deps, { name: "my-team" }, "lead-sess")
+    expect(result).toContain("Teammates will message you when done")
+    expect(result).toContain("do not poll team_status")
+  })
 })

@@ -38,6 +38,66 @@ describe("team_status", () => {
     expect(result).toContain("my-team")
   })
 
+  test("fires a toast with member summary", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    insertMember(deps.db, "t1", "bob", "sess-bob", "ready", "idle")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.registry.register("t1", "bob", "sess-bob")
+
+    await executeTeamStatus(deps, "lead-sess")
+
+    const toastCall = deps.client.calls.find(c => c.method === "tui.showToast")
+    expect(toastCall).toBeDefined()
+    const opts = toastCall!.args[0] as { title: string; message: string; variant: string }
+    expect(opts.title).toBe("Team")
+    expect(opts.variant).toBe("info")
+    expect(opts.message).toContain("alice")
+    expect(opts.message).toContain("working")
+    expect(opts.message).toContain("bob")
+    expect(opts.message).toContain("idle")
+  })
+
+  test("toast includes task counts when tasks exist", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const now = Date.now()
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["task1", "t1", "Fix bug", "completed", "high", now, now]
+    )
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["task2", "t1", "Write docs", "pending", "medium", now, now]
+    )
+
+    await executeTeamStatus(deps, "lead-sess")
+
+    const toastCall = deps.client.calls.find(c => c.method === "tui.showToast")
+    expect(toastCall).toBeDefined()
+    const opts = toastCall!.args[0] as { message: string }
+    expect(opts.message).toContain("1/2 done")
+  })
+
+  test("toast not fired when no members exist", async () => {
+    await executeTeamStatus(deps, "lead-sess")
+
+    const toastCall = deps.client.calls.find(c => c.method === "tui.showToast")
+    expect(toastCall).toBeUndefined()
+  })
+
+  test("toast swallows errors silently", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "ready", "idle")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    // Make showToast throw
+    deps.client.tui.showToast = async () => { throw new Error("TUI unavailable") }
+
+    // Should not throw
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("alice")
+  })
+
   test("rejects if not in a team", async () => {
     await expect(executeTeamStatus(deps, "random-sess"))
       .rejects.toThrow("not in a team")
