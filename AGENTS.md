@@ -82,7 +82,10 @@ member, the call is blocked. This covers sub-agents at arbitrary depth.
 4. Fire-and-forget spawn — not blocking, not tmux
 5. tool.execute.before for rate limiting — token bucket, in-memory
 6. tool.execute.before for sub-agent isolation — full descendant tracking via parent chain
-7. Worktree integration deferred to Phase 3
+7. Worktree integration blocked — SDK session.create does not accept a
+   directory parameter. File isolation is handled via prompt-based
+   assignment (lead assigns distinct files to each teammate). True
+   worktree support requires upstream SDK changes.
 
 ## Lessons from Anthropic (Applied)
 

@@ -47,17 +47,19 @@ function mockClient(): PluginClient & { calls: Array<{ method: string; args: unk
 
 describe("recoverStaleMembers", () => {
   let db: Database
+  let client: ReturnType<typeof mockClient>
 
   beforeEach(() => {
     db = setupDb()
+    client = mockClient()
   })
 
-  test("marks busy members as error on recovery", () => {
+  test("marks busy members as error on recovery", async () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "busy", "running")
     insertMember(db, "t1", "bob", "sess-2", "busy", "running")
 
-    const result = recoverStaleMembers(db)
+    const result = await recoverStaleMembers(db, client)
     expect(result.interrupted).toBe(2)
 
     const alice = db.query("SELECT status, execution_status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
@@ -69,41 +71,72 @@ describe("recoverStaleMembers", () => {
     expect(bob.execution_status).toBe("idle")
   })
 
-  test("does not touch non-busy members", () => {
+  test("aborts orphaned sessions during recovery", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    insertMember(db, "t1", "bob", "sess-2", "busy", "running")
+
+    await recoverStaleMembers(db, client)
+
+    const abortCalls = client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(2)
+  })
+
+  test("continues recovery even if abort fails", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    insertMember(db, "t1", "bob", "sess-2", "busy", "running")
+    client.session.abort = async () => { throw new Error("abort failed") }
+
+    const result = await recoverStaleMembers(db, client)
+    expect(result.interrupted).toBe(2)
+
+    // Both should still be marked error despite abort failures
+    const alice = db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    const bob = db.query("SELECT status FROM team_member WHERE name = ?").get("bob") as Record<string, string>
+    expect(alice.status).toBe("error")
+    expect(bob.status).toBe("error")
+  })
+
+  test("does not touch non-busy members", async () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "ready", "idle")
     insertMember(db, "t1", "bob", "sess-2", "shutdown", "idle")
 
-    const result = recoverStaleMembers(db)
+    const result = await recoverStaleMembers(db, client)
     expect(result.interrupted).toBe(0)
 
     const alice = db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
     expect(alice.status).toBe("ready")
+
+    // No abort calls
+    const abortCalls = client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(0)
   })
 
-  test("returns zero when no stale state exists", () => {
-    const result = recoverStaleMembers(db)
+  test("returns zero when no stale state exists", async () => {
+    const result = await recoverStaleMembers(db, client)
     expect(result.interrupted).toBe(0)
   })
 
-  test("is idempotent — running twice produces same result", () => {
+  test("is idempotent — running twice produces same result", async () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "busy", "running")
 
-    recoverStaleMembers(db)
-    const result2 = recoverStaleMembers(db)
+    await recoverStaleMembers(db, client)
+    const result2 = await recoverStaleMembers(db, client)
     expect(result2.interrupted).toBe(0)
 
     const alice = db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
     expect(alice.status).toBe("error")
   })
 
-  test("only recovers members in active teams", () => {
+  test("only recovers members in active teams", async () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     db.run("UPDATE team SET status = 'archived' WHERE id = ?", ["t1"])
     insertMember(db, "t1", "alice", "sess-1", "busy", "running")
 
-    const result = recoverStaleMembers(db)
+    const result = await recoverStaleMembers(db, client)
     expect(result.interrupted).toBe(0)
   })
 })

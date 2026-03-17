@@ -98,4 +98,32 @@ describe("team_broadcast", () => {
     await expect(executeTeamBroadcast(deps, { text: "hi" }, "random-sess"))
       .rejects.toThrow("not in a team")
   })
+
+  test("does not mark message delivered when all deliveries fail", async () => {
+    deps.client.session.promptAsync = async () => { throw new Error("delivery failed") }
+
+    await executeTeamBroadcast(deps, { text: "status update" }, "sess-alice")
+
+    // Message should remain undelivered in DB
+    const rows = deps.db.query("SELECT delivered FROM team_message WHERE team_id = ?").all("t1") as Array<{ delivered: number }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.delivered).toBe(0)
+  })
+
+  test("marks message delivered when at least one delivery succeeds", async () => {
+    let callCount = 0
+    deps.client.session.promptAsync = async (opts: unknown) => {
+      callCount++
+      deps.client.calls.push({ method: "session.promptAsync", args: [opts] })
+      // First call succeeds, second fails
+      if (callCount === 2) throw new Error("delivery failed")
+      return {}
+    }
+
+    await executeTeamBroadcast(deps, { text: "status update" }, "sess-alice")
+
+    const rows = deps.db.query("SELECT delivered FROM team_message WHERE team_id = ?").all("t1") as Array<{ delivered: number }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.delivered).toBe(1)
+  })
 })

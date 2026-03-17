@@ -3,7 +3,7 @@ import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
-import { recoverStaleMembers } from "./recovery"
+import { recoverStaleMembers, recoverUndeliveredMessages } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
@@ -22,10 +22,13 @@ import { executeTeamStatus } from "./tools/team-status"
 import { executeTeamView } from "./tools/team-view"
 import type { ToolDeps, PluginClient } from "./types"
 import { TokenBucket } from "./rate-limit"
+import { Watchdog } from "./watchdog"
 
 const DEFAULT_RATE_LIMIT_CAPACITY = 10
 const DEFAULT_RATE_LIMIT_REFILL = 2
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 1000
+const DEFAULT_WATCHDOG_TTL_MS = 30 * 60 * 1000 // 30 minutes
+const DEFAULT_WATCHDOG_CHECK_MS = 60 * 1000 // 60 seconds
 
 /**
  * opencode-ensemble plugin entry point.
@@ -42,8 +45,12 @@ const plugin: Plugin = async (input) => {
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()
 
-  // Run recovery on init — mark stale busy members as error
-  const recovery = recoverStaleMembers(db)
+  // Build shared tool dependencies
+  const client = input.client as unknown as PluginClient
+  const deps: ToolDeps = { db, registry, tracker, client }
+
+  // Run recovery on init — mark stale busy members as error + abort orphaned sessions
+  const recovery = await recoverStaleMembers(db, client)
   if (recovery.interrupted > 0) {
     // Rebuild registry from DB for recovered members
     const members = db.query(
@@ -54,9 +61,10 @@ const plugin: Plugin = async (input) => {
     }
   }
 
-  // Build shared tool dependencies
-  const client = input.client as unknown as PluginClient
-  const deps: ToolDeps = { db, registry, tracker, client }
+  // Redeliver undelivered messages from previous sessions
+  recoverUndeliveredMessages(db, client, registry).catch(() => {
+    // Best effort — don't block plugin init
+  })
 
   // Initialize rate limiter
   // OPENCODE_ENSEMBLE_RATE_LIMIT=0 disables it entirely
@@ -67,6 +75,17 @@ const plugin: Plugin = async (input) => {
     refillRate: DEFAULT_RATE_LIMIT_REFILL,
     refillIntervalMs: DEFAULT_RATE_LIMIT_INTERVAL_MS,
   })
+
+  // Initialize watchdog for teammate timeouts
+  // OPENCODE_ENSEMBLE_TIMEOUT=0 disables it entirely
+  const timeoutEnv = process.env.OPENCODE_ENSEMBLE_TIMEOUT
+  const watchdogTtl = timeoutEnv === "0" ? 0 : (parseInt(timeoutEnv ?? "", 10) || DEFAULT_WATCHDOG_TTL_MS)
+  const watchdog = new Watchdog({
+    db, client, registry,
+    ttlMs: watchdogTtl,
+    checkIntervalMs: DEFAULT_WATCHDOG_CHECK_MS,
+  })
+  watchdog.start()
 
   return {
     // Event hook — drives state machine transitions + descendant tracking + toasts
@@ -84,6 +103,24 @@ const plugin: Plugin = async (input) => {
             notifyTeamEvent(client, "completed", { memberName: transition.memberName })
           } else if (transition.to === "error") {
             notifyTeamEvent(client, "error", { memberName: transition.memberName })
+          } else if (transition.to === "retry") {
+            // Teammate is being rate-limited — notify user
+            try {
+              await client.tui.showToast({
+                title: "Team",
+                message: `${transition.memberName} is being rate-limited`,
+                variant: "warning",
+                duration: 3000,
+              })
+            } catch { /* TUI may not be available */ }
+          } else if (transition.to === "busy_while_shutdown") {
+            // Session went busy after shutdown was requested — re-issue abort
+            const entry = registry.getBySession(sessionID)
+            if (entry) {
+              try {
+                await client.session.abort({ path: { id: sessionID } })
+              } catch { /* best effort */ }
+            }
           }
 
           // Show working progress after every transition so the user sees who's still active

@@ -151,10 +151,11 @@ The plugin works within OpenCode's existing TUI. There's no custom team panel (t
 
 What you do get:
 
-- **Toast notifications** when teammates spawn, finish, error, or shut down
+- **Toast notifications** when teammates spawn, finish, error, shut down, or get rate-limited
+- **Working progress toasts** showing who's still active after every status change (e.g. "Working: alice, bob (2/3)")
 - **Rich tool titles** in the sidebar (e.g. "Spawned alice (build)", "Message -> bob", "Task board (3 tasks)")
 - **Session switching** via `team_view` to see any teammate's full chat log
-- **Status checks** via `team_status` for a snapshot of the whole team
+- **Status checks** via `team_status` for a snapshot of the whole team (also fires a toast)
 
 Teammate messages arrive in the lead's session as `[Team message from alice]: ...` blocks. They look like user messages in the TUI because that's how `promptAsync` delivery works. The content is clearly labeled with the sender's name.
 
@@ -163,7 +164,10 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 - **SQLite** (`bun:sqlite`, WAL mode) for teams, members, tasks, and messages
 - **promptAsync** for message delivery: injects a message and starts the prompt loop in one call
 - **Sub-agent isolation**: teammates' sub-agents can't use team tools (parent chain tracking, max depth 10)
-- **Crash recovery**: stale busy members marked as errored on restart, undelivered messages redelivered
+- **Crash recovery**: stale busy members marked as errored on restart, orphaned sessions aborted, undelivered messages redelivered
+- **Spawn rollback**: if the initial prompt fails, the member is cleaned up and the session aborted
+- **Timeout watchdog**: teammates stuck busy beyond the TTL are automatically timed out and aborted
+- **Shutdown resilience**: abort failures handled gracefully, busy-after-shutdown triggers re-abort
 - **Rate limiting**: token bucket (configurable via `OPENCODE_ENSEMBLE_RATE_LIMIT`, default 10 tokens/sec)
 
 ## Configuration
@@ -174,6 +178,12 @@ OPENCODE_ENSEMBLE_RATE_LIMIT=20
 
 # Disable rate limiting
 OPENCODE_ENSEMBLE_RATE_LIMIT=0
+
+# Adjust teammate timeout (default: 1800000ms = 30 minutes)
+OPENCODE_ENSEMBLE_TIMEOUT=3600000
+
+# Disable timeout watchdog
+OPENCODE_ENSEMBLE_TIMEOUT=0
 ```
 
 ## Development

@@ -27,8 +27,20 @@ export async function executeTeamShutdown(
     [Date.now(), teamInfo.teamId, args.member]
   )
 
-  // Call abort on the member's session
-  await deps.client.session.abort({ path: { id: member.session_id } })
+  // Call abort on the member's session (best effort)
+  try {
+    await deps.client.session.abort({ path: { id: member.session_id } })
+  } catch {
+    // Abort failed — session may already be gone. Fire a warning toast.
+    try {
+      await deps.client.tui.showToast({
+        title: "Team",
+        message: `Failed to abort ${args.member} session — will rely on event hook`,
+        variant: "warning",
+        duration: 4000,
+      })
+    } catch { /* TUI may not be available */ }
+  }
 
   // Fallback: poll session status after abort. If already idle, transition
   // directly to shutdown. This handles the case where abort() on an

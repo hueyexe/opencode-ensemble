@@ -6,16 +6,34 @@ import { getUndeliveredMessages, markDelivered } from "./messaging"
 /**
  * Scan for team members stuck in 'busy' status (stale from a crash)
  * and mark them as 'error' with execution_status 'idle'.
+ * Also aborts their orphaned sessions (best effort).
  * Only processes members in active teams.
  * Returns the count of interrupted members.
  */
-export function recoverStaleMembers(db: Database): { interrupted: number } {
+export async function recoverStaleMembers(db: Database, client?: PluginClient): Promise<{ interrupted: number }> {
+  // Find stale members before updating so we can abort their sessions
+  const stale = db.query(
+    `SELECT tm.session_id FROM team_member tm
+     JOIN team t ON tm.team_id = t.id
+     WHERE tm.status = 'busy' AND t.status = 'active'`
+  ).all() as Array<{ session_id: string }>
+
   const result = db.run(
     `UPDATE team_member SET status = 'error', execution_status = 'idle', time_updated = ?
      WHERE status = 'busy'
        AND team_id IN (SELECT id FROM team WHERE status = 'active')`,
     [Date.now()]
   )
+
+  // Abort orphaned sessions (best effort)
+  if (client) {
+    for (const member of stale) {
+      try {
+        await client.session.abort({ path: { id: member.session_id } })
+      } catch { /* best effort */ }
+    }
+  }
+
   return { interrupted: result.changes }
 }
 

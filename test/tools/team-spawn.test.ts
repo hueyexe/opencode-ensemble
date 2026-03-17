@@ -131,4 +131,43 @@ describe("team_spawn", () => {
     expect(result).toContain("Teammates will message you when done")
     expect(result).toContain("Do not poll team_status")
   })
+
+  test("rolls back DB, registry, and aborts session if promptAsync fails", async () => {
+    // Make promptAsync throw after session.create succeeds
+    deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
+
+    await expect(executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")).rejects.toThrow("Failed to send initial prompt")
+
+    // DB should have no member
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = 'alice'").get()
+    expect(row).toBeNull()
+
+    // Registry should be clean
+    const members = deps.registry.listByTeam("t1")
+    expect(members).toHaveLength(0)
+
+    // session.abort should have been called
+    const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(1)
+  })
+
+  test("rolls back cleanly even if session.abort fails during promptAsync rollback", async () => {
+    deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
+    deps.client.session.abort = async () => { throw new Error("abort also failed") }
+
+    await expect(executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")).rejects.toThrow("Failed to send initial prompt")
+
+    // DB and registry should still be cleaned up
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = 'alice'").get()
+    expect(row).toBeNull()
+    expect(deps.registry.listByTeam("t1")).toHaveLength(0)
+  })
 })

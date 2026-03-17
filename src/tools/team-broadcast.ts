@@ -53,7 +53,10 @@ export async function executeTeamBroadcast(
     }
   }
 
-  markDelivered(deps.db, msgId)
+  // Only mark delivered if at least one recipient received it
+  if (delivered > 0) {
+    markDelivered(deps.db, msgId)
+  }
 
   return `Broadcast sent to ${delivered} recipient${delivered !== 1 ? "s" : ""}.`
 }

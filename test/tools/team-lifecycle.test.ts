@@ -72,6 +72,34 @@ describe("team_shutdown", () => {
     await expect(executeTeamShutdown(deps, { member: "alice" }, "lead-sess"))
       .rejects.toThrow("already shut down")
   })
+
+  test("handles abort failure gracefully and still completes shutdown", async () => {
+    deps.client.session.abort = async () => { throw new Error("session gone") }
+
+    const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+    // Session is gone, so status poll finds nothing → transitions to shutdown
+    expect(result).toContain("shut down")
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = 'alice'").get() as Record<string, string>
+    expect(row.status).toBe("shutdown")
+
+    // Toast warning should have been fired for the abort failure
+    const toastCalls = deps.client.calls.filter(c => c.method === "tui.showToast")
+    expect(toastCalls.length).toBeGreaterThanOrEqual(1)
+    const msg = (toastCalls[0]!.args[0] as Record<string, unknown>).message as string
+    expect(msg).toContain("alice")
+  })
+
+  test("handles abort failure and stays shutdown_requested when status poll also fails", async () => {
+    deps.client.session.abort = async () => { throw new Error("session gone") }
+    deps.client.session.status = async () => { throw new Error("status also failed") }
+
+    const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+    expect(result).toContain("Shutdown requested")
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = 'alice'").get() as Record<string, string>
+    expect(row.status).toBe("shutdown_requested")
+  })
 })
 
 describe("team_cleanup", () => {

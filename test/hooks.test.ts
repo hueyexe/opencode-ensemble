@@ -141,10 +141,18 @@ describe("handleSessionStatusEvent", () => {
     registry.register("t1", "alice", "sess-1")
 
     const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
-    expect(result).toBeUndefined()
 
+    // Should return a transition so the event hook can re-issue abort
+    expect(result).toEqual({
+      memberName: "alice",
+      teamId: "t1",
+      from: "shutdown_requested",
+      to: "busy_while_shutdown",
+    })
+
+    // Status should remain shutdown_requested
     const row = db.query("SELECT status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
-    expect(row.status).toBe("shutdown_requested") // unchanged
+    expect(row.status).toBe("shutdown_requested")
   })
 
   test("ignores busy event when member is already busy", () => {
@@ -162,11 +170,19 @@ describe("handleSessionStatusEvent", () => {
     registry.register("t1", "alice", "sess-1")
 
     const result = handleSessionStatusEvent(db, registry, "sess-1", "retry")
-    expect(result).toBeUndefined()
 
+    // Should return a retry transition for toast notification
+    expect(result).toEqual({
+      memberName: "alice",
+      teamId: "t1",
+      from: "busy",
+      to: "retry",
+    })
+
+    // Status should remain unchanged
     const row = db.query("SELECT status, execution_status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
-    expect(row.status).toBe("busy") // unchanged
-    expect(row.execution_status).toBe("running") // unchanged
+    expect(row.status).toBe("busy")
+    expect(row.execution_status).toBe("running")
   })
 
   test("returns StatusTransition on successful idle transition", () => {

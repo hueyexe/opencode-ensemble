@@ -73,12 +73,20 @@ export async function executeTeamSpawn(
   const contextStr = context.join("\n")
 
   // Fire-and-forget: send prompt to teammate session
-  // OQ-1: assuming promptAsync queues when session is busy
-  // OQ-10: assuming fresh session accepts promptAsync without session.init()
-  await deps.client.session.promptAsync({
-    path: { id: childSessionId },
-    body: { parts: [{ type: "text", text: contextStr }] },
-  })
+  // OQ-1: confirmed — promptAsync queues when session is busy (verified in live testing)
+  // OQ-10: confirmed — fresh session accepts promptAsync without session.init() (verified in live testing)
+  try {
+    await deps.client.session.promptAsync({
+      path: { id: childSessionId },
+      body: { parts: [{ type: "text", text: contextStr }] },
+    })
+  } catch (err) {
+    // Rollback: clean up DB, registry, and abort the orphaned session
+    deps.db.run("DELETE FROM team_member WHERE team_id = ? AND name = ?", [teamInfo.teamId, args.name])
+    deps.registry.unregister(childSessionId)
+    try { await deps.client.session.abort({ path: { id: childSessionId } }) } catch { /* best effort */ }
+    throw new Error(`Failed to send initial prompt to teammate "${args.name}": ${err instanceof Error ? err.message : String(err)}`)
+  }
 
   return `Teammate "${args.name}" spawned (session: ${childSessionId}, agent: ${args.agent}). Working on: ${args.prompt.slice(0, 100)}${args.prompt.length > 100 ? "..." : ""} Teammates will message you when done. Do not poll team_status to check.`
 }

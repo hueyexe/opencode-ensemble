@@ -50,6 +50,13 @@ export function handleSessionStatusEvent(
       )
       return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "busy" }
     }
+    // Session went busy while shutdown was requested — signal for re-abort
+    if (member.status === "shutdown_requested") {
+      return { memberName: entry.memberName, teamId: entry.teamId, from: "shutdown_requested", to: "busy_while_shutdown" }
+    }
+  } else if (status === "retry") {
+    // Session is being rate-limited — signal for toast but don't change state
+    return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "retry" }
   }
   return undefined
 }
@@ -71,7 +78,7 @@ export function handleSessionCreatedEvent(
 /**
  * Check whether a tool call should be blocked for sub-agent isolation.
  * Throws if the tool is a team tool and the session is a descendant of a team member.
- * OQ-11: assumes throwing inside tool.execute.before fails the tool call gracefully.
+ * OQ-11: confirmed — throwing inside tool.execute.before fails the tool call gracefully (verified in live testing).
  */
 export function checkToolIsolation(
   registry: MemberRegistry,
