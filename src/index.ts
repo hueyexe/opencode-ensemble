@@ -1,7 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 import path from "path"
-import { createDb } from "./db"
+import { mkdirSync } from "node:fs"
+import { createDb, getDbPath } from "./db"
 import { recoverStaleMembers } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
@@ -32,8 +33,9 @@ const DEFAULT_RATE_LIMIT_INTERVAL_MS = 1000
  * peer-to-peer communication, shared task management, and coordinated execution.
  */
 const plugin: Plugin = async (input) => {
-  // Initialize SQLite database in the project's .opencode directory
-  const dbPath = path.join(input.directory, ".opencode", "ensemble.db")
+  // Initialize SQLite database in the global OpenCode config directory
+  const dbPath = getDbPath()
+  mkdirSync(path.dirname(dbPath), { recursive: true })
   const db = createDb(dbPath)
 
   // Initialize in-memory state

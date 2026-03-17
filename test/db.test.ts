@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { applyMigrations, MIGRATIONS } from "../src/schema"
-import { createDb, getDb } from "../src/db"
+import { createDb, getDb, getDbPath } from "../src/db"
+import path from "path"
 
 describe("schema migrations", () => {
   let db: Database
@@ -108,5 +109,28 @@ describe("createDb", () => {
     try { require("fs").unlinkSync(tmpPath) } catch {}
     try { require("fs").unlinkSync(tmpPath + "-wal") } catch {}
     try { require("fs").unlinkSync(tmpPath + "-shm") } catch {}
+  })
+})
+
+describe("getDbPath", () => {
+  test("resolves to ~/.config/opencode/ensemble.db using HOME", () => {
+    const result = getDbPath({ HOME: "/home/testuser", USERPROFILE: undefined })
+    expect(result).toBe(path.join("/home/testuser", ".config", "opencode", "ensemble.db"))
+  })
+
+  test("falls back to USERPROFILE when HOME is not set", () => {
+    const result = getDbPath({ HOME: undefined, USERPROFILE: "C:\\Users\\testuser" })
+    expect(result).toBe(path.join("C:\\Users\\testuser", ".config", "opencode", "ensemble.db"))
+  })
+
+  test("falls back to ~ when neither HOME nor USERPROFILE is set", () => {
+    const result = getDbPath({ HOME: undefined, USERPROFILE: undefined })
+    expect(result).toBe(path.join("~", ".config", "opencode", "ensemble.db"))
+  })
+
+  test("never includes the project directory in the path", () => {
+    const result = getDbPath({ HOME: "/home/testuser", USERPROFILE: undefined })
+    expect(result).not.toContain(".opencode/ensemble.db")
+    expect(result).toContain(path.join(".config", "opencode", "ensemble.db"))
   })
 })
