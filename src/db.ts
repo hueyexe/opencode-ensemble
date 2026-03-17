@@ -1,7 +1,18 @@
 import { Database } from "bun:sqlite"
+import path from "path"
 import { applyMigrations } from "./schema"
 
 let instance: Database | undefined
+
+/**
+ * Resolve the path for the ensemble SQLite database.
+ * Always uses the global ~/.config/opencode/ directory, never the project directory.
+ * Accepts an env override for testability.
+ */
+export function getDbPath(env: Record<string, string | undefined> = process.env): string {
+  const home = env.HOME ?? env.USERPROFILE ?? "~"
+  return path.join(home, ".config", "opencode", "ensemble.db")
+}
 
 /**
  * Create and initialize a SQLite database at the given path.
