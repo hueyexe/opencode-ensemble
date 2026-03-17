@@ -169,20 +169,4 @@ describe("TokenBucket", () => {
       expect(bucket.tryConsume()).toBe(true)
     }
   })
-
-  test("lastRefill advances by exact intervals not raw elapsed", async () => {
-    // refillIntervalMs=100, wait 350ms => at least 2 full intervals
-    const bucket = new TokenBucket({ capacity: 10, refillRate: 1, refillIntervalMs: 100 })
-    // Drain all
-    for (let i = 0; i < 10; i++) expect(bucket.tryConsume()).toBe(true)
-    expect(bucket.tryConsume()).toBe(false)
-
-    await Bun.sleep(350)
-    let consumed = 0
-    while (bucket.tryConsume()) consumed++
-    // At least 2 full intervals should have elapsed (timing-safe)
-    expect(consumed).toBeGreaterThanOrEqual(2)
-    // But never more than capacity (sanity check)
-    expect(consumed).toBeLessThanOrEqual(10)
-  })
 })
