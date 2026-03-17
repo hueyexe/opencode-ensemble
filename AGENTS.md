@@ -173,6 +173,22 @@ Default to using Bun instead of Node.js.
 - `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
 - Prefer `Bun.file` over `node:fs`'s readFile/writeFile
 
+## Publishing
+
+To publish a new version:
+
+```
+bun run typecheck && bun test && bun run build && bun publish --access public
+```
+
+Then create a GitHub release:
+
+```
+gh release create v<version> --repo hueyexe/opencode-ensemble --title "v<version>" --generate-notes
+```
+
+Use `gh auth switch --user hueyexe` first if the active gh account is not hueyexe.
+
 ## Testing
 
 - bun test runs all tests
