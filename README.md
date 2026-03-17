@@ -125,7 +125,6 @@ export { default } from "/path/to/opencode-ensemble/src/index.ts"
 | `team_spawn` | Start a new teammate with a task. |
 | `team_shutdown` | Ask a teammate to stop. |
 | `team_cleanup` | Remove the team when done. |
-| `team_approve_plan` | Approve or reject a teammate's plan before they write code. |
 | `team_status` | See all members, their status, and a task summary. |
 | `team_view` | Switch the TUI to a teammate's session. |
 
@@ -135,6 +134,7 @@ export { default } from "/path/to/opencode-ensemble/src/index.ts"
 |------|-------------|
 | `team_message` | Send a direct message to a teammate or the lead. |
 | `team_broadcast` | Message everyone on the team. |
+| `team_results` | Retrieve full message content (messages to lead are truncated on delivery). |
 
 **Task board** (everyone)
 

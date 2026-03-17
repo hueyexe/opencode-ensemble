@@ -121,15 +121,15 @@ describe("team_spawn", () => {
     expect(text).not.toContain("You have been assigned task")
   })
 
-  test("response string tells lead not to poll team_status", async () => {
+  test("response string tells lead to stop and wait", async () => {
     const result = await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
     }, "lead-sess")
 
-    expect(result).toContain("Teammates will message you when done")
-    expect(result).toContain("Do not poll team_status")
+    expect(result).toContain("STOP")
+    expect(result).toContain("woken automatically")
   })
 
   test("rolls back DB, registry, and aborts session if promptAsync fails", async () => {
@@ -153,6 +153,26 @@ describe("team_spawn", () => {
     // session.abort should have been called
     const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
     expect(abortCalls).toHaveLength(1)
+  })
+
+  test("response includes Do NOT call any tools after this", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("Do NOT call any tools after this")
+  })
+
+  test("response includes STOP instruction", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("STOP")
   })
 
   test("rolls back cleanly even if session.abort fails during promptAsync rollback", async () => {

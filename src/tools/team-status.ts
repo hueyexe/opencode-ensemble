@@ -1,6 +1,11 @@
 import type { ToolDeps } from "../types"
 import { findTeamBySession } from "../types"
 
+/** Tracks the last time team_status was called per team ID (epoch ms). */
+export const lastCallTime = new Map<string, number>()
+
+const RATE_LIMIT_MS = 30_000
+
 /**
  * Execute the team_status tool. Shows team overview with member statuses and task summary.
  */
@@ -10,6 +15,13 @@ export async function executeTeamStatus(
 ): Promise<string> {
   const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
   if (!teamInfo) throw new Error("This session is not in a team.")
+
+  const now = Date.now()
+  const last = lastCallTime.get(teamInfo.teamId)
+  if (last !== undefined && (now - last) < RATE_LIMIT_MS) {
+    return "Status unchanged. STOP — do not call any more tools. Tell the user you are waiting for teammates to finish. You will be woken automatically when they message you."
+  }
+  lastCallTime.set(teamInfo.teamId, now)
 
   const members = deps.db.query(
     "SELECT name, session_id, agent, status, execution_status FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
@@ -68,5 +80,5 @@ export async function executeTeamStatus(
     }
   }
 
-  return lines.join("\n")
+  return "[Relay this status to the user in your next message:]\n\n" + lines.join("\n")
 }

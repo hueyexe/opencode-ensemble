@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
-import { executeTeamStatus } from "../../src/tools/team-status"
+import { executeTeamStatus, lastCallTime } from "../../src/tools/team-status"
 
 describe("team_status", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -8,6 +8,7 @@ describe("team_status", () => {
   beforeEach(() => {
     deps = setupDeps()
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    lastCallTime.clear()
   })
 
   test("shows team with no members", async () => {
@@ -96,6 +97,46 @@ describe("team_status", () => {
     // Should not throw
     const result = await executeTeamStatus(deps, "lead-sess")
     expect(result).toContain("alice")
+  })
+
+  test("returns rate-limited message when called twice within 30s for same team", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const first = await executeTeamStatus(deps, "lead-sess")
+    expect(first).toContain("[Relay this status")
+
+    const second = await executeTeamStatus(deps, "lead-sess")
+    expect(second).toContain("Status unchanged")
+    expect(second).toContain("STOP")
+    expect(second).not.toContain("[Relay this status")
+  })
+
+  test("returns normal status after 30s (manipulate lastCallTime)", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const first = await executeTeamStatus(deps, "lead-sess")
+    expect(first).toContain("[Relay this status")
+
+    // Simulate 31 seconds passing
+    lastCallTime.set("t1", Date.now() - 31_000)
+
+    const second = await executeTeamStatus(deps, "lead-sess")
+    expect(second).toContain("[Relay this status")
+    expect(second).not.toContain("Status unchanged")
+  })
+
+  test("normal response includes relay prefix", async () => {
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("[Relay this status to the user in your next message:]")
+  })
+
+  test("rate-limited response includes STOP", async () => {
+    const first = await executeTeamStatus(deps, "lead-sess")
+    const second = await executeTeamStatus(deps, "lead-sess")
+    expect(second).toContain("STOP")
+    expect(second).toContain("do not call any more tools")
   })
 
   test("rejects if not in a team", async () => {

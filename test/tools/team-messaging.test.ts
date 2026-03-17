@@ -57,6 +57,51 @@ describe("team_message", () => {
     await expect(executeTeamMessage(deps, { to: "lead", text: "x".repeat(10241) }, "sess-alice"))
       .rejects.toThrow("10KB")
   })
+
+  test("message to lead over 500 chars is truncated in promptAsync delivery", async () => {
+    const longText = "a".repeat(600)
+    await executeTeamMessage(deps, { to: "lead", text: longText }, "sess-alice")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    expect(delivered.length).toBeLessThan(longText.length + 50) // truncated, not full
+    expect(delivered).toContain("...")
+    expect(delivered).toContain("use team_results to read full message")
+    // Must NOT contain the full original text
+    expect(delivered).not.toContain(longText)
+  })
+
+  test("message to lead under 500 chars is delivered in full", async () => {
+    const shortText = "b".repeat(400)
+    await executeTeamMessage(deps, { to: "lead", text: shortText }, "sess-alice")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    expect(delivered).toContain(shortText)
+    expect(delivered).not.toContain("use team_results to read full message")
+  })
+
+  test("message to teammate is always delivered in full regardless of size", async () => {
+    const longText = "c".repeat(600)
+    await executeTeamMessage(deps, { to: "bob", text: longText }, "sess-alice")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    expect(delivered).toContain(longText)
+    expect(delivered).not.toContain("use team_results to read full message")
+  })
+
+  test("full content is stored in DB untruncated even when delivery is truncated", async () => {
+    const longText = "d".repeat(600)
+    await executeTeamMessage(deps, { to: "lead", text: longText }, "sess-alice")
+
+    const rows = deps.db.query("SELECT content FROM team_message WHERE team_id = ?").all("t1") as Array<{ content: string }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.content).toBe(longText)
+  })
 })
 
 describe("team_broadcast", () => {

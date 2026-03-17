@@ -68,7 +68,7 @@ member, the call is blocked. This covers sub-agents at arbitrary depth.
 | team_tasks_add      | Any member  | Add tasks to the shared board        |
 | team_tasks_complete | Any member  | Mark a task complete, unblock deps   |
 | team_claim          | Any member  | Atomically claim a pending task      |
-| team_approve_plan   | Lead only   | Approve or reject teammate's plan    |
+| team_results        | Any member  | Retrieve full message content        |
 | team_shutdown       | Lead only   | Request teammate shutdown            |
 | team_cleanup        | Lead only   | Archive team and clean up resources  |
 | team_status         | Any member  | View members, statuses, task summary |

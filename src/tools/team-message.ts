@@ -25,10 +25,20 @@ export async function executeTeamMessage(
     content: args.text,
   })
 
-  // Deliver via promptAsync
+  // Deliver via promptAsync — truncate lead-bound messages over 500 chars
+  const isToLead = args.to === "lead"
+  const MAX_LEAD_MSG = 500
+  let deliveryText: string
+  if (isToLead && args.text.length > MAX_LEAD_MSG) {
+    const truncated = args.text.slice(0, MAX_LEAD_MSG)
+    deliveryText = `[Team message from ${senderName}]: ${truncated}... (use team_results to read full message)`
+  } else {
+    deliveryText = `[Team message from ${senderName}]: ${args.text}`
+  }
+
   await deps.client.session.promptAsync({
     path: { id: recipientSessionId },
-    body: { parts: [{ type: "text", text: `[Team message from ${senderName}]: ${args.text}` }] },
+    body: { parts: [{ type: "text", text: deliveryText }] },
   })
 
   markDelivered(deps.db, msgId)

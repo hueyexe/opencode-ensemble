@@ -88,5 +88,5 @@ export async function executeTeamSpawn(
     throw new Error(`Failed to send initial prompt to teammate "${args.name}": ${err instanceof Error ? err.message : String(err)}`)
   }
 
-  return `Teammate "${args.name}" spawned (session: ${childSessionId}, agent: ${args.agent}). Working on: ${args.prompt.slice(0, 100)}${args.prompt.length > 100 ? "..." : ""} Teammates will message you when done. Do not poll team_status to check.`
+  return `Teammate "${args.name}" spawned (agent: ${args.agent}). IMPORTANT: Do NOT call any tools after this. Tell the user what you've set up and STOP. You will be woken automatically when teammates message you.`
 }

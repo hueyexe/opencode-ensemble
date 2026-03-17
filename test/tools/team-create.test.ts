@@ -48,4 +48,9 @@ describe("team_create", () => {
     expect(result).toContain("Teammates will message you when done")
     expect(result).toContain("do not poll team_status")
   })
+
+  test("response includes do NOT call any tools instruction", async () => {
+    const result = await executeTeamCreate(deps, { name: "my-team" }, "lead-sess")
+    expect(result).toContain("do NOT call any tools")
+  })
 })

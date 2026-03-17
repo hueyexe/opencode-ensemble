@@ -67,6 +67,9 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX IF NOT EXISTS team_message_undelivered_idx ON team_message(team_id, delivered)
     WHERE delivered = 0;
   `,
+  // Migration 2: Add read column to team_message for team_results tracking
+  `ALTER TABLE team_message ADD COLUMN read INTEGER NOT NULL DEFAULT 0;
+   CREATE INDEX IF NOT EXISTS team_message_unread_idx ON team_message(team_id, read) WHERE read = 0;`,
 ]
 
 /**

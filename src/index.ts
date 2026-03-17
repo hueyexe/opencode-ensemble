@@ -17,7 +17,7 @@ import { executeTeamTasksList } from "./tools/team-tasks-list"
 import { executeTeamTasksAdd } from "./tools/team-tasks-add"
 import { executeTeamTasksComplete } from "./tools/team-tasks-complete"
 import { executeTeamClaim } from "./tools/team-claim"
-import { executeTeamApprovePlan } from "./tools/team-approve-plan"
+import { executeTeamResults } from "./tools/team-results"
 import { executeTeamStatus } from "./tools/team-status"
 import { executeTeamView } from "./tools/team-view"
 import type { ToolDeps, PluginClient } from "./types"
@@ -254,16 +254,14 @@ const plugin: Plugin = async (input) => {
         },
       }),
 
-      team_approve_plan: tool({
-        description: "Approve or reject a teammate's implementation plan. Only the team lead can use this.",
+      team_results: tool({
+        description: "Retrieve full message content from teammates. Returns unread messages and marks them as read. Use this after receiving a truncated message notification.",
         args: {
-          member: tool.schema.string().describe("Teammate name"),
-          approved: tool.schema.boolean().describe("true to approve, false to reject"),
-          feedback: tool.schema.string().optional().describe("Feedback message (optional)"),
+          from: tool.schema.string().optional().describe("Filter messages by sender name (optional, returns all if omitted)"),
         },
         async execute(args, ctx) {
-          const result = await executeTeamApprovePlan(deps, args, ctx.sessionID)
-          ctx.metadata({ title: `Plan ${args.approved ? "approved" : "rejected"}: ${args.member}` })
+          const result = await executeTeamResults(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Results${args.from ? ` from ${args.from}` : ""}` })
           return result
         },
       }),

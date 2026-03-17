@@ -17,7 +17,14 @@ export async function executeTeamView(
     .get(teamInfo.teamId, args.member) as { session_id: string; status: string; agent: string } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
 
-  await deps.client.tui.selectSession({ sessionID: member.session_id })
+  // TUI session navigation — try selectSession if available, otherwise guide the user
+  try {
+    if (typeof deps.client.tui.selectSession === "function") {
+      await deps.client.tui.selectSession({ sessionID: member.session_id })
+    }
+  } catch {
+    // selectSession may not be available in all SDK versions — fall through to manual guidance
+  }
 
-  return `Switched view to ${args.member}'s session (${member.session_id}). Use the session picker to return to the lead session.`
+  return `View ${args.member}'s session: ${member.session_id}. Use the session picker (ctrl+p) to navigate to their session.`
 }
