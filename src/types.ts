@@ -37,6 +37,12 @@ export interface PluginClient {
     }): Promise<unknown>
     selectSession(options: { sessionID?: string }): Promise<unknown>
   }
+  worktree: {
+    create(options: { name?: string; startCommand?: string }): Promise<{ data?: { name: string; branch: string; directory: string } }>
+    remove(options: { worktreeRemoveInput?: { directory: string } }): Promise<unknown>
+    list(): Promise<{ data?: Array<{ name: string; branch: string; directory: string }> }>
+    reset(options: { worktreeResetInput?: { directory: string } }): Promise<unknown>
+  }
 }
 
 /**

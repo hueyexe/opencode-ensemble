@@ -42,6 +42,12 @@ function mockClient(): PluginClient & { calls: Array<{ method: string; args: unk
       async showToast(options) { calls.push({ method: "tui.showToast", args: [options] }); return {} },
       async selectSession(options) { calls.push({ method: "tui.selectSession", args: [options] }); return {} },
     },
+    worktree: {
+      async create(options) { calls.push({ method: "worktree.create", args: [options] }); return { data: { name: "default", branch: "ensemble-default", directory: "/tmp/wt" } } },
+      async remove(options) { calls.push({ method: "worktree.remove", args: [options] }); return {} },
+      async list() { calls.push({ method: "worktree.list", args: [] }); return { data: [] } },
+      async reset(options) { calls.push({ method: "worktree.reset", args: [options] }); return {} },
+    },
   }
 }
 
@@ -280,5 +286,90 @@ describe("recoverUndeliveredMessages", () => {
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(2)
+  })
+})
+
+describe("recoverOrphanedWorktrees", () => {
+  let db: Database
+  let client: ReturnType<typeof mockClient>
+
+  beforeEach(() => {
+    db = setupDb()
+    client = mockClient()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+  })
+
+  test("removes orphaned ensemble worktrees not in active teams", async () => {
+    // Mock worktree.list returns a worktree that has no matching active member
+    client.worktree.list = async () => {
+      client.calls.push({ method: "worktree.list", args: [] })
+      return { data: [
+        { name: "ensemble-old-team-alice", branch: "ensemble-old-team-alice", directory: "/tmp/wt-orphan" },
+      ] }
+    }
+
+    const { recoverOrphanedWorktrees } = await import("../src/recovery")
+    const result = await recoverOrphanedWorktrees(db, client)
+    expect(result.removed).toBe(1)
+
+    const removeCalls = client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(1)
+  })
+
+  test("does not remove worktrees belonging to active members", async () => {
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+    db.run("UPDATE team_member SET worktree_dir = ? WHERE name = 'alice'", ["/tmp/wt-alice"])
+
+    client.worktree.list = async () => {
+      client.calls.push({ method: "worktree.list", args: [] })
+      return { data: [
+        { name: "ensemble-my-team-alice", branch: "ensemble-my-team-alice", directory: "/tmp/wt-alice" },
+      ] }
+    }
+
+    const { recoverOrphanedWorktrees } = await import("../src/recovery")
+    const result = await recoverOrphanedWorktrees(db, client)
+    expect(result.removed).toBe(0)
+  })
+
+  test("ignores non-ensemble worktrees", async () => {
+    client.worktree.list = async () => {
+      client.calls.push({ method: "worktree.list", args: [] })
+      return { data: [
+        { name: "user-feature-branch", branch: "feature-branch", directory: "/tmp/wt-user" },
+      ] }
+    }
+
+    const { recoverOrphanedWorktrees } = await import("../src/recovery")
+    const result = await recoverOrphanedWorktrees(db, client)
+    expect(result.removed).toBe(0)
+  })
+
+  test("returns zero when worktree.list fails", async () => {
+    client.worktree.list = async () => { throw new Error("not supported") }
+
+    const { recoverOrphanedWorktrees } = await import("../src/recovery")
+    const result = await recoverOrphanedWorktrees(db, client)
+    expect(result.removed).toBe(0)
+  })
+
+  test("continues if individual worktree removal fails", async () => {
+    client.worktree.list = async () => {
+      client.calls.push({ method: "worktree.list", args: [] })
+      return { data: [
+        { name: "ensemble-old-a", branch: "ensemble-old-a", directory: "/tmp/wt-a" },
+        { name: "ensemble-old-b", branch: "ensemble-old-b", directory: "/tmp/wt-b" },
+      ] }
+    }
+    let removeCount = 0
+    client.worktree.remove = async () => {
+      removeCount++
+      if (removeCount === 1) throw new Error("failed")
+      return {}
+    }
+
+    const { recoverOrphanedWorktrees } = await import("../src/recovery")
+    const result = await recoverOrphanedWorktrees(db, client)
+    expect(result.removed).toBe(1) // second one succeeded
   })
 })

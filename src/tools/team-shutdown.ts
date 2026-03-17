@@ -16,8 +16,8 @@ export async function executeTeamShutdown(
   if (!teamInfo) throw new Error("This session is not in a team.")
   if (teamInfo.role !== "lead") throw new Error("Only the team lead can shut down teammates.")
 
-  const member = deps.db.query("SELECT session_id, status FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { session_id: string; status: string } | null
+  const member = deps.db.query("SELECT session_id, status, worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { session_id: string; status: string; worktree_branch: string | null } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
   if (member.status === "shutdown") throw new Error(`Teammate "${args.member}" is already shut down`)
 
@@ -53,7 +53,8 @@ export async function executeTeamShutdown(
         "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), teamInfo.teamId, args.member]
       )
-      return `Teammate "${args.member}" has been shut down.`
+      const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
+      return `Teammate "${args.member}" has been shut down.${branchInfo}`
     }
   } catch {
     // Status poll failed — fall through to eventual consistency

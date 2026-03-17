@@ -185,4 +185,115 @@ describe("team_spawn", () => {
     expect(row).toBeNull()
     expect(deps.registry.listByTeam("t1")).toHaveLength(0)
   })
+
+  // --- Worktree tests ---
+
+  test("creates a worktree by default and stores dir/branch in DB", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    // Worktree.create should have been called
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(1)
+    expect((wtCalls[0]!.args[0] as Record<string, string>).name).toBe("ensemble-my-team-alice")
+
+    // DB should have worktree columns populated
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
+    expect(row.worktree_dir).toBeTruthy()
+    expect(row.worktree_branch).toBeTruthy()
+
+    // Result should mention the branch
+    expect(result).toContain("branch:")
+  })
+
+  test("skips worktree when worktree: false", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "explore",
+      prompt: "Research the codebase",
+      worktree: false,
+    }, "lead-sess")
+
+    // No worktree.create call
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+
+    // DB should have null worktree columns
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+
+    // Result should not mention branch
+    expect(result).not.toContain("branch:")
+  })
+
+  test("falls back to shared directory if worktree creation fails", async () => {
+    deps.client.worktree.create = async () => { throw new Error("worktree failed") }
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    // Should still succeed — just without worktree
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+
+    // DB should have null worktree columns
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+
+    // Toast warning should have been fired
+    const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
+    expect(toasts.length).toBeGreaterThan(0)
+  })
+
+  test("rolls back worktree if promptAsync fails", async () => {
+    deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
+
+    await expect(executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")).rejects.toThrow("Failed to send initial prompt")
+
+    // Worktree should have been removed during rollback
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(1)
+  })
+
+  test("context message mentions branch when worktree is active", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    expect(text).toContain("worktree")
+    expect(text).toContain("branch")
+  })
+
+  test("context message does not mention worktree when worktree: false", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "explore",
+      prompt: "Research",
+      worktree: false,
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    expect(text).not.toContain("worktree")
+  })
 })

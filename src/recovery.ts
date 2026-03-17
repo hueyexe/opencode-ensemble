@@ -38,6 +38,43 @@ export async function recoverStaleMembers(db: Database, client?: PluginClient): 
 }
 
 /**
+ * Clean up orphaned worktrees from archived teams or members that no longer exist.
+ * Compares worktrees on disk (via client.worktree.list) against active team members.
+ */
+export async function recoverOrphanedWorktrees(db: Database, client: PluginClient): Promise<{ removed: number }> {
+  let removed = 0
+
+  try {
+    const worktrees = await client.worktree.list()
+    if (!worktrees.data) return { removed: 0 }
+
+    // Get all active worktree directories from the DB
+    const activeWorktrees = new Set(
+      (db.query(
+        `SELECT tm.worktree_dir FROM team_member tm
+         JOIN team t ON tm.team_id = t.id
+         WHERE tm.worktree_dir IS NOT NULL AND t.status = 'active'`
+      ).all() as Array<{ worktree_dir: string }>).map(r => r.worktree_dir)
+    )
+
+    for (const wt of worktrees.data) {
+      // Only clean up worktrees created by ensemble (name starts with "ensemble-")
+      if (!wt.name.startsWith("ensemble-")) continue
+      if (activeWorktrees.has(wt.directory)) continue
+
+      try {
+        await client.worktree.remove({ worktreeRemoveInput: { directory: wt.directory } })
+        removed++
+      } catch { /* best effort */ }
+    }
+  } catch {
+    // worktree.list may not be available — silently ignore
+  }
+
+  return { removed }
+}
+
+/**
  * Redeliver undelivered messages (delivered=0) via promptAsync.
  * Resolves recipient session IDs from the member registry or team lead.
  * Continues on partial failure — logs but doesn't abort.

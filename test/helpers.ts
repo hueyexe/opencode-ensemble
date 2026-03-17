@@ -45,6 +45,25 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
         return {}
       },
     },
+    worktree: {
+      async create(options) {
+        calls.push({ method: "worktree.create", args: [options] })
+        const name = options.name ?? "default"
+        return { data: { name, branch: `ensemble-${name}`, directory: `/tmp/worktree-${name}` } }
+      },
+      async remove(options) {
+        calls.push({ method: "worktree.remove", args: [options] })
+        return {}
+      },
+      async list() {
+        calls.push({ method: "worktree.list", args: [] })
+        return { data: [] }
+      },
+      async reset(options) {
+        calls.push({ method: "worktree.reset", args: [options] })
+        return {}
+      },
+    },
   }
 }
 

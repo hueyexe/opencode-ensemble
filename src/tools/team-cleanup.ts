@@ -3,6 +3,7 @@ import { findTeamBySession } from "../types"
 
 /**
  * Execute the team_cleanup tool. Archives the team and cleans up resources.
+ * Removes worktrees and lists branches for the lead to merge.
  * If force=true, aborts all active member sessions first.
  */
 export async function executeTeamCleanup(
@@ -14,8 +15,8 @@ export async function executeTeamCleanup(
   if (!teamInfo) throw new Error("This session is not in a team.")
   if (teamInfo.role !== "lead") throw new Error("Only the team lead can clean up the team.")
 
-  const members = deps.db.query("SELECT name, session_id, status FROM team_member WHERE team_id = ?")
-    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string }>
+  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch FROM team_member WHERE team_id = ?")
+    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null }>
 
   const active = members.filter(m => m.status !== "shutdown" && m.status !== "shutdown_requested" && m.status !== "error")
 
@@ -29,9 +30,20 @@ export async function executeTeamCleanup(
     for (const member of active) {
       try {
         await deps.client.session.abort({ path: { id: member.session_id } })
-      } catch {
-        // Best effort
-      }
+      } catch { /* best effort */ }
+    }
+  }
+
+  // Remove worktrees and collect branches for merging
+  const branches: string[] = []
+  for (const member of members) {
+    if (member.worktree_dir) {
+      try {
+        await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
+      } catch { /* best effort — worktree may already be gone */ }
+    }
+    if (member.worktree_branch) {
+      branches.push(member.worktree_branch)
     }
   }
 
@@ -40,6 +52,11 @@ export async function executeTeamCleanup(
 
   // Clean up registry
   deps.registry.unregisterTeam(teamInfo.teamId)
+
+  if (branches.length > 0) {
+    const mergeCommands = branches.map(b => `  git merge ${b}`).join("\n")
+    return `Team "${teamInfo.teamName}" cleaned up. Worktrees removed.\n\nMerge teammate branches:\n${mergeCommands}`
+  }
 
   return `Team "${teamInfo.teamName}" cleaned up.`
 }

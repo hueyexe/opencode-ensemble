@@ -70,6 +70,9 @@ export const MIGRATIONS: string[] = [
   // Migration 2: Add read column to team_message for team_results tracking
   `ALTER TABLE team_message ADD COLUMN read INTEGER NOT NULL DEFAULT 0;
    CREATE INDEX IF NOT EXISTS team_message_unread_idx ON team_message(team_id, read) WHERE read = 0;`,
+  // Migration 3: Add worktree columns to team_member for git worktree isolation
+  `ALTER TABLE team_member ADD COLUMN worktree_dir TEXT;
+   ALTER TABLE team_member ADD COLUMN worktree_branch TEXT;`,
 ]
 
 /**

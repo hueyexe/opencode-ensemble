@@ -163,9 +163,10 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 
 - **SQLite** (`bun:sqlite`, WAL mode) for teams, members, tasks, and messages
 - **promptAsync** for message delivery: injects a message and starts the prompt loop in one call
+- **Git worktree isolation**: each teammate gets their own worktree by default, so multiple agents can edit files without conflicts. The lead merges branches after cleanup. Opt out with `worktree: false` for read-only agents.
 - **Sub-agent isolation**: teammates' sub-agents can't use team tools (parent chain tracking, max depth 10)
-- **Crash recovery**: stale busy members marked as errored on restart, orphaned sessions aborted, undelivered messages redelivered
-- **Spawn rollback**: if the initial prompt fails, the member is cleaned up and the session aborted
+- **Crash recovery**: stale busy members marked as errored on restart, orphaned sessions aborted, orphaned worktrees cleaned up, undelivered messages redelivered
+- **Spawn rollback**: if the initial prompt fails, the member, session, and worktree are all cleaned up
 - **Timeout watchdog**: teammates stuck busy beyond the TTL are automatically timed out and aborted
 - **Shutdown resilience**: abort failures handled gracefully, busy-after-shutdown triggers re-abort
 - **Rate limiting**: token bucket (configurable via `OPENCODE_ENSEMBLE_RATE_LIMIT`, default 10 tokens/sec)

@@ -3,7 +3,7 @@ import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
-import { recoverStaleMembers, recoverUndeliveredMessages } from "./recovery"
+import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
@@ -63,6 +63,11 @@ const plugin: Plugin = async (input) => {
 
   // Redeliver undelivered messages from previous sessions
   recoverUndeliveredMessages(db, client, registry).catch(() => {
+    // Best effort — don't block plugin init
+  })
+
+  // Clean up orphaned worktrees from crashed teams
+  recoverOrphanedWorktrees(db, client).catch(() => {
     // Best effort — don't block plugin init
   })
 
@@ -163,6 +168,7 @@ const plugin: Plugin = async (input) => {
 
       team_spawn: tool({
         description: "Spawn a new teammate that works in parallel. The teammate starts immediately with the given prompt. " +
+          "Each teammate gets their own git worktree for file isolation. " +
           "Teammates work asynchronously and will message you when done. Do not poll for their status.",
         args: {
           name: tool.schema.string().describe("Teammate name (lowercase alphanumeric with hyphens)"),
@@ -170,6 +176,7 @@ const plugin: Plugin = async (input) => {
           prompt: tool.schema.string().describe("Task instructions for the teammate"),
           model: tool.schema.string().optional().describe("Model in provider/model format (optional, uses default)"),
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
+          worktree: tool.schema.boolean().default(true).describe("Create a git worktree for file isolation (default: true, set false for read-only agents)"),
         },
         async execute(args, ctx) {
           const result = await executeTeamSpawn(deps, args, ctx.sessionID)

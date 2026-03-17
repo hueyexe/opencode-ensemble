@@ -182,4 +182,60 @@ describe("team_cleanup", () => {
     const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
     expect(team.status).toBe("archived")
   })
+
+  // --- Worktree cleanup tests ---
+
+  test("removes worktrees and lists branches for merging on cleanup", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/worktree-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("cleaned up")
+    expect(result).toContain("git merge ensemble-my-team-alice")
+
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(1)
+  })
+
+  test("cleanup continues if worktree removal fails", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/worktree-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    deps.client.worktree.remove = async () => { throw new Error("worktree gone") }
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("cleaned up")
+    expect(result).toContain("git merge")
+  })
+
+  test("cleanup with no worktrees does not mention branches", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("cleaned up")
+    expect(result).not.toContain("git merge")
+  })
+
+  test("cleanup lists multiple branches when multiple members have worktrees", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    insertMember(deps.db, "t1", "bob", "sess-bob", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'bob'",
+      ["/tmp/wt-bob", "ensemble-my-team-bob"])
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.registry.register("t1", "bob", "sess-bob")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("ensemble-my-team-alice")
+    expect(result).toContain("ensemble-my-team-bob")
+
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(2)
+  })
 })
