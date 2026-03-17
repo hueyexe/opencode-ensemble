@@ -1,4 +1,4 @@
-# opencode-ensemble
+# OpenCode Ensemble
 
 Agent teams for [OpenCode](https://opencode.ai). Run multiple agents in parallel with messaging, shared tasks, and coordinated execution.
 
