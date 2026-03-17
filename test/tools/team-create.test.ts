@@ -43,14 +43,12 @@ describe("team_create", () => {
       .rejects.toThrow()
   })
 
-  test("response string tells lead not to poll team_status", async () => {
+  test("response is clean without LLM instructions", async () => {
     const result = await executeTeamCreate(deps, { name: "my-team" }, "lead-sess")
-    expect(result).toContain("Teammates will message you when done")
-    expect(result).toContain("do not poll team_status")
-  })
-
-  test("response includes do NOT call any tools instruction", async () => {
-    const result = await executeTeamCreate(deps, { name: "my-team" }, "lead-sess")
-    expect(result).toContain("do NOT call any tools")
+    expect(result).toContain("team_spawn")
+    expect(result).not.toContain("STOP")
+    expect(result).not.toContain("do NOT call")
+    expect(result).not.toContain("do not poll")
+    expect(result).not.toContain("woken automatically")
   })
 })

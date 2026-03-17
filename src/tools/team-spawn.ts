@@ -88,5 +88,5 @@ export async function executeTeamSpawn(
     throw new Error(`Failed to send initial prompt to teammate "${args.name}": ${err instanceof Error ? err.message : String(err)}`)
   }
 
-  return `Teammate "${args.name}" spawned (agent: ${args.agent}). IMPORTANT: Do NOT call any tools after this. Tell the user what you've set up and STOP. You will be woken automatically when teammates message you.`
+  return `Teammate "${args.name}" spawned (agent: ${args.agent}). They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }

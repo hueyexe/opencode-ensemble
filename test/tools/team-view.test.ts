@@ -14,7 +14,7 @@ describe("team_view", () => {
 
   test("calls selectSession with the member's session ID", async () => {
     const result = await executeTeamView(deps, { member: "alice" }, "lead-sess")
-    expect(result).toContain("alice")
+    expect(result).toBe("Switched to alice's session.")
 
     const selectCalls = deps.client.calls.filter(c => c.method === "tui.selectSession")
     expect(selectCalls).toHaveLength(1)
@@ -36,6 +36,14 @@ describe("team_view", () => {
     deps.registry.register("t1", "bob", "sess-bob")
 
     const result = await executeTeamView(deps, { member: "alice" }, "sess-bob")
+    expect(result).toBe("Switched to alice's session.")
+  })
+
+  test("returns fallback message when selectSession fails", async () => {
+    deps.client.tui.selectSession = async () => { throw new Error("not supported") }
+
+    const result = await executeTeamView(deps, { member: "alice" }, "lead-sess")
+    expect(result).toContain("Could not switch")
     expect(result).toContain("alice")
   })
 })

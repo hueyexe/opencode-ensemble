@@ -104,12 +104,10 @@ describe("team_status", () => {
     deps.registry.register("t1", "alice", "sess-alice")
 
     const first = await executeTeamStatus(deps, "lead-sess")
-    expect(first).toContain("[Relay this status")
+    expect(first).toContain("alice")
 
     const second = await executeTeamStatus(deps, "lead-sess")
-    expect(second).toContain("Status unchanged")
-    expect(second).toContain("STOP")
-    expect(second).not.toContain("[Relay this status")
+    expect(second).toBe("No changes since last check.")
   })
 
   test("returns normal status after 30s (manipulate lastCallTime)", async () => {
@@ -117,26 +115,29 @@ describe("team_status", () => {
     deps.registry.register("t1", "alice", "sess-alice")
 
     const first = await executeTeamStatus(deps, "lead-sess")
-    expect(first).toContain("[Relay this status")
+    expect(first).toContain("alice")
 
     // Simulate 31 seconds passing
     lastCallTime.set("t1", Date.now() - 31_000)
 
     const second = await executeTeamStatus(deps, "lead-sess")
-    expect(second).toContain("[Relay this status")
-    expect(second).not.toContain("Status unchanged")
+    expect(second).toContain("alice")
+    expect(second).not.toContain("No changes")
   })
 
-  test("normal response includes relay prefix", async () => {
+  test("normal response contains team info without LLM instructions", async () => {
     const result = await executeTeamStatus(deps, "lead-sess")
-    expect(result).toContain("[Relay this status to the user in your next message:]")
+    expect(result).toContain("Team: my-team")
+    expect(result).not.toContain("Relay")
+    expect(result).not.toContain("STOP")
   })
 
-  test("rate-limited response includes STOP", async () => {
+  test("rate-limited response is clean without LLM instructions", async () => {
     const first = await executeTeamStatus(deps, "lead-sess")
     const second = await executeTeamStatus(deps, "lead-sess")
-    expect(second).toContain("STOP")
-    expect(second).toContain("do not call any more tools")
+    expect(second).toBe("No changes since last check.")
+    expect(second).not.toContain("STOP")
+    expect(second).not.toContain("do not call")
   })
 
   test("rejects if not in a team", async () => {

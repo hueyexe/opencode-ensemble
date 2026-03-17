@@ -1,6 +1,6 @@
 # OpenCode Ensemble
 
-Agent teams for [OpenCode](https://opencode.ai). Run multiple agents in parallel with messaging, shared tasks, and coordinated execution.
+Run a team of parallel AI agents in OpenCode. Each agent gets its own session, context window, and task. They coordinate through messaging and a shared task board.
 
 Built as a plugin on the public OpenCode SDK. Zero internal dependencies.
 

@@ -19,7 +19,7 @@ export async function executeTeamStatus(
   const now = Date.now()
   const last = lastCallTime.get(teamInfo.teamId)
   if (last !== undefined && (now - last) < RATE_LIMIT_MS) {
-    return "Status unchanged. STOP — do not call any more tools. Tell the user you are waiting for teammates to finish. You will be woken automatically when they message you."
+    return "No changes since last check."
   }
   lastCallTime.set(teamInfo.teamId, now)
 
@@ -80,5 +80,5 @@ export async function executeTeamStatus(
     }
   }
 
-  return "[Relay this status to the user in your next message:]\n\n" + lines.join("\n")
+  return lines.join("\n")
 }

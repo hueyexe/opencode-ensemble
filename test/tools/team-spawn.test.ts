@@ -121,15 +121,18 @@ describe("team_spawn", () => {
     expect(text).not.toContain("You have been assigned task")
   })
 
-  test("response string tells lead to stop and wait", async () => {
+  test("response includes task summary without LLM instructions", async () => {
     const result = await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
     }, "lead-sess")
 
-    expect(result).toContain("STOP")
-    expect(result).toContain("woken automatically")
+    expect(result).toContain("alice")
+    expect(result).toContain("Fix the tests")
+    expect(result).not.toContain("STOP")
+    expect(result).not.toContain("Do NOT call")
+    expect(result).not.toContain("woken automatically")
   })
 
   test("rolls back DB, registry, and aborts session if promptAsync fails", async () => {
@@ -155,24 +158,16 @@ describe("team_spawn", () => {
     expect(abortCalls).toHaveLength(1)
   })
 
-  test("response includes Do NOT call any tools after this", async () => {
+  test("response is clean without LLM instructions", async () => {
     const result = await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
     }, "lead-sess")
 
-    expect(result).toContain("Do NOT call any tools after this")
-  })
-
-  test("response includes STOP instruction", async () => {
-    const result = await executeTeamSpawn(deps, {
-      name: "alice",
-      agent: "build",
-      prompt: "Fix the tests",
-    }, "lead-sess")
-
-    expect(result).toContain("STOP")
+    expect(result).toContain("alice")
+    expect(result).not.toContain("Do NOT call any tools")
+    expect(result).not.toContain("STOP")
   })
 
   test("rolls back cleanly even if session.abort fails during promptAsync rollback", async () => {
