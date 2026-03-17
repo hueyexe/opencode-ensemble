@@ -28,6 +28,15 @@ export interface PluginClient {
     abort(options: { path: { id: string } }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>
   }
+  tui: {
+    showToast(options: {
+      title?: string
+      message?: string
+      variant?: "info" | "success" | "warning" | "error"
+      duration?: number
+    }): Promise<unknown>
+    selectSession(options: { sessionID?: string }): Promise<unknown>
+  }
 }
 
 /**

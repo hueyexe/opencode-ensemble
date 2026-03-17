@@ -3,8 +3,9 @@ import { findTeamBySession } from "../types"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
- * Sets status to shutdown_requested and calls abort. The event hook
- * transitions to shutdown when the session becomes idle.
+ * Sets status to shutdown_requested, calls abort, then polls session status.
+ * If the session is already idle after abort, transitions directly to shutdown.
+ * Otherwise the event hook handles the transition when the session goes idle.
  */
 export async function executeTeamShutdown(
   deps: ToolDeps,
@@ -28,6 +29,23 @@ export async function executeTeamShutdown(
 
   // Call abort on the member's session
   await deps.client.session.abort({ path: { id: member.session_id } })
+
+  // Fallback: poll session status after abort. If already idle, transition
+  // directly to shutdown. This handles the case where abort() on an
+  // already-idle session doesn't fire a session.status event.
+  try {
+    const statuses = await deps.client.session.status()
+    const sessionStatus = statuses.data?.[member.session_id]
+    if (!sessionStatus || sessionStatus.type === "idle") {
+      deps.db.run(
+        "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
+        [Date.now(), teamInfo.teamId, args.member]
+      )
+      return `Teammate "${args.member}" has been shut down.`
+    }
+  } catch {
+    // Status poll failed — fall through to eventual consistency
+  }
 
   return `Shutdown requested for ${args.member}. Will complete when current work finishes.`
 }

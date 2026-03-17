@@ -5,6 +5,7 @@ import { createDb } from "./db"
 import { recoverStaleMembers } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
+import { notifyTeamEvent } from "./notify"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamMessage } from "./tools/team-message"
@@ -16,6 +17,8 @@ import { executeTeamTasksAdd } from "./tools/team-tasks-add"
 import { executeTeamTasksComplete } from "./tools/team-tasks-complete"
 import { executeTeamClaim } from "./tools/team-claim"
 import { executeTeamApprovePlan } from "./tools/team-approve-plan"
+import { executeTeamStatus } from "./tools/team-status"
+import { executeTeamView } from "./tools/team-view"
 import type { ToolDeps, PluginClient } from "./types"
 import { TokenBucket } from "./rate-limit"
 
@@ -64,12 +67,23 @@ const plugin: Plugin = async (input) => {
   })
 
   return {
-    // Event hook — drives state machine transitions + descendant tracking
+    // Event hook — drives state machine transitions + descendant tracking + toasts
     async event({ event }) {
       if (event.type === "session.status") {
         const { sessionID, status } = event.properties
         const statusType = status.type as "idle" | "busy" | "retry"
-        handleSessionStatusEvent(db, registry, sessionID, statusType)
+        const transition = handleSessionStatusEvent(db, registry, sessionID, statusType)
+
+        // Fire toast notifications for meaningful transitions
+        if (transition) {
+          if (transition.to === "shutdown") {
+            notifyTeamEvent(client, "shutdown", { memberName: transition.memberName })
+          } else if (transition.to === "ready" && transition.from === "busy") {
+            notifyTeamEvent(client, "completed", { memberName: transition.memberName })
+          } else if (transition.to === "error") {
+            notifyTeamEvent(client, "error", { memberName: transition.memberName })
+          }
+        }
       }
 
       if (event.type === "session.created") {
@@ -91,7 +105,7 @@ const plugin: Plugin = async (input) => {
       }
     },
 
-    // Register all 11 team tools
+    // Register all team tools
     tool: {
       team_create: tool({
         description: "Create a new agent team. You become the team lead. Use this before spawning teammates.",
@@ -99,12 +113,15 @@ const plugin: Plugin = async (input) => {
           name: tool.schema.string().describe("Team name (lowercase alphanumeric with hyphens, 1-64 chars)"),
         },
         async execute(args, ctx) {
-          return executeTeamCreate(deps, args, ctx.sessionID)
+          const result = await executeTeamCreate(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Created team: ${args.name}` })
+          return result
         },
       }),
 
       team_spawn: tool({
-        description: "Spawn a new teammate that works in parallel. The teammate starts immediately with the given prompt.",
+        description: "Spawn a new teammate that works in parallel. The teammate starts immediately with the given prompt. " +
+          "Teammates work asynchronously and will message you when done. Do not poll for their status.",
         args: {
           name: tool.schema.string().describe("Teammate name (lowercase alphanumeric with hyphens)"),
           agent: tool.schema.string().default("build").describe("Agent type (e.g. 'build', 'plan', 'explore')"),
@@ -113,7 +130,9 @@ const plugin: Plugin = async (input) => {
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
         },
         async execute(args, ctx) {
-          return executeTeamSpawn(deps, args, ctx.sessionID)
+          const result = await executeTeamSpawn(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Spawned ${args.name} (${args.agent})` })
+          return result
         },
       }),
 
@@ -124,7 +143,9 @@ const plugin: Plugin = async (input) => {
           text: tool.schema.string().describe("Message content (max 10KB)"),
         },
         async execute(args, ctx) {
-          return executeTeamMessage(deps, args, ctx.sessionID)
+          const result = await executeTeamMessage(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Message → ${args.to}` })
+          return result
         },
       }),
 
@@ -134,15 +155,20 @@ const plugin: Plugin = async (input) => {
           text: tool.schema.string().describe("Message content (max 10KB)"),
         },
         async execute(args, ctx) {
-          return executeTeamBroadcast(deps, args, ctx.sessionID)
+          const result = await executeTeamBroadcast(deps, args, ctx.sessionID)
+          ctx.metadata({ title: "Broadcast to team" })
+          return result
         },
       }),
 
       team_tasks_list: tool({
-        description: "View the shared team task board. Shows all tasks with status, assignee, and dependencies so teammates can coordinate work.",
+        description: "View the shared team task board. Use this to check task status, not to wait for teammates. Teammates will message you when done.",
         args: {},
         async execute(_args, ctx) {
-          return executeTeamTasksList(deps, ctx.sessionID)
+          const result = await executeTeamTasksList(deps, ctx.sessionID)
+          const count = result === "No tasks on the board." ? 0 : result.split("\n").length
+          ctx.metadata({ title: count > 0 ? `Task board (${count} tasks)` : "Task board (empty)" })
+          return result
         },
       }),
 
@@ -156,7 +182,9 @@ const plugin: Plugin = async (input) => {
           })).describe("Tasks to add"),
         },
         async execute(args, ctx) {
-          return executeTeamTasksAdd(deps, args, ctx.sessionID)
+          const result = await executeTeamTasksAdd(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Added ${args.tasks.length} task${args.tasks.length !== 1 ? "s" : ""}` })
+          return result
         },
       }),
 
@@ -166,7 +194,9 @@ const plugin: Plugin = async (input) => {
           task_id: tool.schema.string().describe("ID of the task to mark complete"),
         },
         async execute(args, ctx) {
-          return executeTeamTasksComplete(deps, args, ctx.sessionID)
+          const result = await executeTeamTasksComplete(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Completed task` })
+          return result
         },
       }),
 
@@ -176,7 +206,9 @@ const plugin: Plugin = async (input) => {
           task_id: tool.schema.string().describe("ID of the task to claim"),
         },
         async execute(args, ctx) {
-          return executeTeamClaim(deps, args, ctx.sessionID)
+          const result = await executeTeamClaim(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Claimed task` })
+          return result
         },
       }),
 
@@ -188,7 +220,9 @@ const plugin: Plugin = async (input) => {
           feedback: tool.schema.string().optional().describe("Feedback message (optional)"),
         },
         async execute(args, ctx) {
-          return executeTeamApprovePlan(deps, args, ctx.sessionID)
+          const result = await executeTeamApprovePlan(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Plan ${args.approved ? "approved" : "rejected"}: ${args.member}` })
+          return result
         },
       }),
 
@@ -198,7 +232,9 @@ const plugin: Plugin = async (input) => {
           member: tool.schema.string().describe("Teammate name to shut down"),
         },
         async execute(args, ctx) {
-          return executeTeamShutdown(deps, args, ctx.sessionID)
+          const result = await executeTeamShutdown(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Shutdown → ${args.member}` })
+          return result
         },
       }),
 
@@ -208,7 +244,35 @@ const plugin: Plugin = async (input) => {
           force: tool.schema.boolean().default(false).describe("Force cleanup even if members are active (will abort them)"),
         },
         async execute(args, ctx) {
-          return executeTeamCleanup(deps, args, ctx.sessionID)
+          const result = await executeTeamCleanup(deps, args, ctx.sessionID)
+          ctx.metadata({ title: "Team cleaned up" })
+          return result
+        },
+      }),
+
+      team_status: tool({
+        description: "View team members with their current status, agent type, and session IDs. " +
+          "Use this to check who is working, idle, or shut down. Includes a task summary.",
+        args: {},
+        async execute(_args, ctx) {
+          const result = await executeTeamStatus(deps, ctx.sessionID)
+          const members = deps.db.query("SELECT status FROM team_member WHERE team_id IN (SELECT id FROM team WHERE lead_session_id = ? OR id IN (SELECT team_id FROM team_member WHERE session_id = ?))").all(ctx.sessionID, ctx.sessionID) as Array<{ status: string }>
+          const busy = members.filter(m => m.status === "busy").length
+          ctx.metadata({ title: `Team: ${members.length} members (${busy} working)` })
+          return result
+        },
+      }),
+
+      team_view: tool({
+        description: "Navigate the TUI to a teammate's session so you can see what they are doing. " +
+          "Use the session picker (ctrl+p) to return to the lead session.",
+        args: {
+          member: tool.schema.string().describe("Teammate name to view"),
+        },
+        async execute(args, ctx) {
+          const result = await executeTeamView(deps, args, ctx.sessionID)
+          ctx.metadata({ title: `Viewing ${args.member}` })
+          return result
         },
       }),
     },

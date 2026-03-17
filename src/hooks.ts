@@ -3,42 +3,55 @@ import type { MemberRegistry, DescendantTracker } from "./state"
 
 const TEAM_TOOL_PREFIX = "team_"
 
+/** Result of a session status event — tells the caller what transition happened. */
+export interface StatusTransition {
+  memberName: string
+  teamId: string
+  from: string
+  to: string
+}
+
 /**
  * Handle a session.status event. Updates member status and execution_status
  * in SQLite based on the new session status.
  * Ignores events for unknown sessions or archived teams.
+ * Returns the transition if one occurred, for toast notifications.
  */
 export function handleSessionStatusEvent(
   db: Database,
   registry: MemberRegistry,
   sessionId: string,
   status: "idle" | "busy" | "retry",
-): void {
+): StatusTransition | undefined {
   const entry = registry.getBySession(sessionId)
-  if (!entry) return
+  if (!entry) return undefined
 
   // Check if team is archived — if so, silently ignore
   const team = db.query("SELECT status FROM team WHERE id = ?").get(entry.teamId) as { status: string } | null
-  if (!team || team.status === "archived") return
+  if (!team || team.status === "archived") return undefined
 
   const member = db.query("SELECT status, execution_status FROM team_member WHERE team_id = ? AND name = ?")
     .get(entry.teamId, entry.memberName) as { status: string; execution_status: string } | null
-  if (!member) return
+  if (!member) return undefined
 
   if (status === "idle") {
     const newStatus = member.status === "shutdown_requested" ? "shutdown" : "ready"
+    if (member.status === newStatus) return undefined
     db.run(
       "UPDATE team_member SET status = ?, execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
       [newStatus, Date.now(), entry.teamId, entry.memberName]
     )
+    return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: newStatus }
   } else if (status === "busy") {
     if (member.status === "ready" || member.status === "error") {
       db.run(
         "UPDATE team_member SET status = 'busy', execution_status = 'running', time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), entry.teamId, entry.memberName]
       )
+      return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "busy" }
     }
   }
+  return undefined
 }
 
 /**
