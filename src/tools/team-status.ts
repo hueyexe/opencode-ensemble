@@ -45,5 +45,28 @@ export async function executeTeamStatus(
     lines.push(`Tasks: ${tasks.length} total (${parts.join(", ")})`)
   }
 
+  // Fire a toast so the user (not just the model) sees the status summary
+  if (members.length > 0) {
+    const memberParts = members.map(m => {
+      const label = m.status === "busy" ? "working" : m.status === "ready" ? "idle" : m.status
+      return `${m.name} [${label}]`
+    })
+    let toastMsg = memberParts.join(", ")
+    if (tasks.length > 0) {
+      const completed = tasks.filter(t => t.status === "completed").length
+      toastMsg += ` | Tasks: ${completed}/${tasks.length} done`
+    }
+    try {
+      await deps.client.tui.showToast({
+        title: "Team",
+        message: toastMsg,
+        variant: "info",
+        duration: 4000,
+      })
+    } catch {
+      // TUI may not be available — silently ignore
+    }
+  }
+
   return lines.join("\n")
 }

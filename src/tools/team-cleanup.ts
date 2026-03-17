@@ -17,7 +17,7 @@ export async function executeTeamCleanup(
   const members = deps.db.query("SELECT name, session_id, status FROM team_member WHERE team_id = ?")
     .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string }>
 
-  const active = members.filter(m => m.status !== "shutdown")
+  const active = members.filter(m => m.status !== "shutdown" && m.status !== "shutdown_requested" && m.status !== "error")
 
   if (active.length > 0 && !args.force) {
     const names = active.map(m => m.name).join(", ")

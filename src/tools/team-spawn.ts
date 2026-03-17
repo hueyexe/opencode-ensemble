@@ -54,8 +54,9 @@ export async function executeTeamSpawn(
     "- team_claim: claim a pending task from the shared board",
     "",
     "When you finish your task:",
-    "1. Send ONE message to the lead with your findings using team_message.",
-    "2. STOP. Do not send follow-up confirmations, status updates, or 'standing by' messages.",
+    "1. If you claimed a task, mark it complete using team_tasks_complete.",
+    "2. Send ONE message to the lead with your findings using team_message.",
+    "3. STOP. Do not send follow-up confirmations, status updates, or 'standing by' messages.",
     "",
     "If you are blocked, send ONE message to the lead describing the specific blocker.",
     "",
@@ -63,15 +64,21 @@ export async function executeTeamSpawn(
     "",
     "Your task:",
     args.prompt,
-  ].join("\n")
+  ]
+
+  if (args.claim_task) {
+    context.push("", `You have been assigned task ${args.claim_task}. Mark it complete when done.`)
+  }
+
+  const contextStr = context.join("\n")
 
   // Fire-and-forget: send prompt to teammate session
   // OQ-1: assuming promptAsync queues when session is busy
   // OQ-10: assuming fresh session accepts promptAsync without session.init()
   await deps.client.session.promptAsync({
     path: { id: childSessionId },
-    body: { parts: [{ type: "text", text: context }] },
+    body: { parts: [{ type: "text", text: contextStr }] },
   })
 
-  return `Teammate "${args.name}" spawned (session: ${childSessionId}, agent: ${args.agent}). Working on: ${args.prompt.slice(0, 100)}${args.prompt.length > 100 ? "..." : ""}`
+  return `Teammate "${args.name}" spawned (session: ${childSessionId}, agent: ${args.agent}). Working on: ${args.prompt.slice(0, 100)}${args.prompt.length > 100 ? "..." : ""} Teammates will message you when done. Do not poll team_status to check.`
 }
