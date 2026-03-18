@@ -297,3 +297,150 @@ describe("team_spawn", () => {
     expect(text).not.toContain("worktree")
   })
 })
+
+describe("team_spawn — plan approval", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("sets plan_approval='pending' in DB when plan_approval: true", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Refactor auth",
+      plan_approval: true,
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT plan_approval FROM team_member WHERE name = ?").get("alice") as { plan_approval: string }
+    expect(row.plan_approval).toBe("pending")
+  })
+
+  test("sets plan_approval='none' in DB when plan_approval is not set", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT plan_approval FROM team_member WHERE name = ?").get("alice") as { plan_approval: string }
+    expect(row.plan_approval).toBe("none")
+  })
+
+  test("context message includes PLAN MODE instructions when plan_approval: true", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Refactor auth",
+      plan_approval: true,
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    expect(text).toContain("PLAN MODE")
+    expect(text).toContain("Do NOT write or modify any files")
+    expect(text).toContain("approval")
+  })
+
+  test("context message does NOT include PLAN MODE when plan_approval is false/absent", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+    const text = body.parts[0]!.text
+
+    expect(text).not.toContain("PLAN MODE")
+  })
+
+  test("return message includes plan mode indicator when plan_approval: true", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Refactor auth",
+      plan_approval: true,
+    }, "lead-sess")
+
+    expect(result).toContain("plan mode")
+  })
+})
+
+describe("team_spawn — AGENTS.md loading", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("includes AGENTS.md content in context message when file exists", async () => {
+    // Create a temporary AGENTS.md in the test directory
+    const tmpDir = await import("node:fs/promises").then(fs => fs.mkdtemp("/tmp/ensemble-test-"))
+    const agentsPath = `${tmpDir}/AGENTS.md`
+    await Bun.write(agentsPath, "# Test Guidelines\nUse TypeScript strict mode.")
+    deps.directory = tmpDir
+
+    try {
+      await executeTeamSpawn(deps, {
+        name: "alice",
+        agent: "build",
+        prompt: "Fix tests",
+      }, "lead-sess")
+
+      const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+      const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+      const text = body.parts[0]!.text
+
+      expect(text).toContain("Project guidelines (from AGENTS.md)")
+      expect(text).toContain("Use TypeScript strict mode")
+    } finally {
+      await import("node:fs/promises").then(fs => fs.rm(tmpDir, { recursive: true }))
+    }
+  })
+
+  test("does not error when AGENTS.md does not exist", async () => {
+    deps.directory = "/tmp/nonexistent-dir-ensemble-test"
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+  })
+
+  test("truncates AGENTS.md content to 2000 chars", async () => {
+    const tmpDir = await import("node:fs/promises").then(fs => fs.mkdtemp("/tmp/ensemble-test-"))
+    const agentsPath = `${tmpDir}/AGENTS.md`
+    const longContent = "x".repeat(3000)
+    await Bun.write(agentsPath, longContent)
+    deps.directory = tmpDir
+
+    try {
+      await executeTeamSpawn(deps, {
+        name: "alice",
+        agent: "build",
+        prompt: "Fix tests",
+      }, "lead-sess")
+
+      const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+      const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
+      const text = body.parts[0]!.text
+
+      expect(text).toContain("...(truncated)")
+      // The AGENTS.md portion should be at most 2000 chars + truncation marker
+      expect(text).not.toContain("x".repeat(2001))
+    } finally {
+      await import("node:fs/promises").then(fs => fs.rm(tmpDir, { recursive: true }))
+    }
+  })
+})

@@ -13,8 +13,7 @@ describe("team_shutdown", () => {
     deps.registry.register("t1", "alice", "sess-alice")
   })
 
-  test("sets member to shutdown_requested and calls abort", async () => {
-    // Mock status returns busy — session still running
+  test("busy member with default force=false sends shutdown message, no abort", async () => {
     deps.client.session.status = async () => {
       deps.client.calls.push({ method: "session.status", args: [] })
       return { data: { "sess-alice": { type: "busy" } } }
@@ -24,34 +23,32 @@ describe("team_shutdown", () => {
     expect(result).toContain("Shutdown requested")
     expect(result).toContain("alice")
 
+    // Should send promptAsync with shutdown message, NOT abort
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
     const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
-    expect(abortCalls).toHaveLength(1)
+    expect(abortCalls).toHaveLength(0)
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    expect(row.status).toBe("shutdown_requested")
   })
 
-  test("transitions to shutdown when session is already idle after abort", async () => {
-    // Mock status to return idle for alice's session
+  test("idle member is aborted immediately, no promptAsync", async () => {
     deps.client.session.status = async () => {
       deps.client.calls.push({ method: "session.status", args: [] })
       return { data: { "sess-alice": { type: "idle" } } }
     }
 
-    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+    const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+    expect(result).toContain("shut down")
+
+    const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(1)
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
 
     const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
     expect(row.status).toBe("shutdown")
-  })
-
-  test("stays shutdown_requested when session is still busy after abort", async () => {
-    // Mock status to return busy for alice's session
-    deps.client.session.status = async () => {
-      deps.client.calls.push({ method: "session.status", args: [] })
-      return { data: { "sess-alice": { type: "busy" } } }
-    }
-
-    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
-
-    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
-    expect(row.status).toBe("shutdown_requested")
   })
 
   test("rejects if caller is not the lead", async () => {
@@ -73,32 +70,83 @@ describe("team_shutdown", () => {
       .rejects.toThrow("already shut down")
   })
 
-  test("handles abort failure gracefully and still completes shutdown", async () => {
+  test("handles abort failure gracefully on idle member", async () => {
+    // Status says idle, so we try to abort, but abort fails
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "idle" } } }
+    }
     deps.client.session.abort = async () => { throw new Error("session gone") }
 
     const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
-    // Session is gone, so status poll finds nothing → transitions to shutdown
+    // Should still transition to shutdown since member was idle
     expect(result).toContain("shut down")
 
     const row = deps.db.query("SELECT status FROM team_member WHERE name = 'alice'").get() as Record<string, string>
     expect(row.status).toBe("shutdown")
-
-    // Toast warning should have been fired for the abort failure
-    const toastCalls = deps.client.calls.filter(c => c.method === "tui.showToast")
-    expect(toastCalls.length).toBeGreaterThanOrEqual(1)
-    const msg = (toastCalls[0]!.args[0] as Record<string, unknown>).message as string
-    expect(msg).toContain("alice")
   })
 
-  test("handles abort failure and stays shutdown_requested when status poll also fails", async () => {
-    deps.client.session.abort = async () => { throw new Error("session gone") }
-    deps.client.session.status = async () => { throw new Error("status also failed") }
+  test("falls back to shutdown_requested when status poll fails", async () => {
+    deps.client.session.status = async () => { throw new Error("status failed") }
 
     const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+    // Can't determine idle/busy, so treat as busy → graceful shutdown
     expect(result).toContain("Shutdown requested")
 
     const row = deps.db.query("SELECT status FROM team_member WHERE name = 'alice'").get() as Record<string, string>
     expect(row.status).toBe("shutdown_requested")
+  })
+
+  test("busy member with force=true aborts immediately, no promptAsync", async () => {
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "busy" } } }
+    }
+
+    const result = await executeTeamShutdown(deps, { member: "alice", force: true }, "lead-sess")
+    expect(result).toContain("shut down")
+
+    const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(1)
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    expect(row.status).toBe("shutdown")
+  })
+
+  test("member already shutdown_requested → second call forces abort", async () => {
+    // Set alice to shutdown_requested (as if first graceful call already happened)
+    deps.db.run("UPDATE team_member SET status = 'shutdown_requested' WHERE name = 'alice'")
+
+    const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+    expect(result).toContain("Force shut down")
+    expect(result).toContain("alice")
+
+    const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(1)
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    expect(row.status).toBe("shutdown")
+  })
+
+  test("shutdown message content contains [Shutdown requested] and instructions", async () => {
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "busy" } } }
+    }
+
+    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+    const body = (promptCalls[0]!.args[0] as Record<string, unknown>).body as Record<string, unknown>
+    const parts = body.parts as Array<{ text: string }>
+    const text = parts[0]!.text
+    expect(text).toContain("[Shutdown requested]")
+    expect(text).toContain("team_message")
   })
 })
 

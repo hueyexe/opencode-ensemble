@@ -1,6 +1,6 @@
 {
   "name": "@hueyexe/opencode-ensemble",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Agent teams for OpenCode — parallel agents with peer-to-peer communication, shared tasks, and coordinated execution",
   "module": "src/index.ts",
   "main": "dist/index.js",
@@ -38,7 +38,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.2.26",
-    "@opencode-ai/sdk": "^1.2.26"
+    "@opencode-ai/plugin": "^1.2.27",
+    "@opencode-ai/sdk": "^1.2.27"
   }
 }

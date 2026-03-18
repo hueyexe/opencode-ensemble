@@ -172,3 +172,75 @@ describe("team_broadcast", () => {
     expect(rows[0]!.delivered).toBe(1)
   })
 })
+
+describe("team_message — plan approval", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.registry.register("t1", "bob", "sess-bob")
+  })
+
+  test("approve=true flips plan_approval from pending to approved and prepends tag", async () => {
+    deps.db.run("UPDATE team_member SET plan_approval = 'pending' WHERE team_id = ? AND name = ?", ["t1", "alice"])
+
+    const result = await executeTeamMessage(deps, { to: "alice", text: "looks good", approve: true }, "lead-sess")
+    expect(result).toContain("alice")
+
+    // Check DB was updated
+    const row = deps.db.query("SELECT plan_approval FROM team_member WHERE team_id = ? AND name = ?").get("t1", "alice") as { plan_approval: string }
+    expect(row.plan_approval).toBe("approved")
+
+    // Check message content was prepended
+    const msgs = deps.db.query("SELECT content FROM team_message WHERE team_id = ?").all("t1") as Array<{ content: string }>
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.content).toContain("[Plan Approved]")
+    expect(msgs[0]!.content).toContain("looks good")
+  })
+
+  test("reject flips plan_approval from pending to rejected and prepends reason", async () => {
+    deps.db.run("UPDATE team_member SET plan_approval = 'pending' WHERE team_id = ? AND name = ?", ["t1", "bob"])
+
+    const result = await executeTeamMessage(deps, { to: "bob", text: "try again", reject: "needs more detail" }, "lead-sess")
+    expect(result).toContain("bob")
+
+    const row = deps.db.query("SELECT plan_approval FROM team_member WHERE team_id = ? AND name = ?").get("t1", "bob") as { plan_approval: string }
+    expect(row.plan_approval).toBe("rejected")
+
+    const msgs = deps.db.query("SELECT content FROM team_message WHERE team_id = ?").all("t1") as Array<{ content: string }>
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.content).toContain("[Plan Rejected: needs more detail]")
+    expect(msgs[0]!.content).toContain("try again")
+  })
+
+  test("approve errors if recipient has plan_approval=none", async () => {
+    // plan_approval defaults to 'none' from insertMember
+    await expect(executeTeamMessage(deps, { to: "alice", text: "ok", approve: true }, "lead-sess"))
+      .rejects.toThrow("not in plan approval mode")
+  })
+
+  test("approve errors if recipient has plan_approval=approved (already approved)", async () => {
+    deps.db.run("UPDATE team_member SET plan_approval = 'approved' WHERE team_id = ? AND name = ?", ["t1", "alice"])
+
+    await expect(executeTeamMessage(deps, { to: "alice", text: "ok", approve: true }, "lead-sess"))
+      .rejects.toThrow("not in plan approval mode")
+  })
+
+  test("both approve and reject set returns error", async () => {
+    deps.db.run("UPDATE team_member SET plan_approval = 'pending' WHERE team_id = ? AND name = ?", ["t1", "alice"])
+
+    await expect(executeTeamMessage(deps, { to: "alice", text: "ok", approve: true, reject: "no" }, "lead-sess"))
+      .rejects.toThrow("Cannot both approve and reject")
+  })
+
+  test("only lead can approve — member trying to approve errors", async () => {
+    deps.db.run("UPDATE team_member SET plan_approval = 'pending' WHERE team_id = ? AND name = ?", ["t1", "alice"])
+
+    await expect(executeTeamMessage(deps, { to: "alice", text: "ok", approve: true }, "sess-bob"))
+      .rejects.toThrow("Only the lead can approve or reject")
+  })
+})

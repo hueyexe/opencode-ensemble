@@ -140,6 +140,33 @@ describe("team_status", () => {
     expect(second).not.toContain("do not call")
   })
 
+  test("shows plan_approval when not none", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.db.run("UPDATE team_member SET plan_approval = 'pending' WHERE team_id = ? AND name = ?", ["t1", "alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("alice")
+    expect(result).toContain("plan: pending")
+  })
+
+  test("shows plan: approved for approved members", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.db.run("UPDATE team_member SET plan_approval = 'approved' WHERE team_id = ? AND name = ?", ["t1", "alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("plan: approved")
+  })
+
+  test("does not show plan info when plan_approval is none", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).not.toContain("plan:")
+  })
+
   test("rejects if not in a team", async () => {
     await expect(executeTeamStatus(deps, "random-sess"))
       .rejects.toThrow("not in a team")

@@ -73,6 +73,9 @@ export const MIGRATIONS: string[] = [
   // Migration 3: Add worktree columns to team_member for git worktree isolation
   `ALTER TABLE team_member ADD COLUMN worktree_dir TEXT;
    ALTER TABLE team_member ADD COLUMN worktree_branch TEXT;`,
+  // Migration 4: Add plan_approval column to team_member for plan-before-build workflow
+  `ALTER TABLE team_member ADD COLUMN plan_approval TEXT NOT NULL DEFAULT 'none'
+     CHECK(plan_approval IN ('none', 'pending', 'approved', 'rejected'));`,
 ]
 
 /**

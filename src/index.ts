@@ -7,6 +7,8 @@ import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktre
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
+import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
+import { findTeamBySession } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamMessage } from "./tools/team-message"
@@ -47,7 +49,7 @@ const plugin: Plugin = async (input) => {
 
   // Build shared tool dependencies
   const client = input.client as unknown as PluginClient
-  const deps: ToolDeps = { db, registry, tracker, client }
+  const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory }
 
   // Run recovery on init — mark stale busy members as error + abort orphaned sessions
   const recovery = await recoverStaleMembers(db, client)
@@ -152,6 +154,42 @@ const plugin: Plugin = async (input) => {
       }
     },
 
+    // System prompt injection — keeps lead aware of team state, reminds teammates of role
+    "experimental.chat.system.transform": async (input, output) => {
+      if (!input.sessionID) return
+      const teamInfo = findTeamBySession(db, registry, input.sessionID)
+      if (!teamInfo) return
+      const prompt = teamInfo.role === "lead"
+        ? buildLeadSystemPrompt(db, teamInfo.teamId)
+        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName!)
+      output.system.push(prompt)
+    },
+
+    // Compaction safety — preserves team context when sessions get long
+    "experimental.session.compacting": async (input, output) => {
+      const teamInfo = findTeamBySession(db, registry, input.sessionID)
+      if (!teamInfo) return
+      const context = buildTeamCompactionContext(db, teamInfo.teamId, teamInfo.role, teamInfo.memberName)
+      output.context.push(context)
+    },
+
+    // Team-aware shell environment for scripts and hooks
+    "shell.env": async (input, output) => {
+      if (!input.sessionID) return
+      const teamInfo = findTeamBySession(db, registry, input.sessionID)
+      if (!teamInfo) return
+      output.env.ENSEMBLE_TEAM = teamInfo.teamName
+      output.env.ENSEMBLE_ROLE = teamInfo.role
+      if (teamInfo.memberName) {
+        output.env.ENSEMBLE_MEMBER = teamInfo.memberName
+        const member = db.query("SELECT worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
+          .get(teamInfo.teamId, teamInfo.memberName) as { worktree_branch: string | null } | null
+        if (member?.worktree_branch) {
+          output.env.ENSEMBLE_BRANCH = member.worktree_branch
+        }
+      }
+    },
+
     // Register all team tools
     tool: {
       team_create: tool({
@@ -177,6 +215,7 @@ const plugin: Plugin = async (input) => {
           model: tool.schema.string().optional().describe("Model in provider/model format (optional, uses default)"),
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
           worktree: tool.schema.boolean().default(true).describe("Create a git worktree for file isolation (default: true, set false for read-only agents)"),
+          plan_approval: tool.schema.boolean().default(false).describe("Require teammate to send a plan for approval before writing files (default: false)"),
         },
         async execute(args, ctx) {
           const result = await executeTeamSpawn(deps, args, ctx.sessionID)
@@ -190,6 +229,8 @@ const plugin: Plugin = async (input) => {
         args: {
           to: tool.schema.string().describe("Recipient name ('lead' or teammate name)"),
           text: tool.schema.string().describe("Message content (max 10KB)"),
+          approve: tool.schema.boolean().optional().describe("Approve a teammate's plan (only when recipient has plan_approval='pending')"),
+          reject: tool.schema.string().optional().describe("Reject a teammate's plan with reason (only when recipient has plan_approval='pending')"),
         },
         async execute(args, ctx) {
           const result = await executeTeamMessage(deps, args, ctx.sessionID)
@@ -274,9 +315,11 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_shutdown: tool({
-        description: "Request a teammate to shut down. The teammate finishes current work then stops.",
+        description: "Request a teammate to shut down. The teammate finishes current work then stops. " +
+          "Pass force: true to abort immediately without waiting.",
         args: {
           member: tool.schema.string().describe("Teammate name to shut down"),
+          force: tool.schema.boolean().default(false).describe("Force immediate abort without waiting for current work to finish"),
         },
         async execute(args, ctx) {
           const result = await executeTeamShutdown(deps, args, ctx.sessionID)

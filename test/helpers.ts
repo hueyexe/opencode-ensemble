@@ -75,6 +75,7 @@ export function setupDeps(db?: Database): ToolDeps & { client: ReturnType<typeof
     registry: new MemberRegistry(),
     tracker: new DescendantTracker(),
     client: mockClient(),
+    directory: "/tmp/test-project",
   }
 }
 

@@ -187,6 +187,28 @@ OPENCODE_ENSEMBLE_TIMEOUT=3600000
 OPENCODE_ENSEMBLE_TIMEOUT=0
 ```
 
+### Best practices
+
+- Start with 2-4 teammates for most tasks. More agents means more coordination overhead.
+- Give each teammate 3-5 specific, self-contained tasks. Vague prompts produce vague results.
+- Start with research before implementation — spawn an explore agent first to understand the codebase, then spawn build agents with that context.
+- Use `worktree: false` for read-only agents (research, review, code analysis). They don't need file isolation.
+- Use `plan_approval: true` for risky changes — the teammate sends a plan first, you review and approve before they write any code.
+- Let the lead coordinate. Don't micromanage teammates — they message you when done or when they're blocked.
+- After spawning, tell the user what you've set up and wait for results. Don't poll `team_status` in a loop.
+
+### How this differs from Claude Code agent teams
+
+Claude Code has built-in agent teams. This plugin takes the same coordination model (shared tasks, peer messaging, lead coordination) and adds:
+
+- **Git worktree isolation by default** — each teammate gets their own branch, no merge conflicts between parallel agents
+- **System prompt injection** — the lead's system prompt is updated with team state (member statuses, task progress) so it stays aware across turns
+- **Compaction safety** — team context is preserved when sessions get long and OpenCode compacts the conversation
+- **Team-aware shell environment** — teammate shells get `ENSEMBLE_TEAM`, `ENSEMBLE_MEMBER`, `ENSEMBLE_ROLE`, and `ENSEMBLE_BRANCH` variables
+- **Graceful shutdown** — teammates finish their current work before stopping, with a force flag for emergencies
+- **Plan approval mode** — review teammate plans before they write code, useful for risky or unfamiliar changes
+- **Works today as a plugin** — no waiting for upstream features, install and go
+
 ## Development
 
 ```bash

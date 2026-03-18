@@ -11,6 +11,8 @@ export interface ToolDeps {
   tracker: DescendantTracker
   /** The OpenCode SDK client — used for session.create, promptAsync, abort, etc. */
   client: PluginClient
+  /** The project root directory — used for reading AGENTS.md and other project files. */
+  directory: string
 }
 
 /**

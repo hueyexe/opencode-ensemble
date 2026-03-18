@@ -3,13 +3,16 @@ import { findTeamBySession } from "../types"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
- * Sets status to shutdown_requested, calls abort, then polls session status.
- * If the session is already idle after abort, transitions directly to shutdown.
- * Otherwise the event hook handles the transition when the session goes idle.
+ *
+ * Graceful negotiation flow:
+ * - If member is already shutdown_requested, treat as force (second call).
+ * - If member is idle or force=true, abort immediately and set status='shutdown'.
+ * - If member is busy and force=false, send a shutdown message via promptAsync
+ *   and set status='shutdown_requested'. The member finishes work and reports back.
  */
 export async function executeTeamShutdown(
   deps: ToolDeps,
-  args: { member: string },
+  args: { member: string; force?: boolean },
   sessionId: string,
 ): Promise<string> {
   const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
@@ -21,44 +24,72 @@ export async function executeTeamShutdown(
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
   if (member.status === "shutdown") throw new Error(`Teammate "${args.member}" is already shut down`)
 
-  // Set to shutdown_requested
-  deps.db.run(
-    "UPDATE team_member SET status = 'shutdown_requested', time_updated = ? WHERE team_id = ? AND name = ?",
-    [Date.now(), teamInfo.teamId, args.member]
-  )
+  const force = args.force ?? false
 
-  // Call abort on the member's session (best effort)
-  try {
-    await deps.client.session.abort({ path: { id: member.session_id } })
-  } catch {
-    // Abort failed — session may already be gone. Fire a warning toast.
-    try {
-      await deps.client.tui.showToast({
-        title: "Team",
-        message: `Failed to abort ${args.member} session — will rely on event hook`,
-        variant: "warning",
-        duration: 4000,
-      })
-    } catch { /* TUI may not be available */ }
+  // Second call on an already-requested member → force abort
+  if (member.status === "shutdown_requested") {
+    await abortAndShutdown(deps, teamInfo.teamId, args.member, member.session_id)
+    const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
+    return `Force shut down "${args.member}".${branchInfo}`
   }
 
-  // Fallback: poll session status after abort. If already idle, transition
-  // directly to shutdown. This handles the case where abort() on an
-  // already-idle session doesn't fire a session.status event.
+  // Determine if member is idle or busy
+  let isIdle = false
   try {
     const statuses = await deps.client.session.status()
     const sessionStatus = statuses.data?.[member.session_id]
-    if (!sessionStatus || sessionStatus.type === "idle") {
-      deps.db.run(
-        "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
-        [Date.now(), teamInfo.teamId, args.member]
-      )
-      const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
-      return `Teammate "${args.member}" has been shut down.${branchInfo}`
-    }
+    isIdle = !sessionStatus || sessionStatus.type === "idle"
   } catch {
-    // Status poll failed — fall through to eventual consistency
+    // Status poll failed — assume busy, fall through to graceful path
   }
 
-  return `Shutdown requested for ${args.member}. Will complete when current work finishes.`
+  if (isIdle || force) {
+    await abortAndShutdown(deps, teamInfo.teamId, args.member, member.session_id)
+    const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
+    return `Teammate "${args.member}" has been shut down.${branchInfo}`
+  }
+
+  // Busy + not force → graceful: send shutdown message, set shutdown_requested
+  try {
+    await deps.client.session.promptAsync({
+      path: { id: member.session_id },
+      body: {
+        parts: [{
+          type: "text",
+          text: `[Shutdown requested]: The lead has requested you shut down. Finish your current task, send your final findings to the lead via team_message, then stop.`,
+        }],
+      },
+    })
+  } catch {
+    // promptAsync failed — best effort
+  }
+
+  deps.db.run(
+    "UPDATE team_member SET status = 'shutdown_requested', time_updated = ? WHERE team_id = ? AND name = ?",
+    [Date.now(), teamInfo.teamId, args.member],
+  )
+
+  return `Shutdown requested for ${args.member}. They will finish current work and shut down. Call team_shutdown with force: true to abort immediately.`
+}
+
+/**
+ * Abort a member's session and set their status to shutdown.
+ * Best-effort: if abort fails, we still mark them as shutdown.
+ */
+async function abortAndShutdown(
+  deps: ToolDeps,
+  teamId: string,
+  memberName: string,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await deps.client.session.abort({ path: { id: sessionId } })
+  } catch {
+    // Abort failed — session may already be gone
+  }
+
+  deps.db.run(
+    "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
+    [Date.now(), teamId, memberName],
+  )
 }

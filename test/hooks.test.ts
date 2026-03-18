@@ -3,6 +3,8 @@ import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
 import { MemberRegistry, DescendantTracker } from "../src/state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "../src/hooks"
+import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
+import { findTeamBySession } from "../src/types"
 
 function setupDb(): Database {
   const db = new Database(":memory:")
@@ -348,5 +350,160 @@ describe("checkToolIsolation", () => {
 
     // A tool named "my_team_helper" should not be blocked — only "team_*" prefix matters
     expect(() => checkToolIsolation(registry, tracker, "my_team_helper", "sub-agent")).not.toThrow()
+  })
+})
+
+// --- Hook integration tests ---
+// These test the logic that the hooks in index.ts wire together:
+// findTeamBySession → buildLeadSystemPrompt / buildTeammateSystemPrompt / buildTeamCompactionContext
+
+describe("experimental.chat.system.transform logic", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("injects lead system prompt for lead session", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "lead-sess")
+    expect(teamInfo).toBeTruthy()
+    expect(teamInfo!.role).toBe("lead")
+
+    const prompt = buildLeadSystemPrompt(db, teamInfo!.teamId)
+    expect(prompt).toContain("leading team")
+    expect(prompt).toContain("my-team")
+    expect(prompt).toContain("alice")
+    expect(prompt).toContain("wait for messages")
+  })
+
+  test("injects teammate system prompt for member session", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+    expect(teamInfo).toBeTruthy()
+    expect(teamInfo!.role).toBe("member")
+
+    const prompt = buildTeammateSystemPrompt(db, teamInfo!.teamId, teamInfo!.memberName!)
+    expect(prompt).toContain("alice")
+    expect(prompt).toContain("my-team")
+    expect(prompt).toContain("team_message")
+  })
+
+  test("returns undefined for non-team session (no injection)", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "random-sess")
+    expect(teamInfo).toBeUndefined()
+  })
+})
+
+describe("experimental.session.compacting logic", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("produces compaction context for lead", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "lead-sess")
+    const context = buildTeamCompactionContext(db, teamInfo!.teamId, teamInfo!.role, teamInfo!.memberName)
+    expect(context).toContain("lead")
+    expect(context).toContain("my-team")
+    expect(context).toContain("alice")
+  })
+
+  test("produces compaction context for teammate", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+    const context = buildTeamCompactionContext(db, teamInfo!.teamId, teamInfo!.role, teamInfo!.memberName)
+    expect(context).toContain("teammate")
+    expect(context).toContain("alice")
+    expect(context).toContain("my-team")
+  })
+
+  test("no context for non-team session", () => {
+    const teamInfo = findTeamBySession(db, registry, "random-sess")
+    expect(teamInfo).toBeUndefined()
+  })
+})
+
+describe("shell.env logic", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("sets env vars for lead session", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "lead-sess")
+    expect(teamInfo).toBeTruthy()
+
+    const env: Record<string, string> = {}
+    env.ENSEMBLE_TEAM = teamInfo!.teamName
+    env.ENSEMBLE_ROLE = teamInfo!.role
+
+    expect(env.ENSEMBLE_TEAM).toBe("my-team")
+    expect(env.ENSEMBLE_ROLE).toBe("lead")
+  })
+
+  test("sets env vars for teammate session including member name", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+    expect(teamInfo).toBeTruthy()
+
+    const env: Record<string, string> = {}
+    env.ENSEMBLE_TEAM = teamInfo!.teamName
+    env.ENSEMBLE_ROLE = teamInfo!.role
+    if (teamInfo!.memberName) {
+      env.ENSEMBLE_MEMBER = teamInfo!.memberName
+    }
+
+    expect(env.ENSEMBLE_TEAM).toBe("my-team")
+    expect(env.ENSEMBLE_ROLE).toBe("member")
+    expect(env.ENSEMBLE_MEMBER).toBe("alice")
+  })
+
+  test("includes worktree branch when available", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    db.run("UPDATE team_member SET worktree_branch = 'ensemble-my-team-alice' WHERE name = 'alice'")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+    const member = db.query("SELECT worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
+      .get(teamInfo!.teamId, teamInfo!.memberName!) as { worktree_branch: string | null } | null
+
+    expect(member?.worktree_branch).toBe("ensemble-my-team-alice")
+  })
+
+  test("no env vars for non-team session", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "random-sess")
+    expect(teamInfo).toBeUndefined()
   })
 })

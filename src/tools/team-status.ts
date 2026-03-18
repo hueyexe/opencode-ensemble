@@ -24,9 +24,9 @@ export async function executeTeamStatus(
   lastCallTime.set(teamInfo.teamId, now)
 
   const members = deps.db.query(
-    "SELECT name, session_id, agent, status, execution_status, worktree_branch FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
+    "SELECT name, session_id, agent, status, execution_status, worktree_branch, plan_approval FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
   ).all(teamInfo.teamId) as Array<{
-    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null
+    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; plan_approval: string
   }>
 
   const tasks = deps.db.query(
@@ -44,7 +44,8 @@ export async function executeTeamStatus(
     for (const m of members) {
       const statusIcon = m.status === "busy" ? "working" : m.status === "ready" ? "idle" : m.status
       const branch = m.worktree_branch ? `  branch: ${m.worktree_branch}` : ""
-      lines.push(`  ${m.name}  [${statusIcon}]  agent: ${m.agent}${branch}  session: ${m.session_id}`)
+      const plan = m.plan_approval !== "none" ? `, plan: ${m.plan_approval}` : ""
+      lines.push(`  ${m.name}  [${statusIcon}${plan}]  agent: ${m.agent}${branch}  session: ${m.session_id}`)
     }
   }
 

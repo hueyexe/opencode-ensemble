@@ -1,15 +1,17 @@
 import type { ToolDeps } from "../types"
 import { generateId, validateMemberName } from "../util"
 import { findTeamBySession } from "../types"
+import path from "path"
 
 /**
  * Execute the team_spawn tool. Creates a child session and starts a teammate.
  * By default, each teammate gets their own git worktree for file isolation.
  * Pass worktree: false for read-only agents that don't need isolation.
+ * Pass plan_approval: true to require the teammate to send a plan before writing.
  */
 export async function executeTeamSpawn(
   deps: ToolDeps,
-  args: { name: string; agent: string; prompt: string; model?: string; claim_task?: string; worktree?: boolean },
+  args: { name: string; agent: string; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean },
   sessionId: string,
 ): Promise<string> {
   const nameError = validateMemberName(args.name)
@@ -25,6 +27,7 @@ export async function executeTeamSpawn(
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
   const useWorktree = args.worktree !== false
+  const usePlanApproval = args.plan_approval === true
 
   // Create worktree if enabled
   let worktreeDir: string | null = null
@@ -79,11 +82,12 @@ export async function executeTeamSpawn(
   }
 
   // Register in DB
+  const planApproval = usePlanApproval ? "pending" : "none"
   const now = Date.now()
   deps.db.run(
-    `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, time_created, time_updated)
-     VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?)`,
-    [teamInfo.teamId, args.name, childSessionId, args.agent, args.model ?? null, args.prompt, worktreeDir, worktreeBranch, now, now]
+    `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, plan_approval, time_created, time_updated)
+     VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?)`,
+    [teamInfo.teamId, args.name, childSessionId, args.agent, args.model ?? null, args.prompt, worktreeDir, worktreeBranch, planApproval, now, now]
   )
 
   // Register in memory
@@ -97,6 +101,17 @@ export async function executeTeamSpawn(
 
   if (worktreeBranch) {
     context.push(`You are working on branch "${worktreeBranch}" in your own worktree. Your changes are isolated from other teammates.`)
+  }
+
+  // Plan approval mode — teammate must send plan before writing
+  if (usePlanApproval) {
+    context.push(
+      "",
+      "IMPORTANT: You are in PLAN MODE.",
+      "Read and explore the codebase, then send your implementation plan to the lead via team_message.",
+      "Do NOT write or modify any files until the lead approves your plan.",
+      "Wait for the lead's approval message before proceeding with implementation.",
+    )
   }
 
   context.push(
@@ -117,6 +132,20 @@ export async function executeTeamSpawn(
     "If you are blocked, send ONE message to the lead describing the specific blocker.",
     "",
     "Your plain text output is NOT visible to the team. You MUST use team_message to communicate.",
+  )
+
+  // Load project AGENTS.md if it exists
+  try {
+    const agentsPath = path.join(deps.directory, "AGENTS.md")
+    const file = Bun.file(agentsPath)
+    if (await file.exists()) {
+      const content = await file.text()
+      const truncated = content.length > 2000 ? content.slice(0, 2000) + "\n...(truncated)" : content
+      context.push("", "Project guidelines (from AGENTS.md):", truncated)
+    }
+  } catch { /* file may not exist or be unreadable */ }
+
+  context.push(
     "",
     "Your task:",
     args.prompt,
@@ -146,5 +175,6 @@ export async function executeTeamSpawn(
   }
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
-  return `Teammate "${args.name}" spawned (agent: ${args.agent})${branchInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
+  const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
+  return `Teammate "${args.name}" spawned (agent: ${args.agent})${branchInfo}${planInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }
