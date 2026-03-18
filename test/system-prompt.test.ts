@@ -55,6 +55,17 @@ describe("buildLeadSystemPrompt", () => {
     expect(result).toContain("carol")
     expect(result).toContain("error")
   })
+
+  test("shows shutdown_requested member as 'shutting down'", () => {
+    const db = setupDb()
+    insertTeam(db, "t4", "shutdown-team", "lead-sess")
+    insertMember(db, "t4", "dave", "sess-d", "shutdown_requested")
+
+    const result = buildLeadSystemPrompt(db, "t4")
+
+    expect(result).toContain("dave")
+    expect(result).toContain("shutting down")
+  })
 })
 
 describe("buildTeammateSystemPrompt", () => {

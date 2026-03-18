@@ -346,9 +346,10 @@ const plugin: Plugin = async (input) => {
         args: {},
         async execute(_args, ctx) {
           const result = await executeTeamStatus(deps, ctx.sessionID)
-          const members = deps.db.query("SELECT status FROM team_member WHERE team_id IN (SELECT id FROM team WHERE lead_session_id = ? OR id IN (SELECT team_id FROM team_member WHERE session_id = ?))").all(ctx.sessionID, ctx.sessionID) as Array<{ status: string }>
-          const busy = members.filter(m => m.status === "busy").length
-          ctx.metadata({ title: `Team: ${members.length} members (${busy} working)` })
+          const statusMap: Record<string, string> = { busy: "working", ready: "idle", shutdown_requested: "stopping", shutdown: "done", error: "error" }
+          const members = deps.db.query("SELECT name, status FROM team_member WHERE team_id IN (SELECT id FROM team WHERE lead_session_id = ? OR id IN (SELECT team_id FROM team_member WHERE session_id = ?))").all(ctx.sessionID, ctx.sessionID) as Array<{ name: string; status: string }>
+          const summary = members.map(m => `${m.name}: ${statusMap[m.status] ?? m.status}`).join(", ")
+          ctx.metadata({ title: summary || "No teammates" })
           return result
         },
       }),
