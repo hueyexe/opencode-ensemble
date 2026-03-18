@@ -195,6 +195,9 @@ Default to using Bun instead of Node.js.
 
 ## Publishing
 
+Publishing is restricted to admin contributors (hueyexe). Do not publish
+unless explicitly asked by the admin.
+
 To publish a new version:
 
 ```
@@ -204,10 +207,34 @@ bun run typecheck && bun test && bun run build && bun publish --access public
 Then create a GitHub release:
 
 ```
-gh release create v<version> --repo hueyexe/opencode-ensemble --title "v<version>" --generate-notes
+gh release create v<version> --repo hueyexe/opencode-ensemble --title "v<version>" --notes "<release notes>"
 ```
 
 Use `gh auth switch --user hueyexe` first if the active gh account is not hueyexe.
+
+### Release notes format
+
+Every release MUST have a proper description. Do not use `--generate-notes`.
+Follow this format:
+
+- Main feature gets a `### Heading` describing what changed
+- Bullet points for specific changes under the heading
+- Secondary changes go under `### Also in this release` or `### Improvements`
+- End with `**Full Changelog**: https://github.com/hueyexe/opencode-ensemble/compare/vPREV...vNEW`
+
+Example:
+
+```
+### Git Worktree Isolation
+
+Each teammate now gets their own git worktree by default.
+
+- Worktree created automatically on `team_spawn` (opt out with `worktree: false`)
+- Each teammate works on their own branch (`ensemble-{team}-{name}`)
+- Orphaned worktrees cleaned up on plugin init
+
+**Full Changelog**: https://github.com/hueyexe/opencode-ensemble/compare/v0.3.1...v0.4.0
+```
 
 ## Testing
 
