@@ -85,8 +85,8 @@ export async function recoverUndeliveredMessages(
   registry: MemberRegistry,
 ): Promise<{ redelivered: number }> {
   // Get all active teams
-  const teams = db.query("SELECT id, lead_session_id, lead_agent FROM team WHERE status = 'active'")
-    .all() as Array<{ id: string; lead_session_id: string; lead_agent: string | null }>
+  const teams = db.query("SELECT id, lead_session_id FROM team WHERE status = 'active'")
+    .all() as Array<{ id: string; lead_session_id: string }>
 
   let redelivered = 0
 
@@ -110,11 +110,9 @@ export async function recoverUndeliveredMessages(
       if (!recipientSessionId) continue
 
       try {
-        const isToLead = msg.to_name === "lead"
         await client.session.promptAsync({
           sessionID: recipientSessionId,
           parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }],
-          ...(isToLead && team.lead_agent ? { agent: team.lead_agent } : {}),
         })
         markDelivered(db, msg.id)
         redelivered++

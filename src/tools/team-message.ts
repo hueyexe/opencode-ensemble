@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession, resolveRecipientSession, getLeadAgent } from "../types"
+import { findTeamBySession, resolveRecipientSession } from "../types"
 import { sendMessage, markDelivered } from "../messaging"
 
 /**
@@ -67,13 +67,9 @@ export async function executeTeamMessage(
     deliveryText = `[Team message from ${senderName}]: ${messageText}`
   }
 
-  // Preserve lead's agent mode when delivering messages to the lead
-  const leadAgent = isToLead ? getLeadAgent(deps.db, teamInfo.teamId) : undefined
-
   await deps.client.session.promptAsync({
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],
-    ...(leadAgent ? { agent: leadAgent } : {}),
   })
 
   markDelivered(deps.db, msgId)

@@ -373,26 +373,31 @@ describe("team_spawn — agent mode enforcement", () => {
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
   })
 
-  test("plan agent gets permission deny rules on session.create", async () => {
+  const EXPECTED_READONLY_PERMISSION = [
+    { permission: "edit", pattern: "*", action: "deny" },
+    { permission: "bash", pattern: "*", action: "deny" },
+    { permission: "team_message", pattern: "*", action: "allow" },
+    { permission: "team_broadcast", pattern: "*", action: "allow" },
+    { permission: "team_tasks_list", pattern: "*", action: "allow" },
+    { permission: "team_tasks_add", pattern: "*", action: "allow" },
+    { permission: "team_tasks_complete", pattern: "*", action: "allow" },
+    { permission: "team_claim", pattern: "*", action: "allow" },
+  ]
+
+  test("plan agent gets permission deny + team tool allow rules on session.create", async () => {
     await executeTeamSpawn(deps, { name: "planner", agent: "plan", prompt: "Plan it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
-    expect(opts.permission).toEqual([
-      { permission: "edit", pattern: "*", action: "deny" },
-      { permission: "bash", pattern: "*", action: "deny" },
-    ])
+    expect(opts.permission).toEqual(EXPECTED_READONLY_PERMISSION)
   })
 
-  test("explore agent gets permission deny rules on session.create", async () => {
+  test("explore agent gets permission deny + team tool allow rules on session.create", async () => {
     await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Explore it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
-    expect(opts.permission).toEqual([
-      { permission: "edit", pattern: "*", action: "deny" },
-      { permission: "bash", pattern: "*", action: "deny" },
-    ])
+    expect(opts.permission).toEqual(EXPECTED_READONLY_PERMISSION)
   })
 
   test("build agent does NOT get permission rules on session.create", async () => {
@@ -403,22 +408,22 @@ describe("team_spawn — agent mode enforcement", () => {
     expect(opts.permission).toBeUndefined()
   })
 
-  test("plan agent gets tools restriction and agent type on promptAsync", async () => {
+  test("plan agent gets agent type on promptAsync without deprecated tools field", async () => {
     await executeTeamSpawn(deps, { name: "planner", agent: "plan", prompt: "Plan it" }, "lead-sess")
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const opts = promptCall!.args[0] as { agent?: string; tools?: Record<string, boolean> }
+    const opts = promptCall!.args[0] as { agent?: string; tools?: unknown }
     expect(opts.agent).toBe("plan")
-    expect(opts.tools).toEqual({ edit: false, bash: false, team_message: true, team_broadcast: true, team_tasks_list: true, team_tasks_add: true, team_tasks_complete: true, team_claim: true })
+    expect(opts.tools).toBeUndefined()
   })
 
-  test("explore agent gets tools restriction and agent type on promptAsync", async () => {
+  test("explore agent gets agent type on promptAsync without deprecated tools field", async () => {
     await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Explore it" }, "lead-sess")
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const opts = promptCall!.args[0] as { agent?: string; tools?: Record<string, boolean> }
+    const opts = promptCall!.args[0] as { agent?: string; tools?: unknown }
     expect(opts.agent).toBe("explore")
-    expect(opts.tools).toEqual({ edit: false, bash: false, team_message: true, team_broadcast: true, team_tasks_list: true, team_tasks_add: true, team_tasks_complete: true, team_claim: true })
+    expect(opts.tools).toBeUndefined()
   })
 
   test("build agent does NOT get tools restriction on promptAsync", async () => {

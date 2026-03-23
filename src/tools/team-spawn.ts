@@ -54,15 +54,16 @@ export async function executeTeamSpawn(
     }
   }
 
-  // Belt-and-suspenders: permission rules on session.create are the hard gate (server-enforced),
-  // while tools restriction on promptAsync is a soft gate (model-level). Both are needed because
-  // permission rules may not survive session restarts, and tools restriction alone is advisory.
-  // Only OpenCode's built-in read-only agent modes get restrictions; custom agent names get full access.
+  // Permission rules on session.create are the hard gate (server-enforced).
+  // For read-only agents, deny write tools and explicitly allow team tools
+  // so the agent's built-in restrictive permissions don't block them.
   const isReadOnly = args.agent === "plan" || args.agent === "explore"
+  const TEAM_TOOLS = ["team_message", "team_broadcast", "team_tasks_list", "team_tasks_add", "team_tasks_complete", "team_claim"] as const
   const permission: PermissionRule[] | undefined = isReadOnly
     ? [
         { permission: "edit", pattern: "*", action: "deny" },
         { permission: "bash", pattern: "*", action: "deny" },
+        ...TEAM_TOOLS.map(t => ({ permission: t, pattern: "*", action: "allow" as const })),
       ]
     : undefined
 
@@ -168,17 +169,11 @@ export async function executeTeamSpawn(
   const contextStr = context.join("\n")
 
   // Fire-and-forget: send prompt to teammate session
-  // Pass agent type + disable write tools for read-only agents
-  const readOnlyTools: Record<string, boolean> | undefined = isReadOnly
-    ? { edit: false, bash: false, team_message: true, team_broadcast: true, team_tasks_list: true, team_tasks_add: true, team_tasks_complete: true, team_claim: true }
-    : undefined
-
   try {
     await deps.client.session.promptAsync({
       sessionID: childSessionId,
       parts: [{ type: "text", text: contextStr }],
       agent: args.agent,
-      ...(readOnlyTools ? { tools: readOnlyTools } : {}),
     })
   } catch (err) {
     // Rollback: clean up DB, registry, session, and worktree

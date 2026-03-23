@@ -160,14 +160,6 @@ const plugin: Plugin = async (input) => {
       }
     },
 
-    // Track lead's agent mode so message delivery preserves it
-    "chat.message": async (input, _output) => {
-      if (!input.sessionID || !input.agent) return
-      const teamInfo = findTeamBySession(db, registry, input.sessionID)
-      if (!teamInfo || teamInfo.role !== "lead") return
-      db.run("UPDATE team SET lead_agent = ?, time_updated = ? WHERE id = ?", [input.agent, Date.now(), teamInfo.teamId])
-    },
-
     // System prompt injection — keeps lead aware of team state, reminds teammates of role
     "experimental.chat.system.transform": async (input, output) => {
       if (!input.sessionID) return

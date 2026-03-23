@@ -200,6 +200,10 @@ OPENCODE_ENSEMBLE_TIMEOUT=0
 - Don't micromanage. Teammates message you when done or when they're blocked.
 - Don't poll `team_status` in a loop. Wait for messages.
 
+## Known limitations
+
+- **Teammate messages may switch the lead's agent mode.** When a teammate sends a message back to the lead via `promptAsync`, OpenCode starts a new prompt loop that can switch the lead from plan/explore mode into build mode. This is a server-level behavior that the plugin cannot override. The lead's mode will restore when you send your next message.
+
 ## How this differs from Claude Code agent teams
 
 Same coordination model (shared tasks, peer messaging, lead coordination) with some additions:

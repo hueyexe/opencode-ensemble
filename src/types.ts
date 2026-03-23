@@ -105,12 +105,3 @@ export function resolveRecipientSession(
   const entry = registry.getByName(teamId, recipientName)
   return entry?.sessionId
 }
-
-/**
- * Get the lead's last-known agent mode for a team.
- * Returns undefined if never tracked (fallback to default behavior).
- */
-export function getLeadAgent(db: Database, teamId: string): string | undefined {
-  const row = db.query("SELECT lead_agent FROM team WHERE id = ?").get(teamId) as { lead_agent: string | null } | null
-  return row?.lead_agent ?? undefined
-}
