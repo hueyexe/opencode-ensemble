@@ -142,9 +142,7 @@ describe("team_shutdown", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const body = (promptCalls[0]!.args[0] as Record<string, unknown>).body as Record<string, unknown>
-    const parts = body.parts as Array<{ text: string }>
-    const text = parts[0]!.text
+    const text = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(text).toContain("[Shutdown requested]")
     expect(text).toContain("team_message")
   })

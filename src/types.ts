@@ -15,19 +15,36 @@ export interface ToolDeps {
   directory: string
 }
 
+/** A single permission rule for session-level enforcement. */
+export interface PermissionRule {
+  permission: string
+  pattern: string
+  action: "allow" | "deny" | "ask"
+}
+
 /**
- * Minimal interface for the OpenCode client methods we actually use.
- * This is a subset of OpencodeClient, typed for our needs.
+ * Minimal interface for the OpenCode v2 SDK client methods we actually use.
+ * Uses flat params matching the v2 SDK (imported from @opencode-ai/sdk/v2).
  * Makes mocking trivial in tests.
  */
 export interface PluginClient {
   session: {
-    create(options: { body?: { parentID?: string; title?: string } }): Promise<{ data?: { id: string } }>
+    create(options: {
+      parentID?: string
+      title?: string
+      permission?: PermissionRule[]
+      workspaceID?: string
+      directory?: string
+    }): Promise<{ data?: { id: string } }>
     promptAsync(options: {
-      path: { id: string }
-      body: { parts: Array<{ type: "text"; text: string }>; model?: { providerID: string; modelID: string } }
+      sessionID: string
+      parts: Array<{ type: "text"; text: string }>
+      model?: { providerID: string; modelID: string }
+      agent?: string
+      tools?: Record<string, boolean>
+      system?: string
     }): Promise<unknown>
-    abort(options: { path: { id: string } }): Promise<unknown>
+    abort(options: { sessionID: string }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>
   }
   tui: {
@@ -40,7 +57,7 @@ export interface PluginClient {
     selectSession(options: { sessionID?: string }): Promise<unknown>
   }
   worktree: {
-    create(options: { name?: string; startCommand?: string }): Promise<{ data?: { name: string; branch: string; directory: string } }>
+    create(options: { worktreeCreateInput?: { name?: string; startCommand?: string } }): Promise<{ data?: { name: string; branch: string; directory: string } }>
     remove(options: { worktreeRemoveInput?: { directory: string } }): Promise<unknown>
     list(): Promise<{ data?: Array<{ name: string; branch: string; directory: string }> }>
     reset(options: { worktreeResetInput?: { directory: string } }): Promise<unknown>

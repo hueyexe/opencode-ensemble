@@ -44,8 +44,8 @@ export async function executeTeamBroadcast(
   for (const recipient of recipients) {
     try {
       await deps.client.session.promptAsync({
-        path: { id: recipient.sessionId },
-        body: { parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }] },
+        sessionID: recipient.sessionId,
+        parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
       })
       delivered++
     } catch {

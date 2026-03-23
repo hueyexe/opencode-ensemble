@@ -29,7 +29,7 @@ export async function executeTeamCleanup(
   if (args.force) {
     for (const member of active) {
       try {
-        await deps.client.session.abort({ path: { id: member.session_id } })
+        await deps.client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
     }
   }

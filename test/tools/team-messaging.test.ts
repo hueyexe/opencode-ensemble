@@ -64,7 +64,7 @@ describe("team_message", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(delivered.length).toBeLessThan(longText.length + 50) // truncated, not full
     expect(delivered).toContain("...")
     expect(delivered).toContain("use team_results to read full message")
@@ -78,7 +78,7 @@ describe("team_message", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(delivered).toContain(shortText)
     expect(delivered).not.toContain("use team_results to read full message")
   })
@@ -89,7 +89,7 @@ describe("team_message", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(delivered).toContain(longText)
     expect(delivered).not.toContain("use team_results to read full message")
   })
@@ -244,3 +244,4 @@ describe("team_message — plan approval", () => {
       .rejects.toThrow("Only the lead can approve or reject")
   })
 })
+

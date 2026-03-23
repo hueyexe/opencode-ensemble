@@ -68,8 +68,8 @@ export async function executeTeamMessage(
   }
 
   await deps.client.session.promptAsync({
-    path: { id: recipientSessionId },
-    body: { parts: [{ type: "text", text: deliveryText }] },
+    sessionID: recipientSessionId,
+    parts: [{ type: "text", text: deliveryText }],
   })
 
   markDelivered(deps.db, msgId)

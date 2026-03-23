@@ -29,7 +29,7 @@ export async function recoverStaleMembers(db: Database, client?: PluginClient): 
   if (client) {
     for (const member of stale) {
       try {
-        await client.session.abort({ path: { id: member.session_id } })
+        await client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
     }
   }
@@ -111,8 +111,8 @@ export async function recoverUndeliveredMessages(
 
       try {
         await client.session.promptAsync({
-          path: { id: recipientSessionId },
-          body: { parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }] },
+          sessionID: recipientSessionId,
+          parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }],
         })
         markDelivered(db, msg.id)
         redelivered++
