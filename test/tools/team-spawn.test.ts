@@ -80,8 +80,7 @@ describe("team_spawn", () => {
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
     expect(promptCall).toBeTruthy()
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     // Should instruct to mark task complete
     expect(text).toContain("team_tasks_complete")
@@ -99,8 +98,7 @@ describe("team_spawn", () => {
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
     expect(promptCall).toBeTruthy()
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).toContain("task-123")
     expect(text).toContain("Mark it complete when done")
@@ -115,8 +113,7 @@ describe("team_spawn", () => {
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
     expect(promptCall).toBeTruthy()
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).not.toContain("You have been assigned task")
   })
@@ -198,7 +195,7 @@ describe("team_spawn", () => {
     // Worktree.create should have been called
     const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
     expect(wtCalls).toHaveLength(1)
-    expect((wtCalls[0]!.args[0] as Record<string, string>).name).toBe("ensemble-my-team-alice")
+    expect((wtCalls[0]!.args[0] as Record<string, unknown>).worktreeCreateInput).toEqual({ name: "ensemble-my-team-alice" })
 
     // DB should have worktree columns populated
     const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
@@ -275,8 +272,7 @@ describe("team_spawn", () => {
     }, "lead-sess")
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).toContain("worktree")
     expect(text).toContain("branch")
@@ -291,8 +287,7 @@ describe("team_spawn", () => {
     }, "lead-sess")
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).not.toContain("worktree")
   })
@@ -338,8 +333,7 @@ describe("team_spawn — plan approval", () => {
     }, "lead-sess")
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).toContain("PLAN MODE")
     expect(text).toContain("Do NOT write or modify any files")
@@ -354,8 +348,7 @@ describe("team_spawn — plan approval", () => {
     }, "lead-sess")
 
     const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-    const text = body.parts[0]!.text
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).not.toContain("PLAN MODE")
   })
@@ -369,6 +362,72 @@ describe("team_spawn — plan approval", () => {
     }, "lead-sess")
 
     expect(result).toContain("plan mode")
+  })
+})
+
+describe("team_spawn — agent mode enforcement", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("plan agent gets permission deny rules on session.create", async () => {
+    await executeTeamSpawn(deps, { name: "planner", agent: "plan", prompt: "Plan it" }, "lead-sess")
+
+    const createCall = deps.client.calls.find(c => c.method === "session.create")
+    const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
+    expect(opts.permission).toEqual([
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "bash", pattern: "*", action: "deny" },
+    ])
+  })
+
+  test("explore agent gets permission deny rules on session.create", async () => {
+    await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Explore it" }, "lead-sess")
+
+    const createCall = deps.client.calls.find(c => c.method === "session.create")
+    const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
+    expect(opts.permission).toEqual([
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "bash", pattern: "*", action: "deny" },
+    ])
+  })
+
+  test("build agent does NOT get permission rules on session.create", async () => {
+    await executeTeamSpawn(deps, { name: "builder", agent: "build", prompt: "Build it" }, "lead-sess")
+
+    const createCall = deps.client.calls.find(c => c.method === "session.create")
+    const opts = createCall!.args[0] as { permission?: unknown }
+    expect(opts.permission).toBeUndefined()
+  })
+
+  test("plan agent gets tools restriction and agent type on promptAsync", async () => {
+    await executeTeamSpawn(deps, { name: "planner", agent: "plan", prompt: "Plan it" }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string; tools?: Record<string, boolean> }
+    expect(opts.agent).toBe("plan")
+    expect(opts.tools).toEqual({ edit: false, bash: false, team_message: true, team_broadcast: true, team_tasks_list: true, team_tasks_add: true, team_tasks_complete: true, team_claim: true })
+  })
+
+  test("explore agent gets tools restriction and agent type on promptAsync", async () => {
+    await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Explore it" }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string; tools?: Record<string, boolean> }
+    expect(opts.agent).toBe("explore")
+    expect(opts.tools).toEqual({ edit: false, bash: false, team_message: true, team_broadcast: true, team_tasks_list: true, team_tasks_add: true, team_tasks_complete: true, team_claim: true })
+  })
+
+  test("build agent does NOT get tools restriction on promptAsync", async () => {
+    await executeTeamSpawn(deps, { name: "builder", agent: "build", prompt: "Build it" }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string; tools?: unknown }
+    expect(opts.agent).toBe("build")
+    expect(opts.tools).toBeUndefined()
   })
 })
 
@@ -395,8 +454,7 @@ describe("team_spawn — AGENTS.md loading", () => {
       }, "lead-sess")
 
       const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-      const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-      const text = body.parts[0]!.text
+      const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
       expect(text).toContain("Project guidelines (from AGENTS.md)")
       expect(text).toContain("Use TypeScript strict mode")
@@ -433,8 +491,7 @@ describe("team_spawn — AGENTS.md loading", () => {
       }, "lead-sess")
 
       const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-      const body = (promptCall!.args[0] as { body: { parts: Array<{ text: string }> } }).body
-      const text = body.parts[0]!.text
+      const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
       expect(text).toContain("...(truncated)")
       // The AGENTS.md portion should be at most 2000 chars + truncation marker

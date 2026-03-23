@@ -64,7 +64,7 @@ describe("team_message", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(delivered.length).toBeLessThan(longText.length + 50) // truncated, not full
     expect(delivered).toContain("...")
     expect(delivered).toContain("use team_results to read full message")
@@ -78,7 +78,7 @@ describe("team_message", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(delivered).toContain(shortText)
     expect(delivered).not.toContain("use team_results to read full message")
   })
@@ -89,7 +89,7 @@ describe("team_message", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]!.text
+    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
     expect(delivered).toContain(longText)
     expect(delivered).not.toContain("use team_results to read full message")
   })
@@ -242,5 +242,75 @@ describe("team_message — plan approval", () => {
 
     await expect(executeTeamMessage(deps, { to: "alice", text: "ok", approve: true }, "sess-bob"))
       .rejects.toThrow("Only the lead can approve or reject")
+  })
+})
+
+describe("team_message — lead agent mode preservation", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    deps.registry.register("t1", "alice", "sess-alice")
+  })
+
+  test("passes stored lead_agent on promptAsync when messaging lead", async () => {
+    deps.db.run("UPDATE team SET lead_agent = 'plan' WHERE id = ?", ["t1"])
+
+    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string }
+    expect(opts.agent).toBe("plan")
+  })
+
+  test("does not pass agent when lead_agent is null", async () => {
+    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string }
+    expect(opts.agent).toBeUndefined()
+  })
+
+  test("does not pass agent when messaging a teammate (not lead)", async () => {
+    deps.db.run("UPDATE team SET lead_agent = 'plan' WHERE id = ?", ["t1"])
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "bob", "sess-bob")
+
+    await executeTeamMessage(deps, { to: "bob", text: "help" }, "sess-alice")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string }
+    expect(opts.agent).toBeUndefined()
+  })
+})
+
+describe("team_broadcast — lead agent mode preservation", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.registry.register("t1", "bob", "sess-bob")
+  })
+
+  test("passes stored lead_agent only for lead recipient in broadcast", async () => {
+    deps.db.run("UPDATE team SET lead_agent = 'explore' WHERE id = ?", ["t1"])
+
+    await executeTeamBroadcast(deps, { text: "update" }, "sess-alice")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    // Should have 2 calls: one to lead, one to bob
+    expect(promptCalls.length).toBeGreaterThanOrEqual(2)
+
+    const leadCall = promptCalls.find(c => (c.args[0] as { sessionID: string }).sessionID === "lead-sess")
+    const bobCall = promptCalls.find(c => (c.args[0] as { sessionID: string }).sessionID === "sess-bob")
+
+    expect((leadCall!.args[0] as { agent?: string }).agent).toBe("explore")
+    expect((bobCall!.args[0] as { agent?: string }).agent).toBeUndefined()
   })
 })

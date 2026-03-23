@@ -55,7 +55,7 @@ export class Watchdog {
 
       // Abort session (best effort)
       try {
-        await this.client.session.abort({ path: { id: member.session_id } })
+        await this.client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
 
       // Notify

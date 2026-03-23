@@ -1,4 +1,4 @@
-import type { ToolDeps } from "../types"
+import type { ToolDeps, PermissionRule } from "../types"
 import { generateId, validateMemberName } from "../util"
 import { findTeamBySession } from "../types"
 import path from "path"
@@ -36,7 +36,7 @@ export async function executeTeamSpawn(
   if (useWorktree) {
     const worktreeName = `ensemble-${teamInfo.teamName}-${args.name}`
     try {
-      const result = await deps.client.worktree.create({ name: worktreeName })
+      const result = await deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } })
       if (result.data) {
         worktreeDir = result.data.directory
         worktreeBranch = result.data.branch
@@ -54,17 +54,27 @@ export async function executeTeamSpawn(
     }
   }
 
-  // Create child session — use worktree directory if available
-  const createOpts: Record<string, unknown> = {
-    body: { parentID: sessionId, title: `${args.name} (@${args.agent} teammate)` },
-  }
-  if (worktreeDir) {
-    createOpts.directory = worktreeDir
-  }
+  // Belt-and-suspenders: permission rules on session.create are the hard gate (server-enforced),
+  // while tools restriction on promptAsync is a soft gate (model-level). Both are needed because
+  // permission rules may not survive session restarts, and tools restriction alone is advisory.
+  // Only OpenCode's built-in read-only agent modes get restrictions; custom agent names get full access.
+  const isReadOnly = args.agent === "plan" || args.agent === "explore"
+  const permission: PermissionRule[] | undefined = isReadOnly
+    ? [
+        { permission: "edit", pattern: "*", action: "deny" },
+        { permission: "bash", pattern: "*", action: "deny" },
+      ]
+    : undefined
 
+  // Create child session — use worktree directory if available
   let childSessionId: string | undefined
   try {
-    const createResult = await deps.client.session.create(createOpts as Parameters<typeof deps.client.session.create>[0])
+    const createResult = await deps.client.session.create({
+      parentID: sessionId,
+      title: `${args.name} (@${args.agent} teammate)`,
+      ...(permission ? { permission } : {}),
+      ...(worktreeDir ? { directory: worktreeDir } : {}),
+    })
     childSessionId = createResult.data?.id
   } catch (err) {
     // Rollback worktree if session creation failed
@@ -158,16 +168,23 @@ export async function executeTeamSpawn(
   const contextStr = context.join("\n")
 
   // Fire-and-forget: send prompt to teammate session
+  // Pass agent type + disable write tools for read-only agents
+  const readOnlyTools: Record<string, boolean> | undefined = isReadOnly
+    ? { edit: false, bash: false, team_message: true, team_broadcast: true, team_tasks_list: true, team_tasks_add: true, team_tasks_complete: true, team_claim: true }
+    : undefined
+
   try {
     await deps.client.session.promptAsync({
-      path: { id: childSessionId },
-      body: { parts: [{ type: "text", text: contextStr }] },
+      sessionID: childSessionId,
+      parts: [{ type: "text", text: contextStr }],
+      agent: args.agent,
+      ...(readOnlyTools ? { tools: readOnlyTools } : {}),
     })
   } catch (err) {
     // Rollback: clean up DB, registry, session, and worktree
     deps.db.run("DELETE FROM team_member WHERE team_id = ? AND name = ?", [teamInfo.teamId, args.name])
     deps.registry.unregister(childSessionId)
-    try { await deps.client.session.abort({ path: { id: childSessionId } }) } catch { /* best effort */ }
+    try { await deps.client.session.abort({ sessionID: childSessionId }) } catch { /* best effort */ }
     if (worktreeDir) {
       try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
     }

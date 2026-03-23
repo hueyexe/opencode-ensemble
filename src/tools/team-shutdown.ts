@@ -52,13 +52,11 @@ export async function executeTeamShutdown(
   // Busy + not force → graceful: send shutdown message, set shutdown_requested
   try {
     await deps.client.session.promptAsync({
-      path: { id: member.session_id },
-      body: {
-        parts: [{
-          type: "text",
-          text: `[Shutdown requested]: The lead has requested you shut down. Finish your current task, send your final findings to the lead via team_message, then stop.`,
-        }],
-      },
+      sessionID: member.session_id,
+      parts: [{
+        type: "text",
+        text: `[Shutdown requested]: The lead has requested you shut down. Finish your current task, send your final findings to the lead via team_message, then stop.`,
+      }],
     })
   } catch {
     // promptAsync failed — best effort
@@ -83,7 +81,7 @@ async function abortAndShutdown(
   sessionId: string,
 ): Promise<void> {
   try {
-    await deps.client.session.abort({ path: { id: sessionId } })
+    await deps.client.session.abort({ sessionID: sessionId })
   } catch {
     // Abort failed — session may already be gone
   }

@@ -48,7 +48,7 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
     worktree: {
       async create(options) {
         calls.push({ method: "worktree.create", args: [options] })
-        const name = options.name ?? "default"
+        const name = options.worktreeCreateInput?.name ?? "default"
         return { data: { name, branch: `ensemble-${name}`, directory: `/tmp/worktree-${name}` } }
       },
       async remove(options) {

@@ -1,8 +1,10 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+import { OpencodeClient as OpencodeClientV2 } from "@opencode-ai/sdk/v2"
 import path from "path"
 import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
+import { wrapThrowingClient } from "./client"
 import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
@@ -47,8 +49,12 @@ const plugin: Plugin = async (input) => {
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()
 
-  // Build shared tool dependencies
-  const client = input.client as unknown as PluginClient
+  // Reuse the v1 client's working HTTP transport with v2's method signatures.
+  // The v1 client (input.client) has the correct connection (Unix socket/auth),
+  // while v2 gives us flat params + permission on create + agent/tools on promptAsync.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawClient = new OpencodeClientV2({ client: (input.client as any)._client })
+  const client = wrapThrowingClient(rawClient)
   const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory }
 
   // Run recovery on init — mark stale busy members as error + abort orphaned sessions
@@ -125,7 +131,7 @@ const plugin: Plugin = async (input) => {
             const entry = registry.getBySession(sessionID)
             if (entry) {
               try {
-                await client.session.abort({ path: { id: sessionID } })
+                await client.session.abort({ sessionID })
               } catch { /* best effort */ }
             }
           }
@@ -152,6 +158,14 @@ const plugin: Plugin = async (input) => {
           await rateLimiter.waitForToken()
         }
       }
+    },
+
+    // Track lead's agent mode so message delivery preserves it
+    "chat.message": async (input, _output) => {
+      if (!input.sessionID || !input.agent) return
+      const teamInfo = findTeamBySession(db, registry, input.sessionID)
+      if (!teamInfo || teamInfo.role !== "lead") return
+      db.run("UPDATE team SET lead_agent = ?, time_updated = ? WHERE id = ?", [input.agent, Date.now(), teamInfo.teamId])
     },
 
     // System prompt injection — keeps lead aware of team state, reminds teammates of role

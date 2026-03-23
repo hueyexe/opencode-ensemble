@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { findTeamBySession, getLeadAgent } from "../types"
 import { broadcastMessage, markDelivered } from "../messaging"
 
 /**
@@ -39,13 +39,18 @@ export async function executeTeamBroadcast(
     }
   }
 
+  // Look up lead's agent mode for preserving it on delivery
+  const leadAgent = getLeadAgent(deps.db, teamInfo.teamId)
+
   // Deliver to all recipients — partial failures logged but don't fail the broadcast
   let delivered = 0
   for (const recipient of recipients) {
     try {
+      const isLead = recipient.name === "lead"
       await deps.client.session.promptAsync({
-        path: { id: recipient.sessionId },
-        body: { parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }] },
+        sessionID: recipient.sessionId,
+        parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
+        ...(isLead && leadAgent ? { agent: leadAgent } : {}),
       })
       delivered++
     } catch {

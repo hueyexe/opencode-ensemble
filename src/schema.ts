@@ -76,6 +76,8 @@ export const MIGRATIONS: string[] = [
   // Migration 4: Add plan_approval column to team_member for plan-before-build workflow
   `ALTER TABLE team_member ADD COLUMN plan_approval TEXT NOT NULL DEFAULT 'none'
      CHECK(plan_approval IN ('none', 'pending', 'approved', 'rejected'));`,
+  // Migration 5: Track lead's agent mode so message delivery preserves it
+  `ALTER TABLE team ADD COLUMN lead_agent TEXT;`,
 ]
 
 /**
