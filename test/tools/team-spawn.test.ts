@@ -436,7 +436,7 @@ describe("team_spawn — agent mode enforcement", () => {
   })
 })
 
-describe("team_spawn — AGENTS.md loading", () => {
+describe("team_spawn — AGENTS.md NOT loaded into context", () => {
   let deps: ReturnType<typeof setupDeps>
 
   beforeEach(() => {
@@ -444,7 +444,7 @@ describe("team_spawn — AGENTS.md loading", () => {
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
   })
 
-  test("includes AGENTS.md content in context message when file exists", async () => {
+  test("does not include AGENTS.md content in context message even when file exists", async () => {
     // Create a temporary AGENTS.md in the test directory
     const tmpDir = await import("node:fs/promises").then(fs => fs.mkdtemp("/tmp/ensemble-test-"))
     const agentsPath = `${tmpDir}/AGENTS.md`
@@ -461,46 +461,8 @@ describe("team_spawn — AGENTS.md loading", () => {
       const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
       const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
-      expect(text).toContain("Project guidelines (from AGENTS.md)")
-      expect(text).toContain("Use TypeScript strict mode")
-    } finally {
-      await import("node:fs/promises").then(fs => fs.rm(tmpDir, { recursive: true }))
-    }
-  })
-
-  test("does not error when AGENTS.md does not exist", async () => {
-    deps.directory = "/tmp/nonexistent-dir-ensemble-test"
-
-    const result = await executeTeamSpawn(deps, {
-      name: "alice",
-      agent: "build",
-      prompt: "Fix tests",
-    }, "lead-sess")
-
-    expect(result).toContain("alice")
-    expect(result).toContain("spawned")
-  })
-
-  test("truncates AGENTS.md content to 2000 chars", async () => {
-    const tmpDir = await import("node:fs/promises").then(fs => fs.mkdtemp("/tmp/ensemble-test-"))
-    const agentsPath = `${tmpDir}/AGENTS.md`
-    const longContent = "x".repeat(3000)
-    await Bun.write(agentsPath, longContent)
-    deps.directory = tmpDir
-
-    try {
-      await executeTeamSpawn(deps, {
-        name: "alice",
-        agent: "build",
-        prompt: "Fix tests",
-      }, "lead-sess")
-
-      const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-      const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
-
-      expect(text).toContain("...(truncated)")
-      // The AGENTS.md portion should be at most 2000 chars + truncation marker
-      expect(text).not.toContain("x".repeat(2001))
+      expect(text).not.toContain("Project guidelines (from AGENTS.md)")
+      expect(text).not.toContain("Use TypeScript strict mode")
     } finally {
       await import("node:fs/promises").then(fs => fs.rm(tmpDir, { recursive: true }))
     }

@@ -47,6 +47,8 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
     "",
     "Teammates work asynchronously and message you when done.",
     "Do NOT poll team_status or team_tasks_list repeatedly — wait for messages.",
+    "Spawn teammates ONE at a time — do not send multiple team_spawn calls in a single response.",
+    "After each team_spawn, verify the output confirms the spawn succeeded before spawning the next.",
     "After spawning teammates, tell the user what you've set up and wait.",
     "When all teammates finish, summarize results and suggest next steps.",
   ].join("\n")

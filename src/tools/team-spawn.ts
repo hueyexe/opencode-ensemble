@@ -1,7 +1,6 @@
 import type { ToolDeps, PermissionRule } from "../types"
 import { generateId, validateMemberName } from "../util"
 import { findTeamBySession } from "../types"
-import path from "path"
 
 /**
  * Execute the team_spawn tool. Creates a child session and starts a teammate.
@@ -144,17 +143,6 @@ export async function executeTeamSpawn(
     "",
     "Your plain text output is NOT visible to the team. You MUST use team_message to communicate.",
   )
-
-  // Load project AGENTS.md if it exists
-  try {
-    const agentsPath = path.join(deps.directory, "AGENTS.md")
-    const file = Bun.file(agentsPath)
-    if (await file.exists()) {
-      const content = await file.text()
-      const truncated = content.length > 2000 ? content.slice(0, 2000) + "\n...(truncated)" : content
-      context.push("", "Project guidelines (from AGENTS.md):", truncated)
-    }
-  } catch { /* file may not exist or be unreadable */ }
 
   context.push(
     "",
