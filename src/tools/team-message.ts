@@ -67,6 +67,24 @@ export async function executeTeamMessage(
     deliveryText = `[Team message from ${senderName}]: ${messageText}`
   }
 
+  // Check if recipient is busy — if so, queue the message for later delivery.
+  // TOCTOU: status check and promptAsync are not atomic. A recipient can transition
+  // idle→busy between the check and delivery. This is accepted as benign — the idle-flush
+  // backstop catches anything that slips through, so no messages are lost.
+  let recipientBusy = false
+  try {
+    const statusResult = await deps.client.session.status()
+    const sessionStatus = statusResult.data?.[recipientSessionId]
+    if (sessionStatus?.type === "busy") {
+      recipientBusy = true
+    }
+  } catch { /* status check failed — deliver anyway as best effort */ }
+
+  if (recipientBusy) {
+    // Message is stored in DB with delivered=0, will be flushed when recipient goes idle
+    return `Message sent to ${args.to}. (queued — recipient is busy)`
+  }
+
   await deps.client.session.promptAsync({
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],

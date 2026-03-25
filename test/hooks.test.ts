@@ -2,9 +2,11 @@ import { describe, test, expect, beforeEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
 import { MemberRegistry, DescendantTracker } from "../src/state"
-import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "../src/hooks"
+import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, handleLeadIdleFlush } from "../src/hooks"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
+import { sendMessage } from "../src/messaging"
+import { mockClient } from "./helpers"
 
 function setupDb(): Database {
   const db = new Database(":memory:")
@@ -505,5 +507,45 @@ describe("shell.env logic", () => {
 
     const teamInfo = findTeamBySession(db, registry, "random-sess")
     expect(teamInfo).toBeUndefined()
+  })
+})
+
+describe("handleLeadIdleFlush", () => {
+  test("flushes pending messages when lead session goes idle", async () => {
+    const db = setupDb()
+    const client = mockClient()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+
+    // Insert an undelivered message to lead
+    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "task done" })
+
+    const count = await handleLeadIdleFlush(db, client, "lead-sess")
+    expect(count).toBe(1)
+
+    // promptAsync should have been called
+    const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+  })
+
+  test("returns 0 for non-lead sessions", async () => {
+    const db = setupDb()
+    const client = mockClient()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+
+    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "task done" })
+
+    const count = await handleLeadIdleFlush(db, client, "sess-alice")
+    expect(count).toBe(0)
+  })
+
+  test("returns 0 when no pending messages", async () => {
+    const db = setupDb()
+    const client = mockClient()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+
+    const count = await handleLeadIdleFlush(db, client, "lead-sess")
+    expect(count).toBe(0)
   })
 })

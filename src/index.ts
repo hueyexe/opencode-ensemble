@@ -7,7 +7,7 @@ import { createDb, getDbPath } from "./db"
 import { wrapThrowingClient } from "./client"
 import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
-import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
+import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, handleLeadIdleFlush } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { findTeamBySession } from "./types"
@@ -138,6 +138,11 @@ const plugin: Plugin = async (input) => {
 
           // Show working progress after every transition so the user sees who's still active
           await notifyWorkingProgress(client, db, transition.teamId)
+        }
+
+        // Flush pending messages to the lead when their session goes idle
+        if (statusType === "idle") {
+          handleLeadIdleFlush(db, client, sessionID).catch(() => { /* best effort */ })
         }
       }
 

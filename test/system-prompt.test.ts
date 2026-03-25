@@ -67,22 +67,14 @@ describe("buildLeadSystemPrompt", () => {
     expect(result).toContain("shutting down")
   })
 
-  test("includes sequential spawn guidance to prevent parallel team_spawn calls", () => {
+  test("does NOT include sequential spawn guidance (busy-guard handles this now)", () => {
     const db = setupDb()
     insertTeam(db, "t5", "seq-team", "lead-sess")
 
     const result = buildLeadSystemPrompt(db, "t5")
 
-    expect(result).toMatch(/spawn.*one.*at a time/i)
-  })
-
-  test("includes spawn verification guidance", () => {
-    const db = setupDb()
-    insertTeam(db, "t6", "verify-team", "lead-sess")
-
-    const result = buildLeadSystemPrompt(db, "t6")
-
-    expect(result).toMatch(/verify.*spawn.*succeed/i)
+    expect(result).not.toMatch(/spawn.*one.*at a time/i)
+    expect(result).not.toMatch(/verify.*spawn.*succeed/i)
   })
 })
 

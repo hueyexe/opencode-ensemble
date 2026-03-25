@@ -173,6 +173,71 @@ describe("team_broadcast", () => {
   })
 })
 
+describe("team_message — busy-session guard", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    deps.registry.register("t1", "alice", "sess-alice")
+  })
+
+  test("skips promptAsync when recipient session is busy", async () => {
+    // Mock status to report lead session as busy
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "lead-sess": { type: "busy" } } }
+    }
+
+    const result = await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+    expect(result).toContain("queued")
+
+    // promptAsync should NOT have been called
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+
+    // Message should be in DB with delivered = 0
+    const rows = deps.db.query("SELECT delivered FROM team_message WHERE team_id = ?").all("t1") as Array<{ delivered: number }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.delivered).toBe(0)
+  })
+
+  test("calls promptAsync when recipient session is idle", async () => {
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "lead-sess": { type: "idle" } } }
+    }
+
+    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+  })
+
+  test("calls promptAsync when status check fails (best effort delivery)", async () => {
+    deps.client.session.status = async () => { throw new Error("status unavailable") }
+
+    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+
+    // Should still attempt delivery on status failure
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+  })
+
+  test("calls promptAsync when recipient not found in status map (session not tracked)", async () => {
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "other-sess": { type: "busy" } } }
+    }
+
+    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
+  })
+})
+
 describe("team_message — plan approval", () => {
   let deps: ReturnType<typeof setupDeps>
 
