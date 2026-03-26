@@ -103,6 +103,84 @@ Three hooks wired in index.ts:
    gating.
 9. Graceful shutdown with manual force — team_shutdown requests graceful stop
    by default. Pass force: true to abort immediately.
+10. Never await promptAsync — all promptAsync calls are fire-and-forget.
+    Awaiting blocks the caller if the transport is slow or broken. Messages
+    are persisted in the DB first; the idle-flush backstop handles delivery.
+11. v1→v2 SDK transport extraction uses `._client` (underscore) — see
+    "SDK Transport" section below. Do NOT change this property name.
+
+## SDK Transport (Critical — Do Not Change)
+
+The plugin framework provides a v1 SDK client (`input.client`). We need
+the v2 SDK for flat params, `permission` on `session.create`, and `agent`
+on `promptAsync`. The v2 client is created by extracting the HeyAPI
+transport from the v1 client:
+
+```typescript
+const transport = (input.client as unknown as { _client: V2Transport })._client
+const rawClient = new OpencodeClient({ client: transport })
+```
+
+### Why `_client` not `client`
+
+The v1 SDK stores its HeyAPI transport as `this._client` (underscore).
+The v2 SDK stores it as `this.client` (no underscore). These are
+DIFFERENT property names on DIFFERENT classes.
+
+- Reading FROM v1: `input.client._client` (underscore — v1 convention)
+- Passing TO v2 constructor: `{ client: transport }` (no underscore — v2 param name)
+
+### What goes wrong if you change this
+
+- Using `.client` instead of `._client`: returns `undefined`, v2 falls
+  back to a default HTTP transport that cannot reach the server (Unix
+  socket, auth headers are missing). Every `session.create()` fails with
+  "Unable to connect".
+- Using `createOpencodeClient({ baseUrl })`: creates a standalone HTTP
+  client. Same failure — the server may not be reachable via plain HTTP
+  from inside a plugin.
+
+### Biome compliance
+
+The cast uses `as unknown as { _client: V2Transport }` — no `any` type.
+The `V2Transport` type is inferred from the v2 `OpencodeClient`
+constructor parameter. Biome's `noExplicitAny` rule is satisfied.
+
+### How to verify
+
+If `session.create()` returns "Unable to connect", the transport
+extraction is broken. Check that `._client` is being read, not `.client`.
+
+## promptAsync Is Fire-and-Forget (Critical — Do Not Await)
+
+All `promptAsync` calls MUST be fire-and-forget (no `await`). This
+applies to `team_spawn`, `team_message`, and `team_broadcast`.
+
+### Why
+
+`promptAsync` is HTTP 204 on the server (returns immediately, no body).
+But if the transport is slow, the proxy buffers, or the connection has
+latency, `await`ing it blocks the tool call. The lead's `team_spawn`
+never returns, the TUI shows a loading spinner, and the lead hangs
+indefinitely — even though the child session IS running.
+
+### The pattern
+
+```typescript
+// CORRECT — fire-and-forget with async error handling
+deps.client.session.promptAsync({ ... }).catch(() => { /* rollback */ })
+
+// WRONG — blocks the caller
+await deps.client.session.promptAsync({ ... })
+```
+
+### Safety net
+
+Messages are persisted in the DB with `delivered=0` BEFORE the
+`promptAsync` call. If delivery fails:
+- team_spawn: async `.catch()` rolls back the member + notifies lead
+- team_message: idle-flush backstop redelivers when recipient goes idle
+- team_broadcast: partial delivery is expected and handled
 
 ## Lessons from Anthropic (Applied)
 
@@ -153,11 +231,11 @@ Teammates do not need to know how agent teams work internally.
 ## Code Standards
 
 - TypeScript strict mode
+- Biome linter with `noExplicitAny: error` — no `any` types, no `as any` casts
 - Zero external deps beyond @opencode-ai/sdk, @opencode-ai/plugin, bun:sqlite
 - Every exported function has a JSDoc comment
 - const over let, early returns over else
 - snake_case for SQL columns, camelCase for TypeScript
-- No any types
 - Functional array methods over for loops
 
 ## Build/Test Commands

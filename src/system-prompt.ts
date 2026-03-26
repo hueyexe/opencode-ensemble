@@ -28,9 +28,9 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
     countMap[row.status] = row.count
   }
 
-  const completed = countMap["completed"] ?? 0
-  const inProgress = countMap["in_progress"] ?? 0
-  const pending = countMap["pending"] ?? 0
+  const completed = countMap.completed ?? 0
+  const inProgress = countMap.in_progress ?? 0
+  const pending = countMap.pending ?? 0
 
   const memberList = members
     .map((m) => `${m.name} [${STATUS_DISPLAY[m.status] ?? m.status}]`)
@@ -87,9 +87,9 @@ export function buildTeamCompactionContext(
     countMap[row.status] = row.count
   }
 
-  const completed = countMap["completed"] ?? 0
-  const inProgress = countMap["in_progress"] ?? 0
-  const pending = countMap["pending"] ?? 0
+  const completed = countMap.completed ?? 0
+  const inProgress = countMap.in_progress ?? 0
+  const pending = countMap.pending ?? 0
 
   const roleLine = role === "lead"
     ? `[Team Context] You are the lead of team "${team.name}".`

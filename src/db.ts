@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import path from "path"
+import path from "node:path"
 import { applyMigrations } from "./schema"
 
 let instance: Database | undefined

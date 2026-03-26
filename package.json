@@ -1,6 +1,6 @@
 {
   "name": "@hueyexe/opencode-ensemble",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Agent teams for OpenCode — parallel agents with peer-to-peer communication, shared tasks, and coordinated execution",
   "module": "src/index.ts",
   "main": "dist/index.js",
@@ -26,12 +26,14 @@
     "README.md"
   ],
   "scripts": {
+    "lint": "bunx biome lint src/",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "build": "bun build src/index.ts --outdir dist --target bun",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.9",
     "@types/bun": "latest"
   },
   "peerDependencies": {

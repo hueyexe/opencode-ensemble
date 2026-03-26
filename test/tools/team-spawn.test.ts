@@ -132,15 +132,21 @@ describe("team_spawn", () => {
     expect(result).not.toContain("woken automatically")
   })
 
-  test("rolls back DB, registry, and aborts session if promptAsync fails", async () => {
+  test("rolls back DB, registry, and aborts session if promptAsync fails asynchronously", async () => {
     // Make promptAsync throw after session.create succeeds
     deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
 
-    await expect(executeTeamSpawn(deps, {
+    // Spawn returns immediately — fire-and-forget
+    const result = await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")).rejects.toThrow("Failed to send initial prompt")
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+
+    // Give the microtask queue time to process the async .catch() rollback
+    await new Promise(resolve => setTimeout(resolve, 10))
 
     // DB should have no member
     const row = deps.db.query("SELECT * FROM team_member WHERE name = 'alice'").get()
@@ -171,11 +177,17 @@ describe("team_spawn", () => {
     deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
     deps.client.session.abort = async () => { throw new Error("abort also failed") }
 
-    await expect(executeTeamSpawn(deps, {
+    // Spawn returns immediately — does NOT throw (fire-and-forget)
+    const result = await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")).rejects.toThrow("Failed to send initial prompt")
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+
+    // Give the microtask queue time to process the async .catch() rollback
+    await new Promise(resolve => setTimeout(resolve, 10))
 
     // DB and registry should still be cleaned up
     const row = deps.db.query("SELECT * FROM team_member WHERE name = 'alice'").get()
@@ -250,14 +262,25 @@ describe("team_spawn", () => {
     expect(toasts.length).toBeGreaterThan(0)
   })
 
-  test("rolls back worktree if promptAsync fails", async () => {
+  test("rolls back member asynchronously if promptAsync fails (fire-and-forget)", async () => {
     deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
 
-    await expect(executeTeamSpawn(deps, {
+    // Spawn returns immediately — does NOT throw
+    const result = await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")).rejects.toThrow("Failed to send initial prompt")
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+
+    // Give the microtask queue time to process the async .catch() rollback
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    // Member should be cleaned up from DB
+    const row = deps.db.query("SELECT name FROM team_member WHERE name = ?").get("alice")
+    expect(row).toBeNull()
 
     // Worktree should have been removed during rollback
     const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
@@ -466,5 +489,80 @@ describe("team_spawn — AGENTS.md NOT loaded into context", () => {
     } finally {
       await import("node:fs/promises").then(fs => fs.rm(tmpDir, { recursive: true }))
     }
+  })
+})
+
+describe("team_spawn — fire-and-forget promptAsync", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("returns immediately even if promptAsync never resolves", async () => {
+    // Mock promptAsync to hang forever — simulates broken transport / slow proxy
+    deps.client.session.promptAsync = () => new Promise(() => { /* never resolves */ })
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+
+    // Member should be registered in DB
+    const row = deps.db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as { status: string }
+    expect(row.status).toBe("busy")
+  })
+
+  test("cleans up member if promptAsync rejects asynchronously", async () => {
+    let rejectFn: (err: Error) => void
+    deps.client.session.promptAsync = () => new Promise((_resolve, reject) => {
+      rejectFn = reject
+    })
+
+    const result = await executeTeamSpawn(deps, {
+      name: "bob",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    expect(result).toContain("bob")
+
+    // Member exists initially
+    const before = deps.db.query("SELECT name FROM team_member WHERE name = ?").get("bob")
+    expect(before).toBeTruthy()
+
+    // Now reject the promise — async rollback should clean up
+    rejectFn!(new Error("delivery failed"))
+    // Give the microtask queue time to process the .catch()
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    const after = deps.db.query("SELECT name FROM team_member WHERE name = ?").get("bob")
+    expect(after).toBeNull()
+  })
+
+  test("notifies lead via team_message when promptAsync fails", async () => {
+    deps.client.session.promptAsync = async () => { throw new Error("delivery failed") }
+
+    await executeTeamSpawn(deps, {
+      name: "charlie",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    // Give the microtask queue time to process the .catch()
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    // A message to the lead should be in the DB
+    const msg = deps.db.query(
+      "SELECT * FROM team_message WHERE team_id = ? AND to_name = 'lead' AND from_name = 'system'"
+    ).get("t1") as Record<string, unknown> | null
+    expect(msg).toBeTruthy()
+    expect(msg!.content).toContain("charlie")
+    expect(msg!.content).toContain("failed")
   })
 })

@@ -6,11 +6,11 @@ function extractError(err: unknown): string {
   return String(err)
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyFn = (...args: any[]) => Promise<any>
+/** Generic async SDK method type. Actual type safety enforced by PluginClient interface. */
+type SdkMethod = (...args: unknown[]) => Promise<unknown>
 
 /** Wrap a single async SDK method to throw on { error } responses. */
-function throwing(fn: AnyFn): AnyFn {
+function throwing(fn: SdkMethod): SdkMethod {
   return async (...args: unknown[]) => {
     const result = await fn(...args)
     if (result && typeof result === "object" && "error" in result && result.error !== undefined) {
@@ -22,9 +22,9 @@ function throwing(fn: AnyFn): AnyFn {
 
 /** Shape of the raw v2 SDK client — just the methods we wrap. */
 interface RawClient {
-  session: { create: AnyFn; promptAsync: AnyFn; abort: AnyFn; status: AnyFn }
-  tui: { showToast: AnyFn; selectSession: AnyFn }
-  worktree: { create: AnyFn; remove: AnyFn; list: AnyFn; reset: AnyFn }
+  session: { create: SdkMethod; promptAsync: SdkMethod; abort: SdkMethod; status: SdkMethod }
+  tui: { showToast: SdkMethod; selectSession: SdkMethod }
+  worktree: { create: SdkMethod; remove: SdkMethod; list: SdkMethod; reset: SdkMethod }
 }
 
 /**

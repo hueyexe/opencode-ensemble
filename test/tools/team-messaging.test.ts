@@ -173,6 +173,48 @@ describe("team_broadcast", () => {
   })
 })
 
+describe("team_broadcast — fire-and-forget promptAsync", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.registry.register("t1", "bob", "sess-bob")
+  })
+
+  test("returns immediately even if promptAsync never resolves", async () => {
+    deps.client.session.promptAsync = () => new Promise(() => { /* never resolves */ })
+
+    const result = await executeTeamBroadcast(deps, { text: "update" }, "sess-alice")
+    expect(result).toContain("Broadcast")
+  })
+})
+
+describe("team_message — fire-and-forget promptAsync", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    deps.registry.register("t1", "alice", "sess-alice")
+  })
+
+  test("returns immediately even if promptAsync never resolves", async () => {
+    deps.client.session.promptAsync = () => new Promise(() => { /* never resolves */ })
+
+    const result = await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+    expect(result).toContain("lead")
+
+    // Message should be in DB
+    const rows = deps.db.query("SELECT * FROM team_message WHERE team_id = ?").all("t1") as Array<Record<string, unknown>>
+    expect(rows).toHaveLength(1)
+  })
+})
+
 describe("team_message — busy-session guard", () => {
   let deps: ReturnType<typeof setupDeps>
 

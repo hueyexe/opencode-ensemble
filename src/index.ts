@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
-import { OpencodeClient as OpencodeClientV2 } from "@opencode-ai/sdk/v2"
-import path from "path"
+import { OpencodeClient } from "@opencode-ai/sdk/v2"
+import path from "node:path"
 import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
 import { wrapThrowingClient } from "./client"
@@ -24,7 +24,7 @@ import { executeTeamClaim } from "./tools/team-claim"
 import { executeTeamResults } from "./tools/team-results"
 import { executeTeamStatus } from "./tools/team-status"
 import { executeTeamView } from "./tools/team-view"
-import type { ToolDeps, PluginClient } from "./types"
+import type { ToolDeps, } from "./types"
 import { TokenBucket } from "./rate-limit"
 import { Watchdog } from "./watchdog"
 
@@ -49,11 +49,12 @@ const plugin: Plugin = async (input) => {
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()
 
-  // Reuse the v1 client's working HTTP transport with v2's method signatures.
-  // The v1 client (input.client) has the correct connection (Unix socket/auth),
-  // while v2 gives us flat params + permission on create + agent/tools on promptAsync.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rawClient = new OpencodeClientV2({ client: (input.client as any)._client })
+  // Extract the working HeyAPI transport from the plugin-provided v1 client and pass it
+  // to the v2 OpencodeClient. The plugin framework provides a v1 client which stores its
+  // HeyAPI transport as `_client` (underscore). The v2 constructor accepts it as `client`.
+  type V2Transport = ConstructorParameters<typeof OpencodeClient>[0] extends { client?: infer C } ? C : never
+  const pluginTransport = (input.client as unknown as { _client: V2Transport })._client
+  const rawClient = new OpencodeClient({ client: pluginTransport })
   const client = wrapThrowingClient(rawClient)
   const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory }
 
@@ -172,7 +173,7 @@ const plugin: Plugin = async (input) => {
       if (!teamInfo) return
       const prompt = teamInfo.role === "lead"
         ? buildLeadSystemPrompt(db, teamInfo.teamId)
-        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName!)
+        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
       output.system.push(prompt)
     },
 

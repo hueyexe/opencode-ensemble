@@ -13,7 +13,7 @@ export async function executeTeamClaim(
   const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
   if (!teamInfo) throw new Error("This session is not in a team.")
 
-  const claimerName = teamInfo.role === "lead" ? "lead" : teamInfo.memberName!
+  const claimerName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
   const task = deps.db.query("SELECT * FROM team_task WHERE id = ? AND team_id = ?")
     .get(args.task_id, teamInfo.teamId) as Record<string, unknown> | null

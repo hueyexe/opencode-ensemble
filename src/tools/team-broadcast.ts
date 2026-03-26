@@ -13,7 +13,7 @@ export async function executeTeamBroadcast(
   const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
   if (!teamInfo) throw new Error("This session is not in a team. Use team_create first.")
 
-  const senderName = teamInfo.role === "lead" ? "lead" : teamInfo.memberName!
+  const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
   const msgId = broadcastMessage(deps.db, {
     teamId: teamInfo.teamId,
@@ -39,24 +39,17 @@ export async function executeTeamBroadcast(
     }
   }
 
-  // Deliver to all recipients — partial failures logged but don't fail the broadcast
+  // Fire-and-forget: deliver to all recipients. Message is already persisted in DB.
   let delivered = 0
   for (const recipient of recipients) {
-    try {
-      await deps.client.session.promptAsync({
-        sessionID: recipient.sessionId,
-        parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
-      })
+    deps.client.session.promptAsync({
+      sessionID: recipient.sessionId,
+      parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
+    }).then(() => {
       delivered++
-    } catch {
-      // Log but don't fail
-    }
+      if (delivered === 1) markDelivered(deps.db, msgId)
+    }).catch(() => { /* partial failure is expected */ })
   }
 
-  // Only mark delivered if at least one recipient received it
-  if (delivered > 0) {
-    markDelivered(deps.db, msgId)
-  }
-
-  return `Broadcast sent to ${delivered} recipient${delivered !== 1 ? "s" : ""}.`
+  return `Broadcast sent to ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""}.`
 }

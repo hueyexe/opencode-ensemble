@@ -94,10 +94,7 @@ export function checkToolIsolation(
   if (registry.isTeamSession(sessionId)) return
 
   // Check if this session is a descendant of any team member
-  const allTeamSessions = new Set<string>()
-  for (const entry of registry["bySession"].keys()) {
-    allTeamSessions.add(entry)
-  }
+  const allTeamSessions = registry.allSessionIds()
 
   if (allTeamSessions.size > 0 && tracker.isDescendantOf(sessionId, allTeamSessions)) {
     throw new Error("Team tools are not available to sub-agents. Report findings to your parent teammate via your normal output.")

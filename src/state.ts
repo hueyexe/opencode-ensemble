@@ -59,6 +59,11 @@ export class MemberRegistry {
   isTeamSession(sessionId: string): boolean {
     return this.bySession.has(sessionId)
   }
+
+  /** Get all registered session IDs. */
+  allSessionIds(): Set<string> {
+    return new Set(this.bySession.keys())
+  }
 }
 
 const DEFAULT_MAX_DEPTH = 10

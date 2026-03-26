@@ -88,7 +88,8 @@ export function applyMigrations(db: Database): void {
   const { user_version: current } = db.query("PRAGMA user_version").get() as { user_version: number }
 
   for (let i = current; i < MIGRATIONS.length; i++) {
-    db.exec(MIGRATIONS[i]!)
+    const migration = MIGRATIONS[i]
+    if (migration) db.exec(migration)
     db.exec(`PRAGMA user_version = ${i + 1}`)
   }
 }

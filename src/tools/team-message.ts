@@ -14,7 +14,7 @@ export async function executeTeamMessage(
   const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
   if (!teamInfo) throw new Error("This session is not in a team. Use team_create first.")
 
-  const senderName = teamInfo.role === "lead" ? "lead" : teamInfo.memberName!
+  const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
   const recipientSessionId = resolveRecipientSession(deps.db, deps.registry, teamInfo.teamId, args.to)
   if (!recipientSessionId) throw new Error(`Recipient "${args.to}" not found in team "${teamInfo.teamName}"`)
@@ -85,12 +85,14 @@ export async function executeTeamMessage(
     return `Message sent to ${args.to}. (queued — recipient is busy)`
   }
 
-  await deps.client.session.promptAsync({
+  // Fire-and-forget: message is already persisted in DB. If delivery fails,
+  // the idle-flush backstop will redeliver it.
+  deps.client.session.promptAsync({
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],
-  })
-
-  markDelivered(deps.db, msgId)
+  }).then(() => {
+    markDelivered(deps.db, msgId)
+  }).catch(() => { /* message stays delivered=0, idle-flush will retry */ })
 
   return `Message sent to ${args.to}.`
 }

@@ -1,6 +1,8 @@
 import type { ToolDeps, PermissionRule } from "../types"
-import { generateId, validateMemberName } from "../util"
+import { validateMemberName } from "../util"
 import { findTeamBySession } from "../types"
+import { sendMessage } from "../messaging"
+import { handleLeadIdleFlush } from "../hooks"
 
 /**
  * Execute the team_spawn tool. Creates a child session and starts a teammate.
@@ -156,23 +158,45 @@ export async function executeTeamSpawn(
 
   const contextStr = context.join("\n")
 
-  // Fire-and-forget: send prompt to teammate session
-  try {
-    await deps.client.session.promptAsync({
-      sessionID: childSessionId,
-      parts: [{ type: "text", text: contextStr }],
-      agent: args.agent,
-    })
-  } catch (err) {
-    // Rollback: clean up DB, registry, session, and worktree
-    deps.db.run("DELETE FROM team_member WHERE team_id = ? AND name = ?", [teamInfo.teamId, args.name])
-    deps.registry.unregister(childSessionId)
-    try { await deps.client.session.abort({ sessionID: childSessionId }) } catch { /* best effort */ }
-    if (worktreeDir) {
-      try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
-    }
-    throw new Error(`Failed to send initial prompt to teammate "${args.name}": ${err instanceof Error ? err.message : String(err)}`)
-  }
+  // Fire-and-forget: send prompt to teammate session.
+  // Do NOT await — promptAsync is HTTP 204 (returns immediately on the server)
+  // but awaiting it can block if the transport is slow or broken (e.g. proxy).
+  // The child session is already created and registered. If delivery fails,
+  // the async .catch() rolls back the member and the watchdog handles stale members.
+  deps.client.session.promptAsync({
+    sessionID: childSessionId,
+    parts: [{ type: "text", text: contextStr }],
+    agent: args.agent,
+  }).catch(() => {
+    try {
+      // Async rollback: clean up DB (by session_id to avoid deleting a re-spawned member with the same name), registry, session, and worktree
+      deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
+      deps.registry.unregister(childSessionId)
+      deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
+      if (worktreeDir) {
+        deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
+      }
+      // Notify user that spawn failed so the lead doesn't think the teammate is active
+      deps.client.tui.showToast({
+        title: "Team",
+        message: `Teammate "${args.name}" failed to start and was removed`,
+        variant: "error",
+        duration: 5000,
+      }).catch(() => { /* TUI may not be available */ })
+      // Notify the lead model so it can react (retry, adjust plan, etc.)
+      sendMessage(deps.db, {
+        teamId: teamInfo.teamId,
+        from: "system",
+        to: "lead",
+        content: `Teammate "${args.name}" failed to start and was removed. You may retry the spawn.`,
+      })
+      const team = deps.db.query("SELECT lead_session_id FROM team WHERE id = ?")
+        .get(teamInfo.teamId) as { lead_session_id: string } | null
+      if (team) {
+        handleLeadIdleFlush(deps.db, deps.client, team.lead_session_id).catch(() => {})
+      }
+    } catch { /* rollback failed — watchdog will clean up stale member */ }
+  })
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""

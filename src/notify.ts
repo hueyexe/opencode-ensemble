@@ -3,17 +3,6 @@ import type { PluginClient } from "./types"
 
 type TeamEventType = "spawn" | "message" | "completed" | "error" | "shutdown"
 
-interface SpawnEvent { memberName: string; agent: string }
-interface MessageEvent { from: string; to: string }
-interface MemberEvent { memberName: string }
-
-type TeamEventData =
-  | { type: "spawn"; data: SpawnEvent }
-  | { type: "message"; data: MessageEvent }
-  | { type: "completed"; data: MemberEvent }
-  | { type: "error"; data: MemberEvent }
-  | { type: "shutdown"; data: MemberEvent }
-
 const TOAST_CONFIG: Record<TeamEventType, { variant: "info" | "success" | "warning" | "error"; duration: number }> = {
   spawn: { variant: "success", duration: 3000 },
   message: { variant: "info", duration: 3000 },
