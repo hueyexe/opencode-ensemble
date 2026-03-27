@@ -1,6 +1,7 @@
 import type { ToolDeps } from "../types"
 import { findTeamBySession } from "../types"
 import { broadcastMessage, markDelivered } from "../messaging"
+import { log } from "../log"
 
 /**
  * Execute the team_broadcast tool. Sends a message to all team members + lead (excluding sender).
@@ -48,7 +49,9 @@ export async function executeTeamBroadcast(
     }).then(() => {
       delivered++
       if (delivered === 1) markDelivered(deps.db, msgId)
-    }).catch(() => { /* partial failure is expected */ })
+    }).catch((err) => {
+      log(`team_broadcast:deliver:failed to=${recipient.name} err=${err instanceof Error ? err.message : String(err)}`)
+    })
   }
 
   return `Broadcast sent to ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""}.`

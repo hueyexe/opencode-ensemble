@@ -184,11 +184,15 @@ describe("recoverUndeliveredMessages", () => {
     expect(msgs[0]!.delivered).toBe(1)
   })
 
-  test("redelivers undelivered messages to lead", async () => {
+  test("skips lead-bound messages (delivered via system prompt transform instead)", async () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(1)
+    expect(result.redelivered).toBe(0)
+
+    // No promptAsync calls for lead messages
+    const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
   })
 
   test("skips already-delivered messages", async () => {
@@ -204,16 +208,16 @@ describe("recoverUndeliveredMessages", () => {
     expect(result.redelivered).toBe(0)
   })
 
-  test("handles multiple undelivered messages", async () => {
+  test("handles multiple undelivered messages (skips lead-bound)", async () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "msg1" })
     sendMessage(db, { teamId: "t1", from: "bob", to: "alice", content: "msg2" })
     sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "msg3" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(3)
+    expect(result.redelivered).toBe(2) // only member-to-member, not lead
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
-    expect(promptCalls).toHaveLength(3)
+    expect(promptCalls).toHaveLength(2)
   })
 
   test("continues on partial failure", async () => {
@@ -266,7 +270,7 @@ describe("recoverUndeliveredMessages", () => {
     expect(result.redelivered).toBe(0)
   })
 
-  test("recovers messages across multiple active teams", async () => {
+  test("recovers member-to-member messages across multiple active teams (skips lead-bound)", async () => {
     // Set up a second team
     db.run(
       "INSERT INTO team (id, name, lead_session_id, status, delegate, time_created, time_updated) VALUES (?, ?, ?, 'active', 0, ?, ?)",
@@ -282,10 +286,10 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t2", from: "charlie", to: "lead", content: "msg for t2" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(2)
+    expect(result.redelivered).toBe(1) // only member-to-member, lead-bound skipped
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
-    expect(promptCalls).toHaveLength(2)
+    expect(promptCalls).toHaveLength(1)
   })
 })
 

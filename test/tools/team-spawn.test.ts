@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamSpawn } from "../../src/tools/team-spawn"
 import type { ToolDeps } from "../../src/types"
@@ -565,4 +565,48 @@ describe("team_spawn — fire-and-forget promptAsync", () => {
     expect(msg!.content).toContain("charlie")
     expect(msg!.content).toContain("failed")
   })
+})
+
+describe("team_spawn — timeout on session.create / worktree.create", () => {
+  let deps: ReturnType<typeof setupDeps>
+  const originalTimeout = process.env.SPAWN_TIMEOUT_MS
+
+  beforeEach(() => {
+    process.env.SPAWN_TIMEOUT_MS = "500"
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  afterEach(() => {
+    if (originalTimeout) { process.env.SPAWN_TIMEOUT_MS = originalTimeout }
+    else { delete process.env.SPAWN_TIMEOUT_MS }
+  })
+
+  test("throws timeout error if session.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
+    // Mock session.create to never resolve (simulates git lock contention)
+    deps.client.session.create = () => new Promise(() => { /* never resolves */ })
+
+    await expect(executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")).rejects.toThrow(/timed out/i)
+  }, 10000)
+
+  test("falls back to shared directory if worktree.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
+    // Mock worktree.create to never resolve
+    deps.client.worktree.create = () => new Promise(() => { /* never resolves */ })
+
+    const result = await executeTeamSpawn(deps, {
+      name: "bob",
+      agent: "build",
+      prompt: "Fix tests",
+      worktree: true,
+    }, "lead-sess")
+
+    // Should succeed with fallback — no worktree branch in output
+    expect(result).toContain("bob")
+    expect(result).toContain("spawned")
+    expect(result).not.toContain("branch:")
+  }, 10000)
 })

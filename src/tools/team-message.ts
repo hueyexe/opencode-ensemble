@@ -1,6 +1,7 @@
 import type { ToolDeps } from "../types"
 import { findTeamBySession, resolveRecipientSession } from "../types"
 import { sendMessage, markDelivered } from "../messaging"
+import { log } from "../log"
 
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
@@ -56,43 +57,33 @@ export async function executeTeamMessage(
     content: messageText,
   })
 
-  // Deliver via promptAsync — truncate lead-bound messages over 500 chars
   const isToLead = args.to === "lead"
-  const MAX_LEAD_MSG = 500
-  let deliveryText: string
-  if (isToLead && messageText.length > MAX_LEAD_MSG) {
-    const truncated = messageText.slice(0, MAX_LEAD_MSG)
-    deliveryText = `[Team message from ${senderName}]: ${truncated}... (use team_results to read full message)`
-  } else {
-    deliveryText = `[Team message from ${senderName}]: ${messageText}`
+
+  // Lead-bound messages: store in DB, then wake the lead with a minimal promptAsync.
+  // The system prompt transform delivers the actual message content on the lead's next turn.
+  // This runs in the teammate's worktree instance — the event hook can't wake the lead
+  // because session.idle events are scoped per-instance.
+  if (isToLead) {
+    log(`team_message:wake-lead from=${senderName} recipientSession=${recipientSessionId}`)
+    deps.client.session.promptAsync({
+      sessionID: recipientSessionId,
+      parts: [{ type: "text", text: `[System: New team message from ${senderName}]` }],
+    }).catch((err) => {
+      log(`team_message:wake-lead:failed from=${senderName} err=${err instanceof Error ? err.message : String(err)}`)
+    })
+    return `Message sent to ${args.to}.`
   }
 
-  // Check if recipient is busy — if so, queue the message for later delivery.
-  // TOCTOU: status check and promptAsync are not atomic. A recipient can transition
-  // idle→busy between the check and delivery. This is accepted as benign — the idle-flush
-  // backstop catches anything that slips through, so no messages are lost.
-  let recipientBusy = false
-  try {
-    const statusResult = await deps.client.session.status()
-    const sessionStatus = statusResult.data?.[recipientSessionId]
-    if (sessionStatus?.type === "busy") {
-      recipientBusy = true
-    }
-  } catch { /* status check failed — deliver anyway as best effort */ }
-
-  if (recipientBusy) {
-    // Message is stored in DB with delivered=0, will be flushed when recipient goes idle
-    return `Message sent to ${args.to}. (queued — recipient is busy)`
-  }
-
-  // Fire-and-forget: message is already persisted in DB. If delivery fails,
-  // the idle-flush backstop will redeliver it.
+  // For member-to-member messages, fire-and-forget delivery is safe.
+  const deliveryText = `[Team message from ${senderName}]: ${messageText}`
   deps.client.session.promptAsync({
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],
   }).then(() => {
     markDelivered(deps.db, msgId)
-  }).catch(() => { /* message stays delivered=0, idle-flush will retry */ })
+  }).catch((err) => {
+    log(`team_message:deliver:failed to=${args.to} err=${err instanceof Error ? err.message : String(err)}`)
+  })
 
   return `Message sent to ${args.to}.`
 }

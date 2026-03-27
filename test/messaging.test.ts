@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test"
 import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
-import { sendMessage, broadcastMessage, getUndeliveredMessages, markDelivered, flushPendingMessages } from "../src/messaging"
+import { sendMessage, broadcastMessage, getUndeliveredMessages, markDelivered } from "../src/messaging"
 import { setupDb as sharedSetupDb, insertTeam, insertMember, mockClient } from "./helpers"
 
 function setupDb(): Database {
@@ -215,74 +215,5 @@ describe("markDelivered", () => {
     expect(() => markDelivered(db, id)).not.toThrow()
     const row = db.query("SELECT delivered FROM team_message WHERE id = ?").get(id) as { delivered: number }
     expect(row.delivered).toBe(1)
-  })
-})
-
-describe("flushPendingMessages", () => {
-  test("delivers undelivered messages to the lead and marks them delivered", async () => {
-    const db = setupDb()
-    const client = mockClient()
-
-    // Insert two undelivered messages to lead
-    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "msg1" })
-    sendMessage(db, { teamId: "t1", from: "bob", to: "lead", content: "msg2" })
-
-    const count = await flushPendingMessages(db, client, "t1", "lead-sess")
-    expect(count).toBe(2)
-
-    // Both should now be delivered
-    const undelivered = getUndeliveredMessages(db, "t1")
-    expect(undelivered).toHaveLength(0)
-
-    // promptAsync should be called exactly ONCE (batched delivery)
-    const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
-    expect(promptCalls).toHaveLength(1)
-
-    // The single delivery should contain both messages
-    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
-    expect(delivered).toContain("alice")
-    expect(delivered).toContain("msg1")
-    expect(delivered).toContain("bob")
-    expect(delivered).toContain("msg2")
-  })
-
-  test("returns 0 when no pending messages exist", async () => {
-    const db = setupDb()
-    const client = mockClient()
-
-    const count = await flushPendingMessages(db, client, "t1", "lead-sess")
-    expect(count).toBe(0)
-  })
-
-  test("skips messages not addressed to lead", async () => {
-    const db = setupDb()
-    const client = mockClient()
-
-    // Message to bob, not lead
-    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hey bob" })
-
-    const count = await flushPendingMessages(db, client, "t1", "lead-sess")
-    expect(count).toBe(0)
-
-    // Message should still be undelivered
-    const undelivered = getUndeliveredMessages(db, "t1")
-    expect(undelivered).toHaveLength(1)
-  })
-
-  test("returns 0 and leaves messages undelivered when batched promptAsync fails", async () => {
-    const db = setupDb()
-    const client = mockClient()
-
-    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "msg1" })
-    sendMessage(db, { teamId: "t1", from: "bob", to: "lead", content: "msg2" })
-
-    client.session.promptAsync = async () => { throw new Error("delivery failed") }
-
-    const count = await flushPendingMessages(db, client, "t1", "lead-sess")
-    expect(count).toBe(0)
-
-    // Messages should remain undelivered for next flush attempt
-    const undelivered = getUndeliveredMessages(db, "t1")
-    expect(undelivered).toHaveLength(2)
   })
 })

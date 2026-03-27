@@ -67,14 +67,44 @@ describe("buildLeadSystemPrompt", () => {
     expect(result).toContain("shutting down")
   })
 
-  test("does NOT include sequential spawn guidance (busy-guard handles this now)", () => {
+  test("includes one-at-a-time spawn guidance", () => {
     const db = setupDb()
     insertTeam(db, "t5", "seq-team", "lead-sess")
 
     const result = buildLeadSystemPrompt(db, "t5")
 
-    expect(result).not.toMatch(/spawn.*one.*at a time/i)
-    expect(result).not.toMatch(/verify.*spawn.*succeed/i)
+    expect(result).toMatch(/one.*at a time/i)
+    expect(result).toMatch(/one team_spawn call per response/i)
+  })
+
+  test("delivers pending messages inline in system prompt and marks them delivered", () => {
+    const db = setupDb()
+    insertTeam(db, "t6", "msg-team", "lead-sess")
+    insertMember(db, "t6", "alice", "sess-a")
+
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m1", "t6", "alice", "lead", "done", Date.now()])
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m2", "t6", "alice", "lead", "also done", Date.now()])
+
+    const result = buildLeadSystemPrompt(db, "t6")
+
+    expect(result).toContain("--- Team Messages ---")
+    expect(result).toContain("[From alice]: done")
+    expect(result).toContain("[From alice]: also done")
+
+    // Messages should now be marked delivered
+    const undelivered = db.query("SELECT COUNT(*) as c FROM team_message WHERE team_id = 't6' AND delivered = 0").get() as { c: number }
+    expect(undelivered.c).toBe(0)
+  })
+
+  test("does not show messages section when no undelivered messages", () => {
+    const db = setupDb()
+    insertTeam(db, "t7", "clean-team", "lead-sess")
+
+    const result = buildLeadSystemPrompt(db, "t7")
+
+    expect(result).not.toContain("Team Messages")
   })
 })
 

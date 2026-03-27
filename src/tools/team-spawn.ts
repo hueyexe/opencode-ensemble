@@ -2,7 +2,23 @@ import type { ToolDeps, PermissionRule } from "../types"
 import { validateMemberName } from "../util"
 import { findTeamBySession } from "../types"
 import { sendMessage } from "../messaging"
-import { handleLeadIdleFlush } from "../hooks"
+import { log } from "../log"
+
+/** Timeout for worktree.create and session.create to prevent hanging on git lock contention. */
+function getSpawnTimeout(): number {
+  return Number(process.env.SPAWN_TIMEOUT_MS) || 120_000
+}
+
+/** Race a promise against a timeout. Throws if the timeout fires first. Cleans up timer on resolution. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    }),
+  ])
+}
 
 /**
  * Execute the team_spawn tool. Creates a child session and starts a teammate.
@@ -30,6 +46,8 @@ export async function executeTeamSpawn(
   const useWorktree = args.worktree !== false
   const usePlanApproval = args.plan_approval === true
 
+  log(`spawn:start name=${args.name} agent=${args.agent} worktree=${useWorktree}`)
+
   // Create worktree if enabled
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
@@ -37,13 +55,18 @@ export async function executeTeamSpawn(
   if (useWorktree) {
     const worktreeName = `ensemble-${teamInfo.teamName}-${args.name}`
     try {
-      const result = await deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } })
+      log(`spawn:worktree:start name=${args.name}`)
+      const result = await withTimeout(
+        deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }),
+        getSpawnTimeout(), `worktree.create for "${args.name}"`
+      )
       if (result.data) {
         worktreeDir = result.data.directory
         worktreeBranch = result.data.branch
       }
-    } catch {
-      // Worktree creation failed — fall back to shared directory with a warning
+      log(`spawn:worktree:done name=${args.name} dir=${worktreeDir}`)
+    } catch (err) {
+      log(`spawn:worktree:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
       try {
         await deps.client.tui.showToast({
           title: "Team",
@@ -71,14 +94,20 @@ export async function executeTeamSpawn(
   // Create child session — use worktree directory if available
   let childSessionId: string | undefined
   try {
-    const createResult = await deps.client.session.create({
-      parentID: sessionId,
-      title: `${args.name} (@${args.agent} teammate)`,
-      ...(permission ? { permission } : {}),
-      ...(worktreeDir ? { directory: worktreeDir } : {}),
-    })
+    log(`spawn:session:start name=${args.name}`)
+    const createResult = await withTimeout(
+      deps.client.session.create({
+        parentID: sessionId,
+        title: `${args.name} (@${args.agent} teammate)`,
+        ...(permission ? { permission } : {}),
+        ...(worktreeDir ? { directory: worktreeDir } : {}),
+      }),
+      getSpawnTimeout(), `session.create for "${args.name}"`
+    )
     childSessionId = createResult.data?.id
+    log(`spawn:session:done name=${args.name} sessionId=${childSessionId}`)
   } catch (err) {
+    log(`spawn:session:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
     // Rollback worktree if session creation failed
     if (worktreeDir) {
       try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
@@ -159,15 +188,13 @@ export async function executeTeamSpawn(
   const contextStr = context.join("\n")
 
   // Fire-and-forget: send prompt to teammate session.
-  // Do NOT await — promptAsync is HTTP 204 (returns immediately on the server)
-  // but awaiting it can block if the transport is slow or broken (e.g. proxy).
-  // The child session is already created and registered. If delivery fails,
-  // the async .catch() rolls back the member and the watchdog handles stale members.
+  log(`spawn:promptAsync:fire name=${args.name} sessionId=${childSessionId}`)
   deps.client.session.promptAsync({
     sessionID: childSessionId,
     parts: [{ type: "text", text: contextStr }],
     agent: args.agent,
   }).catch(() => {
+    log(`spawn:promptAsync:failed name=${args.name} — rolling back`)
     try {
       // Async rollback: clean up DB (by session_id to avoid deleting a re-spawned member with the same name), registry, session, and worktree
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
@@ -184,21 +211,18 @@ export async function executeTeamSpawn(
         duration: 5000,
       }).catch(() => { /* TUI may not be available */ })
       // Notify the lead model so it can react (retry, adjust plan, etc.)
+      // Message delivered via system prompt transform on the lead's next turn.
       sendMessage(deps.db, {
         teamId: teamInfo.teamId,
         from: "system",
         to: "lead",
         content: `Teammate "${args.name}" failed to start and was removed. You may retry the spawn.`,
       })
-      const team = deps.db.query("SELECT lead_session_id FROM team WHERE id = ?")
-        .get(teamInfo.teamId) as { lead_session_id: string } | null
-      if (team) {
-        handleLeadIdleFlush(deps.db, deps.client, team.lead_session_id).catch(() => {})
-      }
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
+  log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
   return `Teammate "${args.name}" spawned (agent: ${args.agent})${branchInfo}${planInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }

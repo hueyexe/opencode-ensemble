@@ -24,6 +24,14 @@ export function validateTeamName(name: string): string | undefined {
 }
 
 /**
+ * Detect if the plugin is loading inside a teammate's worktree instance.
+ * Worktree instances should skip recovery to avoid deadlocking the server.
+ */
+export function isWorktreeInstance(directory: string): boolean {
+  return directory.includes("/worktree/") && directory.includes("/ensemble-")
+}
+
+/**
  * Validate a member name. Same rules as team name, plus "lead" is reserved.
  * Returns an error message string if invalid, undefined if valid.
  */

@@ -25,7 +25,7 @@ describe("team_message", () => {
     expect(rows[0]!.from_name).toBe("alice")
     expect(rows[0]!.to_name).toBe("lead")
 
-    // Check promptAsync was called on lead session
+    // Check promptAsync WAS called — wake-up for the lead
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
   })
@@ -58,29 +58,30 @@ describe("team_message", () => {
       .rejects.toThrow("10KB")
   })
 
-  test("message to lead over 500 chars is truncated in promptAsync delivery", async () => {
+  test("message to lead over 500 chars is stored in DB (wake-up sent, content via system prompt)", async () => {
     const longText = "a".repeat(600)
-    await executeTeamMessage(deps, { to: "lead", text: longText }, "sess-alice")
+    const result = await executeTeamMessage(deps, { to: "lead", text: longText }, "sess-alice")
+    expect(result).toContain("Message sent to lead")
 
+    // promptAsync called once (wake-up only, not full content)
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
-    expect(delivered.length).toBeLessThan(longText.length + 50) // truncated, not full
-    expect(delivered).toContain("...")
-    expect(delivered).toContain("use team_results to read full message")
-    // Must NOT contain the full original text
-    expect(delivered).not.toContain(longText)
+
+    // Full content stored in DB
+    const row = deps.db.query("SELECT content FROM team_message WHERE team_id = ?").get("t1") as { content: string }
+    expect(row.content).toBe(longText)
   })
 
-  test("message to lead under 500 chars is delivered in full", async () => {
+  test("message to lead under 500 chars is stored in DB (wake-up sent, content via system prompt)", async () => {
     const shortText = "b".repeat(400)
-    await executeTeamMessage(deps, { to: "lead", text: shortText }, "sess-alice")
+    const result = await executeTeamMessage(deps, { to: "lead", text: shortText }, "sess-alice")
+    expect(result).toContain("Message sent to lead")
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
-    const delivered = (promptCalls[0]!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
-    expect(delivered).toContain(shortText)
-    expect(delivered).not.toContain("use team_results to read full message")
+
+    const row = deps.db.query("SELECT content FROM team_message WHERE team_id = ?").get("t1") as { content: string }
+    expect(row.content).toBe(shortText)
   })
 
   test("message to teammate is always delivered in full regardless of size", async () => {
@@ -215,7 +216,7 @@ describe("team_message — fire-and-forget promptAsync", () => {
   })
 })
 
-describe("team_message — busy-session guard", () => {
+describe("team_message — lead-bound messages wake the lead", () => {
   let deps: ReturnType<typeof setupDeps>
 
   beforeEach(() => {
@@ -225,55 +226,48 @@ describe("team_message — busy-session guard", () => {
     deps.registry.register("t1", "alice", "sess-alice")
   })
 
-  test("skips promptAsync when recipient session is busy", async () => {
-    // Mock status to report lead session as busy
-    deps.client.session.status = async () => {
-      deps.client.calls.push({ method: "session.status", args: [] })
-      return { data: { "lead-sess": { type: "busy" } } }
-    }
-
+  test("fires promptAsync wake-up on lead session for lead-bound messages", async () => {
     const result = await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
-    expect(result).toContain("queued")
+    expect(result).toContain("Message sent to lead")
 
-    // promptAsync should NOT have been called
+    // promptAsync should be called once (wake-up)
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
-    expect(promptCalls).toHaveLength(0)
+    expect(promptCalls).toHaveLength(1)
 
-    // Message should be in DB with delivered = 0
+    // Wake-up should target the lead session
+    const call = promptCalls[0]!.args[0] as { sessionID: string; parts: Array<{ text: string }> }
+    expect(call.sessionID).toBe("lead-sess")
+    expect(call.parts[0]!.text).toContain("System")
+    expect(call.parts[0]!.text).toContain("alice")
+  })
+
+  test("stores message in DB with delivered=0 (system prompt transform delivers content)", async () => {
+    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+
     const rows = deps.db.query("SELECT delivered FROM team_message WHERE team_id = ?").all("t1") as Array<{ delivered: number }>
     expect(rows).toHaveLength(1)
     expect(rows[0]!.delivered).toBe(0)
   })
 
-  test("calls promptAsync when recipient session is idle", async () => {
-    deps.client.session.status = async () => {
-      deps.client.calls.push({ method: "session.status", args: [] })
-      return { data: { "lead-sess": { type: "idle" } } }
-    }
+  test("returns immediately even if promptAsync never resolves (fire-and-forget)", async () => {
+    deps.client.session.promptAsync = () => new Promise(() => { /* never resolves */ })
 
-    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
-
-    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
-    expect(promptCalls).toHaveLength(1)
+    const result = await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+    expect(result).toContain("Message sent to lead")
   })
 
-  test("calls promptAsync when status check fails (best effort delivery)", async () => {
-    deps.client.session.status = async () => { throw new Error("status unavailable") }
-
+  test("never calls session.status for lead-bound messages", async () => {
     await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
 
-    // Should still attempt delivery on status failure
-    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
-    expect(promptCalls).toHaveLength(1)
+    const statusCalls = deps.client.calls.filter(c => c.method === "session.status")
+    expect(statusCalls).toHaveLength(0)
   })
 
-  test("calls promptAsync when recipient not found in status map (session not tracked)", async () => {
-    deps.client.session.status = async () => {
-      deps.client.calls.push({ method: "session.status", args: [] })
-      return { data: { "other-sess": { type: "busy" } } }
-    }
+  test("still calls promptAsync for member-to-member messages", async () => {
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "bob", "sess-bob")
 
-    await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+    await executeTeamMessage(deps, { to: "bob", text: "hey" }, "sess-alice")
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { generateId, validateTeamName, validateMemberName } from "../src/util"
+import { generateId, validateTeamName, validateMemberName, isWorktreeInstance } from "../src/util"
 
 describe("generateId", () => {
   test("returns a string", () => {
@@ -76,5 +76,19 @@ describe("validateMemberName", () => {
 
   test("rejects invalid characters", () => {
     expect(validateMemberName("my_worker")).toBe("Member name must be lowercase alphanumeric with hyphens only")
+  })
+})
+
+describe("isWorktreeInstance", () => {
+  test("returns true for worktree directories", () => {
+    expect(isWorktreeInstance("/home/user/.local/share/opencode/worktree/abc123/ensemble-team-alice")).toBe(true)
+  })
+
+  test("returns false for normal project directories", () => {
+    expect(isWorktreeInstance("/home/user/repositories/my-project")).toBe(false)
+  })
+
+  test("returns false for empty string", () => {
+    expect(isWorktreeInstance("")).toBe(false)
   })
 })

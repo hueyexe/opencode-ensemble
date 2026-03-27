@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import { markDelivered } from "./messaging"
 
 /** Status display mapping from DB status to human-readable label. */
 const STATUS_DISPLAY: Record<string, string> = {
@@ -40,16 +41,43 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
     ? `Teammates: ${memberList}`
     : "Teammates: none"
 
-  return [
+  const pendingMessages = db.query(
+    "SELECT id, from_name, content FROM team_message WHERE team_id = ? AND to_name = 'lead' AND delivered = 0 ORDER BY time_created ASC"
+  ).all(teamId) as Array<{ id: string; from_name: string; content: string }>
+
+  const lines = [
     `You are leading team "${team.name}" with ${members.length} active teammates.`,
     teammateLine,
     `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
+  ]
+
+  if (pendingMessages.length > 0) {
+    lines.push("", "--- Team Messages ---")
+    const MAX_MSG = 500
+    for (const msg of pendingMessages) {
+      if (msg.content.length > MAX_MSG) {
+        lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (use team_results to read full message)`)
+      } else {
+        lines.push(`[From ${msg.from_name}]: ${msg.content}`)
+      }
+      markDelivered(db, msg.id)
+    }
+    lines.push("--- End Messages ---")
+  }
+
+  lines.push(
+    "",
+    "CRITICAL: Spawn teammates ONE AT A TIME. Send only ONE team_spawn call per response.",
+    "Wait for the tool result before spawning the next teammate.",
+    "Multiple team_spawn calls in a single response will cause timeouts.",
     "",
     "Teammates work asynchronously and message you when done.",
     "Do NOT poll team_status or team_tasks_list repeatedly — wait for messages.",
-    "After spawning teammates, tell the user what you've set up and wait.",
+    "After spawning all teammates, tell the user what you've set up and wait.",
     "When all teammates finish, summarize results and suggest next steps.",
-  ].join("\n")
+  )
+
+  return lines.join("\n")
 }
 
 /**

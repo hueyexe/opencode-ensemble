@@ -1,7 +1,5 @@
 import type { Database } from "bun:sqlite"
 import type { MemberRegistry, DescendantTracker } from "./state"
-import type { PluginClient } from "./types"
-import { flushPendingMessages } from "./messaging"
 
 const TEAM_TOOL_PREFIX = "team_"
 
@@ -99,18 +97,4 @@ export function checkToolIsolation(
   if (allTeamSessions.size > 0 && tracker.isDescendantOf(sessionId, allTeamSessions)) {
     throw new Error("Team tools are not available to sub-agents. Report findings to your parent teammate via your normal output.")
   }
-}
-
-/**
- * Check if a session going idle is a team lead with pending messages.
- * If so, flush them via promptAsync. Called from the event hook on idle transitions.
- */
-export async function handleLeadIdleFlush(
-  db: Database,
-  client: PluginClient,
-  sessionId: string,
-): Promise<number> {
-  const team = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'").get(sessionId) as { id: string } | null
-  if (!team) return 0
-  return flushPendingMessages(db, client, team.id, sessionId)
 }

@@ -98,7 +98,8 @@ export async function recoverUndeliveredMessages(
       let recipientSessionId: string | undefined
 
       if (msg.to_name === "lead") {
-        recipientSessionId = team.lead_session_id
+        // Skip lead-bound messages — the system prompt transform delivers them
+        continue
       } else if (msg.to_name) {
         const entry = registry.getByName(team.id, msg.to_name)
         recipientSessionId = entry?.sessionId

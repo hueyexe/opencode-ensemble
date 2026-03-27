@@ -7,9 +7,11 @@ import { createDb, getDbPath } from "./db"
 import { wrapThrowingClient } from "./client"
 import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
-import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, handleLeadIdleFlush } from "./hooks"
+import { isWorktreeInstance } from "./util"
+import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
+import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
@@ -55,30 +57,36 @@ const plugin: Plugin = async (input) => {
   type V2Transport = ConstructorParameters<typeof OpencodeClient>[0] extends { client?: infer C } ? C : never
   const pluginTransport = (input.client as unknown as { _client: V2Transport })._client
   const rawClient = new OpencodeClient({ client: pluginTransport })
+  initLog(rawClient)
   const client = wrapThrowingClient(rawClient)
   const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory }
 
-  // Run recovery on init — mark stale busy members as error + abort orphaned sessions
-  const recovery = await recoverStaleMembers(db, client)
-  if (recovery.interrupted > 0) {
-    // Rebuild registry from DB for recovered members
-    const members = db.query(
-      "SELECT tm.team_id, tm.name, tm.session_id FROM team_member tm JOIN team t ON tm.team_id = t.id WHERE t.status = 'active'"
-    ).all() as Array<{ team_id: string; name: string; session_id: string }>
-    for (const m of members) {
-      registry.register(m.team_id, m.name, m.session_id)
+  // Recovery only runs for the main project instance — NOT for teammate worktree instances.
+  // Worktree instances are created during session.create. Running recovery there makes HTTP
+  // calls back to the server, which deadlocks because the server is still handling session.create.
+  if (!isWorktreeInstance(input.directory)) {
+    log("init:recovery:start (main instance)")
+    const recovery = await recoverStaleMembers(db, client)
+    if (recovery.interrupted > 0) {
+      log(`init:recovery:interrupted=${recovery.interrupted}`)
+      const members = db.query(
+        "SELECT tm.team_id, tm.name, tm.session_id FROM team_member tm JOIN team t ON tm.team_id = t.id WHERE t.status = 'active'"
+      ).all() as Array<{ team_id: string; name: string; session_id: string }>
+      for (const m of members) {
+        registry.register(m.team_id, m.name, m.session_id)
+      }
     }
+
+    recoverUndeliveredMessages(db, client, registry).catch((err) => {
+      log(`init:recover-messages:failed err=${err instanceof Error ? err.message : String(err)}`)
+    })
+    recoverOrphanedWorktrees(db, client).catch((err) => {
+      log(`init:recover-worktrees:failed err=${err instanceof Error ? err.message : String(err)}`)
+    })
+    log("init:recovery:done")
+  } else {
+    log(`init:skip-recovery (worktree instance: ${input.directory})`)
   }
-
-  // Redeliver undelivered messages from previous sessions
-  recoverUndeliveredMessages(db, client, registry).catch(() => {
-    // Best effort — don't block plugin init
-  })
-
-  // Clean up orphaned worktrees from crashed teams
-  recoverOrphanedWorktrees(db, client).catch(() => {
-    // Best effort — don't block plugin init
-  })
 
   // Initialize rate limiter
   // OPENCODE_ENSEMBLE_RATE_LIMIT=0 disables it entirely
@@ -141,9 +149,22 @@ const plugin: Plugin = async (input) => {
           await notifyWorkingProgress(client, db, transition.teamId)
         }
 
-        // Flush pending messages to the lead when their session goes idle
+        // Wake the lead when it goes idle and has pending messages.
+        // The system prompt transform delivers the actual message content.
         if (statusType === "idle") {
-          handleLeadIdleFlush(db, client, sessionID).catch(() => { /* best effort */ })
+          const team = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'").get(sessionID) as { id: string } | null
+          if (team) {
+            const pending = db.query("SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = 'lead' AND delivered = 0").get(team.id) as { c: number }
+            if (pending.c > 0) {
+              log(`wake-lead: ${pending.c} pending messages, sending promptAsync`)
+              client.session.promptAsync({
+                sessionID,
+                parts: [{ type: "text", text: `[System: ${pending.c} new team message(s) available]` }],
+              }).catch((err) => {
+                log(`wake-lead:failed err=${err instanceof Error ? err.message : String(err)}`)
+              })
+            }
+          }
         }
       }
 
@@ -171,9 +192,11 @@ const plugin: Plugin = async (input) => {
       if (!input.sessionID) return
       const teamInfo = findTeamBySession(db, registry, input.sessionID)
       if (!teamInfo) return
+      log(`system-prompt:transform role=${teamInfo.role} session=${input.sessionID}`)
       const prompt = teamInfo.role === "lead"
         ? buildLeadSystemPrompt(db, teamInfo.teamId)
         : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
+      log(`system-prompt:injected role=${teamInfo.role} len=${prompt.length}`)
       output.system.push(prompt)
     },
 
