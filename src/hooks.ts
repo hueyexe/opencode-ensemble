@@ -98,3 +98,17 @@ export function checkToolIsolation(
     throw new Error("Team tools are not available to sub-agents. Report findings to your parent teammate via your normal output.")
   }
 }
+
+/**
+ * Check if a member went idle without ever sending a message to the lead.
+ * Returns true if the member is idle/ready and has no outbound messages.
+ */
+export function shouldNudgeIdleMember(db: Database, teamId: string, memberName: string): boolean {
+  const member = db.query("SELECT status FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { status: string } | null
+  if (!member || member.status !== "ready") return false
+
+  const msg = db.query("SELECT id FROM team_message WHERE team_id = ? AND from_name = ? AND (to_name = 'lead' OR to_name IS NULL) LIMIT 1")
+    .get(teamId, memberName) as { id: string } | null
+  return !msg
+}

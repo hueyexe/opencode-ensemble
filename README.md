@@ -243,7 +243,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 370 tests
+bun test             # 377 tests
 bun run build
 ```
 

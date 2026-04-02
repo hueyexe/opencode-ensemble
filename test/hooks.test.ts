@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
 import { MemberRegistry, DescendantTracker } from "../src/state"
-import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "../src/hooks"
+import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "../src/hooks"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
 import { sendMessage } from "../src/messaging"
@@ -529,5 +529,78 @@ describe("shell.env logic", () => {
 
     const teamInfo = findTeamBySession(db, registry, "random-sess")
     expect(teamInfo).toBeUndefined()
+  })
+})
+
+// --- Fix 3: idle-without-reporting nudge ---
+
+describe("shouldNudgeIdleMember", () => {
+  let db: Database
+
+  beforeEach(() => {
+    db = setupDb()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+  })
+
+  test("returns true when member went idle without sending any messages", () => {
+    insertMember(db, "t1", "alice", "sess-alice", "ready", "idle")
+    expect(shouldNudgeIdleMember(db, "t1", "alice")).toBe(true)
+  })
+
+  test("returns false when member has sent a message to the lead", () => {
+    insertMember(db, "t1", "alice", "sess-alice", "ready", "idle")
+    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "here are my results" })
+    expect(shouldNudgeIdleMember(db, "t1", "alice")).toBe(false)
+  })
+
+  test("returns false when member status is shutdown", () => {
+    insertMember(db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    expect(shouldNudgeIdleMember(db, "t1", "alice")).toBe(false)
+  })
+
+  test("returns false when member status is busy", () => {
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+    expect(shouldNudgeIdleMember(db, "t1", "alice")).toBe(false)
+  })
+})
+
+// --- Fix 2: stronger teammate system prompt ---
+
+describe("buildTeammateSystemPrompt — reporting requirement", () => {
+  let db: Database
+
+  beforeEach(() => {
+    db = setupDb()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+  })
+
+  test("includes mandatory reporting instruction", () => {
+    const prompt = buildTeammateSystemPrompt(db, "t1", "alice")
+    expect(prompt).toContain("team_message")
+    expect(prompt).toContain("before stopping")
+  })
+})
+
+// --- Fix 1: compaction preserves completion requirement ---
+
+describe("buildTeamCompactionContext — completion requirement", () => {
+  let db: Database
+
+  beforeEach(() => {
+    db = setupDb()
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+  })
+
+  test("member compaction context includes reporting requirement", () => {
+    const ctx = buildTeamCompactionContext(db, "t1", "member", "alice")
+    expect(ctx).toContain("team_message")
+    expect(ctx).toContain("before stopping")
+  })
+
+  test("lead compaction context does NOT include reporting requirement", () => {
+    const ctx = buildTeamCompactionContext(db, "t1", "lead")
+    expect(ctx).not.toContain("before stopping")
   })
 })

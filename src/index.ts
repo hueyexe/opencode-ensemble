@@ -8,7 +8,7 @@ import { wrapThrowingClient } from "./client"
 import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { isWorktreeInstance } from "./util"
-import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation } from "./hooks"
+import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
@@ -50,6 +50,7 @@ const plugin: Plugin = async (input) => {
   // Initialize in-memory state
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()
+  const nudgedMembers = new Set<string>()
 
   // Extract the working HeyAPI transport from the plugin-provided v1 client and pass it
   // to the v2 OpencodeClient. The plugin framework provides a v1 client which stores its
@@ -123,6 +124,16 @@ const plugin: Plugin = async (input) => {
             notifyTeamEvent(client, "shutdown", { memberName: transition.memberName })
           } else if (transition.to === "ready" && transition.from === "busy") {
             notifyTeamEvent(client, "completed", { memberName: transition.memberName })
+            // Nudge teammate if they went idle without reporting to the lead (once only)
+            const nudgeKey = `${transition.teamId}:${transition.memberName}`
+            if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName)) {
+              nudgedMembers.add(nudgeKey)
+              log(`nudge:idle-without-report name=${transition.memberName}`)
+              client.session.promptAsync({
+                sessionID,
+                parts: [{ type: "text", text: "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now." }],
+              }).catch(() => { /* best effort */ })
+            }
           } else if (transition.to === "error") {
             notifyTeamEvent(client, "error", { memberName: transition.memberName })
           } else if (transition.to === "retry") {

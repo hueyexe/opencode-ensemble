@@ -92,7 +92,7 @@ export function buildTeammateSystemPrompt(db: Database, teamId: string, memberNa
   const team = db.query("SELECT name FROM team WHERE id = ?").get(teamId) as { name: string } | null
   if (!team) return ""
 
-  return `You are "${memberName}", a teammate in team "${team.name}". Use team_message to communicate.`
+  return `You are "${memberName}", a teammate in team "${team.name}". Use team_message to communicate. You MUST send your results to the lead via team_message before stopping.`
 }
 
 /**
@@ -135,9 +135,15 @@ export function buildTeamCompactionContext(
     ? `Members: ${memberList}`
     : "Members: none"
 
-  return [
+  const lines = [
     roleLine,
     membersLine,
     `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
-  ].join("\n")
+  ]
+
+  if (role === "member") {
+    lines.push("IMPORTANT: You MUST send your results to the lead via team_message before stopping.")
+  }
+
+  return lines.join("\n")
 }
