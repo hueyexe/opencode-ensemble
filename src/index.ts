@@ -217,10 +217,13 @@ const plugin: Plugin = async (input) => {
       output.env.ENSEMBLE_ROLE = teamInfo.role
       if (teamInfo.memberName) {
         output.env.ENSEMBLE_MEMBER = teamInfo.memberName
-        const member = db.query("SELECT worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
-          .get(teamInfo.teamId, teamInfo.memberName) as { worktree_branch: string | null } | null
+        const member = db.query("SELECT worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
+          .get(teamInfo.teamId, teamInfo.memberName) as { worktree_branch: string | null; worktree_dir: string | null } | null
         if (member?.worktree_branch) {
           output.env.ENSEMBLE_BRANCH = member.worktree_branch
+        }
+        if (member?.worktree_dir) {
+          output.env.ENSEMBLE_WORKTREE_DIR = member.worktree_dir
         }
       }
     },

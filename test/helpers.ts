@@ -64,6 +64,20 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
         return {}
       },
     },
+    workspace: {
+      async create(options) {
+        calls.push({ method: "workspace.create", args: [options] })
+        return { data: { id: `ws-${Date.now()}`, type: "worktree", branch: options.branch ?? null, directory: null, projectID: "proj-1" } }
+      },
+      async remove(options) {
+        calls.push({ method: "workspace.remove", args: [options] })
+        return {}
+      },
+      async list() {
+        calls.push({ method: "workspace.list", args: [] })
+        return { data: [] }
+      },
+    },
   }
 }
 

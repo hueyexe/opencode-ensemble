@@ -62,6 +62,11 @@ export interface PluginClient {
     list(): Promise<{ data?: Array<{ name: string; branch: string; directory: string }> }>
     reset(options: { worktreeResetInput?: { directory: string } }): Promise<unknown>
   }
+  workspace: {
+    create(options: { id?: string; type?: string; branch?: string | null; extra?: unknown | null }): Promise<{ data?: { id: string; type: string; branch: string | null; directory: string | null; projectID: string } }>
+    remove(options: { id: string }): Promise<unknown>
+    list(): Promise<{ data?: Array<{ id: string; type: string; branch: string | null; directory: string | null; projectID: string }> }>
+  }
 }
 
 /**

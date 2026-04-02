@@ -78,6 +78,8 @@ export const MIGRATIONS: string[] = [
      CHECK(plan_approval IN ('none', 'pending', 'approved', 'rejected'));`,
   // Migration 5: Track lead's agent mode so message delivery preserves it
   `ALTER TABLE team ADD COLUMN lead_agent TEXT;`,
+  // Migration 6: Track workspace ID for worktree-session binding
+  `ALTER TABLE team_member ADD COLUMN workspace_id TEXT;`,
 ]
 
 /**

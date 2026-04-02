@@ -48,6 +48,11 @@ function mockClient(): PluginClient & { calls: Array<{ method: string; args: unk
       async list() { calls.push({ method: "worktree.list", args: [] }); return { data: [] } },
       async reset(options) { calls.push({ method: "worktree.reset", args: [options] }); return {} },
     },
+    workspace: {
+      async create(options) { calls.push({ method: "workspace.create", args: [options] }); return { data: { id: "ws-1", type: "worktree", branch: null, directory: null, projectID: "proj-1" } } },
+      async remove(options) { calls.push({ method: "workspace.remove", args: [options] }); return {} },
+      async list() { calls.push({ method: "workspace.list", args: [] }); return { data: [] } },
+    },
   }
 }
 

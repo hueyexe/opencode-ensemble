@@ -21,6 +21,13 @@ function fakeSDK(overrides: Record<string, unknown> = {}) {
       list: overrides["worktree.list"] ?? (async () => ({ data: [] })),
       reset: overrides["worktree.reset"] ?? (async () => ({ data: {} })),
     },
+    experimental: {
+      workspace: {
+        create: overrides["workspace.create"] ?? (async () => ({ data: { id: "ws-1", type: "worktree", branch: null, directory: null, projectID: "proj-1" } })),
+        remove: overrides["workspace.remove"] ?? (async () => ({ data: {} })),
+        list: overrides["workspace.list"] ?? (async () => ({ data: [] })),
+      },
+    },
   }
 }
 
@@ -59,6 +66,20 @@ describe("wrapThrowingClient", () => {
     expect(typeof client.worktree.remove).toBe("function")
     expect(typeof client.worktree.list).toBe("function")
     expect(typeof client.worktree.reset).toBe("function")
+  })
+
+  test("wraps all workspace methods", async () => {
+    const client = wrapThrowingClient(fakeSDK())
+    expect(typeof client.workspace.create).toBe("function")
+    expect(typeof client.workspace.remove).toBe("function")
+    expect(typeof client.workspace.list).toBe("function")
+  })
+
+  test("workspace error throws", async () => {
+    const client = wrapThrowingClient(fakeSDK({
+      "workspace.create": async () => ({ error: { message: "quota exceeded" } }),
+    }))
+    await expect(client.workspace.create({})).rejects.toThrow("quota exceeded")
   })
 
   test("worktree error throws", async () => {

@@ -15,8 +15,8 @@ export async function executeTeamCleanup(
   if (!teamInfo) throw new Error("This session is not in a team.")
   if (teamInfo.role !== "lead") throw new Error("Only the team lead can clean up the team.")
 
-  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch FROM team_member WHERE team_id = ?")
-    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null }>
+  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, workspace_id FROM team_member WHERE team_id = ?")
+    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; workspace_id: string | null }>
 
   const active = members.filter(m => m.status !== "shutdown" && m.status !== "shutdown_requested" && m.status !== "error")
 
@@ -34,12 +34,19 @@ export async function executeTeamCleanup(
     }
   }
 
-  // Remove worktrees and collect branches for merging
+  // Remove workspaces, worktrees, and collect branches for merging
   const branches: string[] = []
   for (const member of members) {
+    if (member.workspace_id) {
+      try {
+        await deps.client.workspace.remove({ id: member.workspace_id })
+        deps.db.run("UPDATE team_member SET workspace_id = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
+      } catch { /* best effort — workspace may already be gone */ }
+    }
     if (member.worktree_dir) {
       try {
         await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
+        deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
       } catch { /* best effort — worktree may already be gone */ }
     }
     if (member.worktree_branch) {

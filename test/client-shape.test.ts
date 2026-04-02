@@ -26,4 +26,10 @@ describe("v2 SDK client shape matches PluginClient", () => {
     expect(typeof client.worktree.list).toBe("function")
     expect(typeof client.worktree.reset).toBe("function")
   })
+
+  test("experimental.workspace methods exist", () => {
+    expect(typeof client.experimental.workspace.create).toBe("function")
+    expect(typeof client.experimental.workspace.remove).toBe("function")
+    expect(typeof client.experimental.workspace.list).toBe("function")
+  })
 })

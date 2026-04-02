@@ -301,6 +301,54 @@ describe("team_spawn", () => {
     expect(text).toContain("branch")
   })
 
+  test("context message does NOT include cd instruction when workspace binding succeeds", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+
+    // Workspace binding succeeded — server handles CWD, no cd instruction needed
+    expect(text).toContain("worktree")
+    expect(text).toContain("branch")
+    expect(text).not.toContain("cd to:")
+  })
+
+  test("context message includes cd instruction when workspace.create fails (fallback)", async () => {
+    deps.client.workspace.create = async () => { throw new Error("workspace failed") }
+
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+
+    // Workspace binding failed — fallback to prompt-based CWD
+    expect(text).toContain("/tmp/worktree-")
+    expect(text).toContain("cd to:")
+  })
+
+  test("context message does not include worktree directory when worktree: false", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "explore",
+      prompt: "Research",
+      worktree: false,
+    }, "lead-sess")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+
+    expect(text).not.toContain("/tmp/worktree-")
+    expect(text).not.toContain("cd")
+  })
+
   test("context message does not mention worktree when worktree: false", async () => {
     await executeTeamSpawn(deps, {
       name: "alice",
@@ -313,6 +361,98 @@ describe("team_spawn", () => {
     const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).not.toContain("worktree")
+  })
+
+  // --- Workspace binding tests (P0-1) ---
+
+  test("calls workspace.create after worktree.create and passes workspaceID to session.create", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    // workspace.create should have been called with the worktree branch
+    const wsCalls = deps.client.calls.filter(c => c.method === "workspace.create")
+    expect(wsCalls).toHaveLength(1)
+    const wsArgs = wsCalls[0]!.args[0] as { branch?: string }
+    expect(wsArgs.branch).toContain("ensemble-")
+
+    // session.create should have workspaceID, NOT directory
+    const createCall = deps.client.calls.find(c => c.method === "session.create")
+    const createArgs = createCall!.args[0] as { workspaceID?: string; directory?: string }
+    expect(createArgs.workspaceID).toBeTruthy()
+    expect(createArgs.directory).toBeUndefined()
+  })
+
+  test("stores workspace_id in DB", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT workspace_id FROM team_member WHERE name = ?").get("alice") as { workspace_id: string | null }
+    expect(row.workspace_id).toBeTruthy()
+  })
+
+  test("workspace.create failure is non-fatal — spawn still succeeds", async () => {
+    deps.client.workspace.create = async () => { throw new Error("workspace failed") }
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+
+    // session.create should NOT have workspaceID (fallback)
+    const createCall = deps.client.calls.find(c => c.method === "session.create")
+    const createArgs = createCall!.args[0] as { workspaceID?: string }
+    expect(createArgs.workspaceID).toBeUndefined()
+  })
+
+  test("skips workspace.create when worktree: false", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "explore",
+      prompt: "Research",
+      worktree: false,
+    }, "lead-sess")
+
+    const wsCalls = deps.client.calls.filter(c => c.method === "workspace.create")
+    expect(wsCalls).toHaveLength(0)
+  })
+
+  test("rolls back workspace when session.create fails", async () => {
+    deps.client.session.create = async () => { throw new Error("session failed") }
+
+    await expect(executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")).rejects.toThrow("session failed")
+
+    const wsRemoveCalls = deps.client.calls.filter(c => c.method === "workspace.remove")
+    expect(wsRemoveCalls).toHaveLength(1)
+  })
+
+  test("rolls back workspace in promptAsync catch handler", async () => {
+    deps.client.session.promptAsync = async () => { throw new Error("delivery failed") }
+
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix tests",
+    }, "lead-sess")
+
+    // Give microtask queue time to process .catch() rollback
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    const wsRemoveCalls = deps.client.calls.filter(c => c.method === "workspace.remove")
+    expect(wsRemoveCalls).toHaveLength(1)
   })
 })
 

@@ -78,6 +78,26 @@ export async function executeTeamSpawn(
     }
   }
 
+  // Create workspace from worktree branch — links session to worktree directory.
+  // OQ-workspace: assumes workspace.create({ branch }) auto-links to the worktree at that branch.
+  let workspaceId: string | null = null
+  if (worktreeDir && worktreeBranch) {
+    try {
+      log(`spawn:workspace:start name=${args.name}`)
+      const wsResult = await withTimeout(
+        deps.client.workspace.create({ branch: worktreeBranch }),
+        getSpawnTimeout(), `workspace.create for "${args.name}"`
+      )
+      if (wsResult.data) {
+        workspaceId = wsResult.data.id
+      }
+      log(`spawn:workspace:done name=${args.name} id=${workspaceId}`)
+    } catch (err) {
+      log(`spawn:workspace:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
+      // Non-fatal — prompt-based CWD instruction is the fallback
+    }
+  }
+
   // Permission rules on session.create are the hard gate (server-enforced).
   // For read-only agents, deny write tools and explicitly allow team tools
   // so the agent's built-in restrictive permissions don't block them.
@@ -91,7 +111,8 @@ export async function executeTeamSpawn(
       ]
     : undefined
 
-  // Create child session — use worktree directory if available
+  // Create child session — bind to workspace if available (server-enforced CWD isolation).
+  // Falls back to no workspace binding if workspace.create failed.
   let childSessionId: string | undefined
   try {
     log(`spawn:session:start name=${args.name}`)
@@ -100,7 +121,7 @@ export async function executeTeamSpawn(
         parentID: sessionId,
         title: `${args.name} (@${args.agent} teammate)`,
         ...(permission ? { permission } : {}),
-        ...(worktreeDir ? { directory: worktreeDir } : {}),
+        ...(workspaceId ? { workspaceID: workspaceId } : {}),
       }),
       getSpawnTimeout(), `session.create for "${args.name}"`
     )
@@ -108,7 +129,10 @@ export async function executeTeamSpawn(
     log(`spawn:session:done name=${args.name} sessionId=${childSessionId}`)
   } catch (err) {
     log(`spawn:session:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
-    // Rollback worktree if session creation failed
+    // Rollback workspace and worktree if session creation failed
+    if (workspaceId) {
+      try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
+    }
     if (worktreeDir) {
       try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
     }
@@ -116,6 +140,9 @@ export async function executeTeamSpawn(
   }
 
   if (!childSessionId) {
+    if (workspaceId) {
+      try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
+    }
     if (worktreeDir) {
       try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
     }
@@ -126,9 +153,9 @@ export async function executeTeamSpawn(
   const planApproval = usePlanApproval ? "pending" : "none"
   const now = Date.now()
   deps.db.run(
-    `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, plan_approval, time_created, time_updated)
-     VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?)`,
-    [teamInfo.teamId, args.name, childSessionId, args.agent, args.model ?? null, args.prompt, worktreeDir, worktreeBranch, planApproval, now, now]
+    `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, workspace_id, plan_approval, time_created, time_updated)
+     VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [teamInfo.teamId, args.name, childSessionId, args.agent, args.model ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
   )
 
   // Register in memory
@@ -140,8 +167,22 @@ export async function executeTeamSpawn(
     `Your agent type is "${args.agent}".`,
   ]
 
-  if (worktreeBranch) {
-    context.push(`You are working on branch "${worktreeBranch}" in your own worktree. Your changes are isolated from other teammates.`)
+  if (worktreeBranch && worktreeDir && !workspaceId) {
+    // Workspace binding failed — fallback to prompt-based CWD instruction
+    context.push(
+      `You are working on branch "${worktreeBranch}" in your own worktree at: ${worktreeDir}`,
+      `Your changes are isolated from other teammates.`,
+      `IMPORTANT: All file operations and shell commands MUST target your worktree directory.`,
+      `Before running shell commands, cd to: ${worktreeDir}`,
+    )
+  } else if (worktreeBranch && worktreeDir) {
+    // Workspace binding active — server handles CWD
+    context.push(
+      `You are working on branch "${worktreeBranch}" in your own isolated worktree.`,
+      `Your changes are isolated from other teammates.`,
+    )
+  } else if (worktreeBranch) {
+    context.push(`You are working on branch "${worktreeBranch}". Your changes are isolated from other teammates.`)
   }
 
   // Plan approval mode — teammate must send plan before writing
@@ -200,6 +241,9 @@ export async function executeTeamSpawn(
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
       deps.registry.unregister(childSessionId)
       deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
+      if (workspaceId) {
+        deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
+      }
       if (worktreeDir) {
         deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
       }

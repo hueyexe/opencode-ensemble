@@ -75,6 +75,20 @@ describe("schema migrations", () => {
     expect(row.status).toBe("ready")
   })
 
+  test("migration 6 adds workspace_id column to team_member", () => {
+    const freshDb = new Database(":memory:")
+    freshDb.exec("PRAGMA journal_mode=WAL")
+    freshDb.exec("PRAGMA foreign_keys=ON")
+    applyMigrations(freshDb)
+
+    freshDb.run("INSERT INTO team (id, name, lead_session_id, status, delegate, time_created, time_updated) VALUES ('t1', 'test', 'sess-1', 'active', 0, 1, 1)")
+    freshDb.run("INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, time_created, time_updated) VALUES ('t1', 'alice', 'sess-a', 'build', 'ready', 'idle', 1, 1)")
+
+    const row = freshDb.query("SELECT workspace_id FROM team_member WHERE name = 'alice'").get() as { workspace_id: string | null }
+    expect(row.workspace_id).toBeNull()
+    freshDb.close()
+  })
+
   test("team_member cascade deletes when team is deleted", () => {
     applyMigrations(db)
     db.run("PRAGMA foreign_keys = ON")

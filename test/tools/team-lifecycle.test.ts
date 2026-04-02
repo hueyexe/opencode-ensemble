@@ -267,6 +267,55 @@ describe("team_cleanup", () => {
     expect(result).not.toContain("git merge")
   })
 
+  test("nulls worktree_dir in DB after successful worktree removal", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/worktree-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    await executeTeamCleanup(deps, { force: false }, "lead-sess")
+
+    const row = deps.db.query("SELECT worktree_dir FROM team_member WHERE name = 'alice'").get() as { worktree_dir: string | null }
+    expect(row.worktree_dir).toBeNull()
+  })
+
+  test("calls workspace.remove for members with workspace_id on cleanup", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
+      ["/tmp/worktree-alice", "ensemble-my-team-alice", "ws-alice-123"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    await executeTeamCleanup(deps, { force: false }, "lead-sess")
+
+    const wsRemoveCalls = deps.client.calls.filter(c => c.method === "workspace.remove")
+    expect(wsRemoveCalls).toHaveLength(1)
+    expect((wsRemoveCalls[0]!.args[0] as { id: string }).id).toBe("ws-alice-123")
+  })
+
+  test("nulls workspace_id in DB after successful workspace removal", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
+      ["/tmp/worktree-alice", "ensemble-my-team-alice", "ws-alice-123"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    await executeTeamCleanup(deps, { force: false }, "lead-sess")
+
+    const row = deps.db.query("SELECT workspace_id FROM team_member WHERE name = 'alice'").get() as { workspace_id: string | null }
+    expect(row.workspace_id).toBeNull()
+  })
+
+  test("cleanup continues if workspace.remove fails", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
+      ["/tmp/worktree-alice", "ensemble-my-team-alice", "ws-alice-123"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    deps.client.workspace.remove = async () => { throw new Error("workspace gone") }
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess")
+    expect(result).toContain("cleaned up")
+  })
+
   test("cleanup lists multiple branches when multiple members have worktrees", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     insertMember(deps.db, "t1", "bob", "sess-bob", "shutdown", "idle")

@@ -25,6 +25,7 @@ interface RawClient {
   session: { create: SdkMethod; promptAsync: SdkMethod; abort: SdkMethod; status: SdkMethod }
   tui: { showToast: SdkMethod; selectSession: SdkMethod }
   worktree: { create: SdkMethod; remove: SdkMethod; list: SdkMethod; reset: SdkMethod }
+  experimental: { workspace: { create: SdkMethod; remove: SdkMethod; list: SdkMethod } }
 }
 
 /**
@@ -49,6 +50,11 @@ export function wrapThrowingClient(raw: unknown): PluginClient {
       remove: throwing(r.worktree.remove.bind(r.worktree)),
       list: throwing(r.worktree.list.bind(r.worktree)),
       reset: throwing(r.worktree.reset.bind(r.worktree)),
+    },
+    workspace: {
+      create: throwing(r.experimental.workspace.create.bind(r.experimental.workspace)),
+      remove: throwing(r.experimental.workspace.remove.bind(r.experimental.workspace)),
+      list: throwing(r.experimental.workspace.list.bind(r.experimental.workspace)),
     },
   } as PluginClient
 }

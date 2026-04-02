@@ -501,6 +501,29 @@ describe("shell.env logic", () => {
     expect(member?.worktree_branch).toBe("ensemble-my-team-alice")
   })
 
+  test("includes worktree dir when available", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    db.run("UPDATE team_member SET worktree_dir = '/tmp/wt-alice', worktree_branch = 'ensemble-my-team-alice' WHERE name = 'alice'")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+    // Mirror the FIXED production code from index.ts shell.env hook
+    const member = db.query("SELECT worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
+      .get(teamInfo!.teamId, teamInfo!.memberName!) as { worktree_branch: string | null; worktree_dir: string | null } | null
+
+    const env: Record<string, string> = {}
+    if (member?.worktree_branch) {
+      env.ENSEMBLE_BRANCH = member.worktree_branch
+    }
+    if (member?.worktree_dir) {
+      env.ENSEMBLE_WORKTREE_DIR = member.worktree_dir
+    }
+
+    expect(env.ENSEMBLE_BRANCH).toBe("ensemble-my-team-alice")
+    expect(env.ENSEMBLE_WORKTREE_DIR).toBe("/tmp/wt-alice")
+  })
+
   test("no env vars for non-team session", () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
 
