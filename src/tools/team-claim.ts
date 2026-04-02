@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireTeamMember } from "./shared"
 
 /**
  * Execute the team_claim tool. Atomically claims a pending task.
@@ -10,8 +10,7 @@ export async function executeTeamClaim(
   args: { task_id: string },
   sessionId: string,
 ): Promise<string> {
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team.")
+  const teamInfo = requireTeamMember(deps, sessionId)
 
   const claimerName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 

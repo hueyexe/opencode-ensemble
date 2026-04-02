@@ -195,7 +195,41 @@ describe("team_spawn", () => {
     expect(deps.registry.listByTeam("t1")).toHaveLength(0)
   })
 
+  test("context message includes structured completion format", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice", agent: "build", prompt: "Fix tests",
+    }, "lead-sess")
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+    expect(text).toContain("<task-result>")
+    expect(text).toContain("<status>")
+    expect(text).toContain("<summary>")
+  })
+
+  test("read-only agent gets shorter tool list without write tools", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice", agent: "explore", prompt: "Research",
+    }, "lead-sess")
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+    expect(text).toContain("team_message")
+    expect(text).not.toContain("team_tasks_add")
+    expect(text).not.toContain("team_tasks_complete")
+    expect(text).not.toContain("team_claim")
+  })
+
   // --- Worktree tests ---
+
+  test("skips worktree creation when already inside a worktree", async () => {
+    deps.directory = "/home/user/.local/share/opencode/worktree/abc123/some-worktree"
+    const result = await executeTeamSpawn(deps, {
+      name: "alice", agent: "build", prompt: "Fix tests",
+    }, "lead-sess")
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+  })
 
   test("creates a worktree by default and stores dir/branch in DB", async () => {
     const result = await executeTeamSpawn(deps, {
@@ -536,9 +570,7 @@ describe("team_spawn — agent mode enforcement", () => {
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
   })
 
-  const EXPECTED_READONLY_PERMISSION = [
-    { permission: "edit", pattern: "*", action: "deny" },
-    { permission: "bash", pattern: "*", action: "deny" },
+  const TEAM_TOOL_PERMISSIONS = [
     { permission: "team_message", pattern: "*", action: "allow" },
     { permission: "team_broadcast", pattern: "*", action: "allow" },
     { permission: "team_tasks_list", pattern: "*", action: "allow" },
@@ -547,28 +579,42 @@ describe("team_spawn — agent mode enforcement", () => {
     { permission: "team_claim", pattern: "*", action: "allow" },
   ]
 
-  test("plan agent gets permission deny + team tool allow rules on session.create", async () => {
+  test("plan agent gets worktree edit allow + deny + team tool allow rules on session.create", async () => {
     await executeTeamSpawn(deps, { name: "planner", agent: "plan", prompt: "Plan it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
-    expect(opts.permission).toEqual(EXPECTED_READONLY_PERMISSION)
+    expect(opts.permission).toEqual([
+      { permission: "edit", pattern: "/tmp/worktree-ensemble-my-team-planner/**", action: "allow" },
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "bash", pattern: "*", action: "deny" },
+      ...TEAM_TOOL_PERMISSIONS,
+    ])
   })
 
-  test("explore agent gets permission deny + team tool allow rules on session.create", async () => {
+  test("explore agent gets worktree edit allow + deny + team tool allow rules on session.create", async () => {
     await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Explore it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
-    expect(opts.permission).toEqual(EXPECTED_READONLY_PERMISSION)
+    expect(opts.permission).toEqual([
+      { permission: "edit", pattern: "/tmp/worktree-ensemble-my-team-explorer/**", action: "allow" },
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "bash", pattern: "*", action: "deny" },
+      ...TEAM_TOOL_PERMISSIONS,
+    ])
   })
 
-  test("build agent does NOT get permission rules on session.create", async () => {
+  test("build agent gets worktree allow + team tool allow rules (no deny)", async () => {
     await executeTeamSpawn(deps, { name: "builder", agent: "build", prompt: "Build it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
-    const opts = createCall!.args[0] as { permission?: unknown }
-    expect(opts.permission).toBeUndefined()
+    const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
+    expect(opts.permission).toEqual([
+      { permission: "edit", pattern: "/tmp/worktree-ensemble-my-team-builder/**", action: "allow" },
+      { permission: "bash", pattern: "*", action: "allow" },
+      ...TEAM_TOOL_PERMISSIONS,
+    ])
   })
 
   test("plan agent gets agent type on promptAsync without deprecated tools field", async () => {

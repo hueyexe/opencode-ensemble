@@ -167,6 +167,14 @@ describe("team_status", () => {
     expect(result).not.toContain("plan:")
   })
 
+  test("includes worktree directory in status output when present", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.db.run("UPDATE team_member SET worktree_dir = ? WHERE name = 'alice'", ["/tmp/wt-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("/tmp/wt-alice")
+  })
+
   test("rejects if not in a team", async () => {
     await expect(executeTeamStatus(deps, "random-sess"))
       .rejects.toThrow("not in a team")

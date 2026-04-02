@@ -1,19 +1,21 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireLead, checkWorktreeDirty } from "./shared"
+import type { IsDirtyFn } from "./shared"
+import { log } from "../log"
 
 /**
  * Execute the team_cleanup tool. Archives the team and cleans up resources.
- * Removes worktrees and lists branches for the lead to merge.
- * If force=true, aborts all active member sessions first.
+ * Checks for uncommitted changes BEFORE aborting sessions or removing worktrees.
+ * If force=true, aborts active sessions but still blocks on dirty worktrees.
+ * Pass acknowledge_uncommitted=true to remove dirty worktrees.
  */
 export async function executeTeamCleanup(
   deps: ToolDeps,
-  args: { force: boolean },
+  args: { force: boolean; acknowledge_uncommitted?: boolean },
   sessionId: string,
+  isDirty: IsDirtyFn = checkWorktreeDirty,
 ): Promise<string> {
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team.")
-  if (teamInfo.role !== "lead") throw new Error("Only the team lead can clean up the team.")
+  const teamInfo = requireLead(deps, sessionId)
 
   const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, workspace_id FROM team_member WHERE team_id = ?")
     .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; workspace_id: string | null }>
@@ -25,7 +27,28 @@ export async function executeTeamCleanup(
     throw new Error(`Cannot clean up team "${teamInfo.teamName}": ${active.length} member(s) still active: ${names}. Use team_shutdown on each member first, or call team_cleanup with force: true to abort them immediately.`)
   }
 
-  // Force-abort active members
+  // Check for uncommitted changes BEFORE aborting sessions — agents can still commit if warned
+  if (!args.acknowledge_uncommitted) {
+    const dirty: Array<{ name: string; branch: string }> = []
+    for (const member of members) {
+      if (member.worktree_dir) {
+        try {
+          if (await isDirty(member.worktree_dir)) {
+            dirty.push({ name: member.name, branch: member.worktree_branch ?? "unknown" })
+          }
+        } catch {
+          log(`cleanup:dirty-check:failed name=${member.name}`)
+        }
+      }
+    }
+
+    if (dirty.length > 0) {
+      const warnings = dirty.map(d => `  - ${d.name} (branch: ${d.branch})`).join("\n")
+      return `Warning: ${dirty.length} teammate(s) have uncommitted changes in their worktrees:\n${warnings}\n\nCommit or merge their work first, then call team_cleanup with acknowledge_uncommitted: true to proceed.`
+    }
+  }
+
+  // Force-abort active members (only reached if worktrees are clean or acknowledged)
   if (args.force) {
     for (const member of active) {
       try {

@@ -79,7 +79,11 @@ Lead: "All validation and tests are complete. 5 endpoints validated,
 
 ## Install
 
-Add the plugin to your OpenCode config. Project-level or global.
+Two steps: add the plugin, then allowlist worktree paths.
+
+### 1. Add the plugin
+
+Add to your OpenCode config. Project-level or global.
 
 **Project-level** (`opencode.json` in your project root):
 
@@ -98,6 +102,24 @@ Add the plugin to your OpenCode config. Project-level or global.
 ```
 
 OpenCode auto-installs npm plugins at startup (cached in `~/.cache/opencode/node_modules/`). No `npm install` needed.
+
+### 2. Allow worktree directory access
+
+Teammates work in git worktrees outside your project directory. Without this permission, OpenCode will prompt you to approve every file operation in a teammate's worktree.
+
+Add to your OpenCode config (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "permission": {
+    "external_directory": {
+      "~/.local/share/opencode/worktree/**": "allow"
+    }
+  }
+}
+```
+
+This is required. Without it, you'll see "Permission required — Access external directory" prompts constantly.
 
 ### Local development
 
@@ -221,7 +243,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 286 tests
+bun test             # 370 tests
 bun run build
 ```
 

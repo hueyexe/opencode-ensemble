@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireTeamMember } from "./shared"
 
 /** Row shape for unread messages query. */
 interface UnreadMessageRow {
@@ -18,8 +18,7 @@ export async function executeTeamResults(
   args: { from?: string },
   sessionId: string,
 ): Promise<string> {
-  const team = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!team) throw new Error("not in a team")
+  const team = requireTeamMember(deps, sessionId)
 
   const rows = args.from
     ? (deps.db

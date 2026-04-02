@@ -1,12 +1,17 @@
 import type { ToolDeps, PermissionRule } from "../types"
 import { validateMemberName } from "../util"
-import { findTeamBySession } from "../types"
+import { requireLead } from "./shared"
 import { sendMessage } from "../messaging"
 import { log } from "../log"
 
 /** Timeout for worktree.create and session.create to prevent hanging on git lock contention. */
 function getSpawnTimeout(): number {
   return Number(process.env.SPAWN_TIMEOUT_MS) || 120_000
+}
+
+/** Returns true if the directory is already inside an OpenCode worktree. */
+function isWorktreeDirectory(dir: string): boolean {
+  return dir.includes("/opencode/worktree/")
 }
 
 /** Race a promise against a timeout. Throws if the timeout fires first. Cleans up timer on resolution. */
@@ -34,16 +39,14 @@ export async function executeTeamSpawn(
   const nameError = validateMemberName(args.name)
   if (nameError) throw new Error(nameError)
 
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team. Use team_create first.")
-  if (teamInfo.role !== "lead") throw new Error("Only the team lead can spawn teammates.")
+  const teamInfo = requireLead(deps, sessionId)
 
   // Check duplicate name
   const existing = deps.db.query("SELECT name FROM team_member WHERE team_id = ? AND name = ?")
     .get(teamInfo.teamId, args.name)
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
-  const useWorktree = args.worktree !== false
+  const useWorktree = args.worktree !== false && !isWorktreeDirectory(deps.directory)
   const usePlanApproval = args.plan_approval === true
 
   log(`spawn:start name=${args.name} agent=${args.agent} worktree=${useWorktree}`)
@@ -99,17 +102,31 @@ export async function executeTeamSpawn(
   }
 
   // Permission rules on session.create are the hard gate (server-enforced).
-  // For read-only agents, deny write tools and explicitly allow team tools
-  // so the agent's built-in restrictive permissions don't block them.
+  // For read-only agents, deny write tools and explicitly allow team tools.
+  // For all agents with worktrees, allowlist the worktree path for edit/bash.
   const isReadOnly = args.agent === "plan" || args.agent === "explore"
   const TEAM_TOOLS = ["team_message", "team_broadcast", "team_tasks_list", "team_tasks_add", "team_tasks_complete", "team_claim"] as const
-  const permission: PermissionRule[] | undefined = isReadOnly
-    ? [
-        { permission: "edit", pattern: "*", action: "deny" },
-        { permission: "bash", pattern: "*", action: "deny" },
-        ...TEAM_TOOLS.map(t => ({ permission: t, pattern: "*", action: "allow" as const })),
-      ]
-    : undefined
+  const permission: PermissionRule[] = []
+
+  if (worktreeDir) {
+    permission.push(
+      { permission: "edit", pattern: `${worktreeDir}/**`, action: "allow" },
+    )
+    if (!isReadOnly) {
+      permission.push({ permission: "bash", pattern: "*", action: "allow" })
+    }
+  }
+
+  if (isReadOnly) {
+    permission.push(
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "bash", pattern: "*", action: "deny" },
+    )
+  }
+
+  permission.push(
+    ...TEAM_TOOLS.map(t => ({ permission: t, pattern: "*", action: "allow" as const })),
+  )
 
   // Create child session — bind to workspace if available (server-enforced CWD isolation).
   // Falls back to no workspace binding if workspace.create failed.
@@ -120,7 +137,7 @@ export async function executeTeamSpawn(
       deps.client.session.create({
         parentID: sessionId,
         title: `${args.name} (@${args.agent} teammate)`,
-        ...(permission ? { permission } : {}),
+        permission,
         ...(workspaceId ? { workspaceID: workspaceId } : {}),
       }),
       getSpawnTimeout(), `session.create for "${args.name}"`
@@ -196,20 +213,55 @@ export async function executeTeamSpawn(
     )
   }
 
+  if (isReadOnly) {
+    context.push(
+      "", "Tools available to you:",
+      "- team_message: send a message to the lead or another teammate",
+      "- team_broadcast: send a message to all team members",
+      "- team_tasks_list: view the shared team task board",
+    )
+  } else {
+    context.push(
+      "", "Tools available to you:",
+      "- team_message: send a message to the lead or another teammate",
+      "- team_broadcast: send a message to all team members",
+      "- team_tasks_list: view the shared team task board",
+      "- team_tasks_add: add tasks to the shared board",
+      "- team_tasks_complete: mark a task complete on the shared board",
+      "- team_claim: claim a pending task from the shared board",
+    )
+  }
+
+  context.push("", "When you finish your task:")
+  if (!isReadOnly && worktreeBranch) {
+    context.push(`1. Commit your changes: git add -A && git commit -m "your summary"`)
+    context.push("2. If you claimed a task, mark it complete using team_tasks_complete.")
+    context.push(
+      "3. Send ONE message to the lead using team_message with this format:",
+    )
+  } else if (!isReadOnly) {
+    context.push("1. If you claimed a task, mark it complete using team_tasks_complete.")
+    context.push(
+      "2. Send ONE message to the lead using team_message with this format:",
+    )
+  } else {
+    context.push(
+      "1. Send ONE message to the lead using team_message with this format:",
+    )
+  }
   context.push(
-    "",
-    "Tools available to you:",
-    "- team_message: send a message to the lead or another teammate",
-    "- team_broadcast: send a message to all team members",
-    "- team_tasks_list: view the shared team task board",
-    "- team_tasks_add: add tasks to the shared board",
-    "- team_tasks_complete: mark a task complete on the shared board",
-    "- team_claim: claim a pending task from the shared board",
-    "",
-    "When you finish your task:",
-    "1. If you claimed a task, mark it complete using team_tasks_complete.",
-    "2. Send ONE message to the lead with your findings using team_message.",
-    "3. STOP. Do not send follow-up confirmations, status updates, or 'standing by' messages.",
+    "<task-result>",
+    "<status>completed or failed</status>",
+    "<summary>One-line summary of what you did</summary>",
+    "<details>Full findings or changes made</details>",
+  )
+  if (worktreeBranch) {
+    context.push(`<branch>${worktreeBranch}</branch>`)
+  }
+  context.push("</task-result>")
+  const lastStep = !isReadOnly && worktreeBranch ? "4" : !isReadOnly ? "3" : "2"
+  context.push(
+    `${lastStep}. STOP. Do not send follow-up confirmations, status updates, or 'standing by' messages.`,
     "",
     "If you are blocked, send ONE message to the lead describing the specific blocker.",
     "",

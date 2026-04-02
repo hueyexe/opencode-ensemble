@@ -131,4 +131,86 @@ describe("Watchdog", () => {
     const row = deps.db.query("SELECT status FROM team_member WHERE name = 'alice'").get() as Record<string, string>
     expect(row.status).toBe("busy")
   })
+
+  describe("stale worktree GC", () => {
+    test("cleans up stale worktrees for shutdown members past threshold", async () => {
+      const pastTime = Date.now() - 600_000 // 10 min ago
+      deps.db.run(
+        "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, worktree_dir, worktree_branch, time_created, time_updated) VALUES (?, ?, ?, 'build', 'shutdown', 'completed', '/tmp/wt-alice', 'ensemble-alice', ?, ?)",
+        ["t1", "alice", "sess-a", pastTime, pastTime]
+      )
+
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      await watchdog.cleanupStaleWorktrees()
+
+      // worktree.remove should have been called
+      const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+      expect(removeCalls).toHaveLength(1)
+      expect((removeCalls[0]!.args[0] as Record<string, unknown>).worktreeRemoveInput).toEqual({ directory: "/tmp/wt-alice" })
+
+      // DB should have worktree_dir NULLed
+      const row = deps.db.query("SELECT worktree_dir, worktree_branch, workspace_id FROM team_member WHERE name = 'alice'").get() as Record<string, unknown>
+      expect(row.worktree_dir).toBeNull()
+      expect(row.worktree_branch).toBeNull()
+    })
+
+    test("does NOT clean up recently-updated shutdown members", async () => {
+      const now = Date.now()
+      deps.db.run(
+        "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, worktree_dir, worktree_branch, time_created, time_updated) VALUES (?, ?, ?, 'build', 'shutdown', 'completed', '/tmp/wt-alice', 'ensemble-alice', ?, ?)",
+        ["t1", "alice", "sess-a", now, now]
+      )
+
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      await watchdog.cleanupStaleWorktrees()
+
+      const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+      expect(removeCalls).toHaveLength(0)
+
+      const row = deps.db.query("SELECT worktree_dir FROM team_member WHERE name = 'alice'").get() as Record<string, unknown>
+      expect(row.worktree_dir).toBe("/tmp/wt-alice")
+    })
+
+    test("cleans up workspace_id alongside worktree_dir", async () => {
+      const pastTime = Date.now() - 600_000
+      deps.db.run(
+        "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, worktree_dir, worktree_branch, workspace_id, time_created, time_updated) VALUES (?, ?, ?, 'build', 'shutdown', 'completed', '/tmp/wt-bob', 'ensemble-bob', 'ws-123', ?, ?)",
+        ["t1", "bob", "sess-b", pastTime, pastTime]
+      )
+
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      await watchdog.cleanupStaleWorktrees()
+
+      // Both workspace.remove and worktree.remove should be called
+      const wsRemoveCalls = deps.client.calls.filter(c => c.method === "workspace.remove")
+      expect(wsRemoveCalls).toHaveLength(1)
+      expect((wsRemoveCalls[0]!.args[0] as Record<string, unknown>).id).toBe("ws-123")
+
+      const wtRemoveCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+      expect(wtRemoveCalls).toHaveLength(1)
+
+      // DB should have all three NULLed
+      const row = deps.db.query("SELECT worktree_dir, worktree_branch, workspace_id FROM team_member WHERE name = 'bob'").get() as Record<string, unknown>
+      expect(row.worktree_dir).toBeNull()
+      expect(row.worktree_branch).toBeNull()
+      expect(row.workspace_id).toBeNull()
+    })
+
+    test("does NOT clean up worktrees for busy members", async () => {
+      const pastTime = Date.now() - 600_000
+      deps.db.run(
+        "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, worktree_dir, worktree_branch, time_created, time_updated) VALUES (?, ?, ?, 'build', 'busy', 'running', '/tmp/wt-alice', 'ensemble-alice', ?, ?)",
+        ["t1", "alice", "sess-a", pastTime, pastTime]
+      )
+
+      const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+      await watchdog.cleanupStaleWorktrees()
+
+      const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+      expect(removeCalls).toHaveLength(0)
+
+      const row = deps.db.query("SELECT worktree_dir FROM team_member WHERE name = 'alice'").get() as Record<string, unknown>
+      expect(row.worktree_dir).toBe("/tmp/wt-alice")
+    })
+  })
 })

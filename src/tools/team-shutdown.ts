@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireLead, checkWorktreeDirty } from "./shared"
+import type { IsDirtyFn } from "./shared"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
@@ -9,18 +10,19 @@ import { findTeamBySession } from "../types"
  * - If member is idle or force=true, abort immediately and set status='shutdown'.
  * - If member is busy and force=false, send a shutdown message via promptAsync
  *   and set status='shutdown_requested'. The member finishes work and reports back.
+ *
+ * Warns if the member's worktree has uncommitted changes.
  */
 export async function executeTeamShutdown(
   deps: ToolDeps,
   args: { member: string; force?: boolean },
   sessionId: string,
+  isDirty: IsDirtyFn = checkWorktreeDirty,
 ): Promise<string> {
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team.")
-  if (teamInfo.role !== "lead") throw new Error("Only the team lead can shut down teammates.")
+  const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT session_id, status, worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { session_id: string; status: string; worktree_branch: string | null } | null
+  const member = deps.db.query("SELECT session_id, status, worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { session_id: string; status: string; worktree_branch: string | null; worktree_dir: string | null } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
   if (member.status === "shutdown") throw new Error(`Teammate "${args.member}" is already shut down`)
 
@@ -30,7 +32,8 @@ export async function executeTeamShutdown(
   if (member.status === "shutdown_requested") {
     await abortAndShutdown(deps, teamInfo.teamId, args.member, member.session_id)
     const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
-    return `Force shut down "${args.member}".${branchInfo}`
+    const dirtyWarning = await getDirtyWarning(member.worktree_dir, args.member, isDirty)
+    return `Force shut down "${args.member}".${branchInfo}${dirtyWarning}`
   }
 
   // Determine if member is idle or busy
@@ -46,7 +49,8 @@ export async function executeTeamShutdown(
   if (isIdle || force) {
     await abortAndShutdown(deps, teamInfo.teamId, args.member, member.session_id)
     const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
-    return `Teammate "${args.member}" has been shut down.${branchInfo}`
+    const dirtyWarning = await getDirtyWarning(member.worktree_dir, args.member, isDirty)
+    return `Teammate "${args.member}" has been shut down.${branchInfo}${dirtyWarning}`
   }
 
   // Busy + not force → graceful: send shutdown message, set shutdown_requested
@@ -90,4 +94,15 @@ async function abortAndShutdown(
     "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
     [Date.now(), teamId, memberName],
   )
+}
+
+/** Build a warning suffix if the member's worktree has uncommitted changes. */
+async function getDirtyWarning(worktreeDir: string | null, memberName: string, isDirty: IsDirtyFn): Promise<string> {
+  if (!worktreeDir) return ""
+  try {
+    if (await isDirty(worktreeDir)) {
+      return `\n\nWarning: ${memberName} has uncommitted changes in their worktree. Commit or merge before calling team_cleanup.`
+    }
+  } catch { /* best effort */ }
+  return ""
 }

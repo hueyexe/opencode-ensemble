@@ -146,6 +146,39 @@ describe("team_shutdown", () => {
     expect(text).toContain("[Shutdown requested]")
     expect(text).toContain("team_message")
   })
+
+  // --- Dirty worktree warning tests ---
+
+  test("shutdown warns about uncommitted changes when worktree is dirty", async () => {
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "idle" } } }
+    }
+
+    const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess", async () => true)
+
+    expect(result).toContain("shut down")
+    expect(result).toContain("uncommitted")
+    expect(result).toContain("alice")
+  })
+
+  test("shutdown does not warn when worktree is clean", async () => {
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+
+    deps.client.session.status = async () => {
+      deps.client.calls.push({ method: "session.status", args: [] })
+      return { data: { "sess-alice": { type: "idle" } } }
+    }
+
+    const result = await executeTeamShutdown(deps, { member: "alice" }, "lead-sess", async () => false)
+
+    expect(result).toContain("shut down")
+    expect(result).not.toContain("uncommitted")
+  })
 })
 
 describe("team_cleanup", () => {
@@ -332,5 +365,80 @@ describe("team_cleanup", () => {
 
     const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
     expect(removeCalls).toHaveLength(2)
+  })
+
+  // --- Dirty worktree protection tests ---
+
+  test("blocks cleanup and warns when worktree has uncommitted changes", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", async () => true)
+
+    // Should warn, NOT remove worktree, NOT archive team
+    expect(result).toContain("uncommitted")
+    expect(result).toContain("alice")
+    expect(result).toContain("acknowledge_uncommitted")
+
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(0)
+
+    const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
+    expect(team.status).toBe("active")
+  })
+
+  test("force=true still blocks on dirty worktrees (does not abort sessions or remove worktrees)", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: true }, "lead-sess", async () => true)
+
+    // Dirty check runs BEFORE abort — sessions should NOT be aborted
+    const abortCalls = deps.client.calls.filter(c => c.method === "session.abort")
+    expect(abortCalls).toHaveLength(0)
+
+    // Should warn about dirty worktree, NOT remove it
+    expect(result).toContain("uncommitted")
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(0)
+
+    // Team should NOT be archived
+    const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
+    expect(team.status).toBe("active")
+  })
+
+  test("acknowledge_uncommitted=true proceeds despite dirty worktrees", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false, acknowledge_uncommitted: true }, "lead-sess", async () => true)
+
+    expect(result).toContain("cleaned up")
+
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(1)
+
+    const team = deps.db.query("SELECT status FROM team WHERE id = ?").get("t1") as Record<string, string>
+    expect(team.status).toBe("archived")
+  })
+
+  test("clean worktrees proceed without acknowledge_uncommitted", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
+      ["/tmp/wt-alice", "ensemble-my-team-alice"])
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", async () => false)
+
+    expect(result).toContain("cleaned up")
+
+    const removeCalls = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(removeCalls).toHaveLength(1)
   })
 })

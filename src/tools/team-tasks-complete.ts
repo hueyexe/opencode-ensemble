@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireTeamMember } from "./shared"
 
 /**
  * Execute the team_tasks_complete tool. Marks a task as completed
@@ -10,8 +10,7 @@ export async function executeTeamTasksComplete(
   args: { task_id: string },
   sessionId: string,
 ): Promise<string> {
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team.")
+  const teamInfo = requireTeamMember(deps, sessionId)
 
   const task = deps.db.query("SELECT * FROM team_task WHERE id = ? AND team_id = ?")
     .get(args.task_id, teamInfo.teamId) as Record<string, unknown> | null

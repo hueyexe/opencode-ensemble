@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireTeamMember } from "./shared"
 
 /** Tracks the last time team_status was called per team ID (epoch ms). */
 export const lastCallTime = new Map<string, number>()
@@ -13,8 +13,7 @@ export async function executeTeamStatus(
   deps: ToolDeps,
   sessionId: string,
 ): Promise<string> {
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team.")
+  const teamInfo = requireTeamMember(deps, sessionId)
 
   const now = Date.now()
   const last = lastCallTime.get(teamInfo.teamId)
@@ -24,9 +23,9 @@ export async function executeTeamStatus(
   lastCallTime.set(teamInfo.teamId, now)
 
   const members = deps.db.query(
-    "SELECT name, session_id, agent, status, execution_status, worktree_branch, plan_approval FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
+    "SELECT name, session_id, agent, status, execution_status, worktree_branch, worktree_dir, plan_approval FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
   ).all(teamInfo.teamId) as Array<{
-    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; plan_approval: string
+    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; worktree_dir: string | null; plan_approval: string
   }>
 
   const tasks = deps.db.query(
@@ -46,6 +45,9 @@ export async function executeTeamStatus(
       const branch = m.worktree_branch ? `  branch: ${m.worktree_branch}` : ""
       const plan = m.plan_approval !== "none" ? `, plan: ${m.plan_approval}` : ""
       lines.push(`  ${m.name}  [${statusIcon}${plan}]  agent: ${m.agent}${branch}  session: ${m.session_id}`)
+      if (m.worktree_dir) {
+        lines.push(`    worktree: ${m.worktree_dir}`)
+      }
     }
   }
 

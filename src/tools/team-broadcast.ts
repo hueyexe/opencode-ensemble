@@ -1,5 +1,5 @@
 import type { ToolDeps } from "../types"
-import { findTeamBySession } from "../types"
+import { requireTeamMember } from "./shared"
 import { broadcastMessage, markDelivered } from "../messaging"
 import { log } from "../log"
 
@@ -11,8 +11,7 @@ export async function executeTeamBroadcast(
   args: { text: string },
   sessionId: string,
 ): Promise<string> {
-  const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (!teamInfo) throw new Error("This session is not in a team. Use team_create first.")
+  const teamInfo = requireTeamMember(deps, sessionId)
 
   const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 

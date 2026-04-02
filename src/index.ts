@@ -361,7 +361,8 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamShutdown(deps, args, ctx.sessionID)
-          ctx.metadata({ title: `Shutdown → ${args.member}` })
+          const hasWarning = result.includes("uncommitted")
+          ctx.metadata({ title: hasWarning ? `${args.member} shut down — uncommitted changes` : `${args.member} shut down` })
           return result
         },
       }),
@@ -370,10 +371,12 @@ const plugin: Plugin = async (input) => {
         description: "Clean up the team. All teammates must be shut down first. Removes team data and frees resources.",
         args: {
           force: tool.schema.boolean().default(false).describe("Force cleanup even if members are active (will abort them)"),
+          acknowledge_uncommitted: tool.schema.boolean().default(false),
         },
         async execute(args, ctx) {
           const result = await executeTeamCleanup(deps, args, ctx.sessionID)
-          ctx.metadata({ title: "Team cleaned up" })
+          const blocked = result.includes("uncommitted")
+          ctx.metadata({ title: blocked ? "Cleanup blocked — uncommitted changes" : "Team cleaned up" })
           return result
         },
       }),

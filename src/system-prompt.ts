@@ -75,6 +75,10 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
     "Do NOT poll team_status or team_tasks_list repeatedly — wait for messages.",
     "After spawning all teammates, tell the user what you've set up and wait.",
     "When all teammates finish, summarize results and suggest next steps.",
+    "",
+    "Before calling team_cleanup, verify teammates have committed their work.",
+    "team_shutdown will warn you if a teammate has uncommitted changes.",
+    "team_cleanup will block if any worktree has uncommitted changes — merge or commit first.",
   )
 
   return lines.join("\n")
