@@ -1,5 +1,12 @@
 # OpenCode Ensemble
 
+[![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
+[![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
+[![tests](https://img.shields.io/badge/tests-423%20passing-brightgreen.svg)]()
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
+[![zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)]()
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 Run parallel AI agents in OpenCode. Each agent gets its own session, context window, and task. They coordinate through messaging and a shared task board.
 
 Plugin built on the public OpenCode SDK. No internal dependencies.
@@ -50,9 +57,10 @@ You: "How's the team doing?"
 Lead calls team_status:
   Team: validation (you are the lead)
   Members:
-    alice   [idle]     agent: build  session: ses_abc
-    bob     [idle]     agent: build  session: ses_def
-    carol   [working]  agent: build  session: ses_ghi
+    alice   [idle 2m, last msg: 1m ago]     agent: build  branch: ensemble-validation-alice
+    bob     [idle 1m, last msg: 30s ago]     agent: build  branch: ensemble-validation-bob
+    carol   [working 5m, last msg: 3m ago]   agent: build  branch: ensemble-validation-carol
+      task: Write integration tests for validated endpoints
   Tasks: 5 total (3 completed, 1 in_progress, 1 pending)
 ```
 
@@ -66,7 +74,7 @@ Lead calls team_view({ member: "carol" })
 -> Use the session picker (ctrl+p) to go back to the lead
 ```
 
-When everything is done, the lead shuts down teammates and cleans up:
+When everything is done, the lead shuts down teammates and cleans up. Worktree branches are automatically merged into your working directory as unstaged changes for review:
 
 ```
 [toast] alice shut down
@@ -74,8 +82,12 @@ When everything is done, the lead shuts down teammates and cleans up:
 [toast] carol shut down
 
 Lead: "All validation and tests are complete. 5 endpoints validated,
-       12 test cases added. Team cleaned up."
+       12 test cases added. Team cleaned up.
+       Merged 3 branch(es) into working directory (unstaged).
+       Review changes with: git diff"
 ```
+
+All teammate changes are now in your working directory, unstaged, ready for you to review file-by-file with `git diff`.
 
 ## Install
 
@@ -193,23 +205,66 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 - **Crash recovery**: stale busy members marked as errored on restart, orphaned sessions aborted, orphaned worktrees cleaned up, undelivered messages redelivered
 - **Spawn rollback**: if the initial prompt fails, the member, session, and worktree are all cleaned up
 - **Timeout watchdog**: teammates stuck busy beyond the TTL are automatically timed out and aborted
+- **Stall detection**: detects teammates making no progress (low output tokens or no communication) and escalates to the lead
+- **Auto-merge on cleanup**: worktree branches are squash-merged into your working directory as unstaged changes for review
+- **Spawn circuit breaker**: stops retrying after 3 consecutive spawn failures
 - **Graceful shutdown**: busy teammates receive a shutdown message and finish their current work. Use `force: true` to abort immediately.
-- **Rate limiting**: token bucket (configurable via `OPENCODE_ENSEMBLE_RATE_LIMIT`, default 10 tokens/sec)
+- **Rate limiting**: token bucket (configurable via config file or `OPENCODE_ENSEMBLE_RATE_LIMIT`, default 10 tokens/sec)
 
 ## Configuration
 
+Configure via JSON files, environment variables, or both. Project config overrides global config. Env vars override everything.
+
+### Config file
+
+**Global** (`~/.config/opencode/ensemble.json`):
+
+```json
+{
+  "mergeOnCleanup": true,
+  "stallThresholdMs": 180000,
+  "stallMinSteps": 3,
+  "stallTokenThreshold": 500,
+  "timeoutMs": 1800000,
+  "rateLimitCapacity": 10
+}
+```
+
+**Project** (`.opencode/ensemble.json` in your project root) — same shape, overrides global per-key.
+
+All fields are optional. Missing fields use defaults.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mergeOnCleanup` | `true` | Auto-merge worktree branches on cleanup (squash + unstage) |
+| `stallThresholdMs` | `180000` (3 min) | Time without communication before stall escalation. `0` disables. |
+| `stallMinSteps` | `3` | Min model steps before token-based stall check kicks in |
+| `stallTokenThreshold` | `500` | Output tokens per step below which the agent is considered stalled |
+| `timeoutMs` | `1800000` (30 min) | Hard timeout for busy teammates. `0` disables. |
+| `rateLimitCapacity` | `10` | Token bucket capacity for team tool calls. `0` disables. |
+
+### Environment variables
+
+Env vars override config file values. Useful for CI or one-off overrides.
+
 ```bash
+# Adjust teammate timeout (default: 1800000ms = 30 minutes)
+OPENCODE_ENSEMBLE_TIMEOUT=3600000
+
+# Disable timeout watchdog
+OPENCODE_ENSEMBLE_TIMEOUT=0
+
 # Adjust rate limit (default: 10 tokens, refills 2/sec)
 OPENCODE_ENSEMBLE_RATE_LIMIT=20
 
 # Disable rate limiting
 OPENCODE_ENSEMBLE_RATE_LIMIT=0
 
-# Adjust teammate timeout (default: 1800000ms = 30 minutes)
-OPENCODE_ENSEMBLE_TIMEOUT=3600000
+# Adjust stall detection threshold (default: 180000ms = 3 minutes)
+STALL_THRESHOLD_MS=300000
 
-# Disable timeout watchdog
-OPENCODE_ENSEMBLE_TIMEOUT=0
+# Disable stall detection
+STALL_THRESHOLD_MS=0
 ```
 
 ## Best practices
@@ -243,7 +298,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 377 tests
+bun test             # 423 tests
 bun run build
 ```
 

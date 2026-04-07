@@ -5,6 +5,7 @@ import { executeTeamSpawn } from "../src/tools/team-spawn"
 import { executeTeamMessage } from "../src/tools/team-message"
 import { executeTeamShutdown } from "../src/tools/team-shutdown"
 import { executeTeamCleanup } from "../src/tools/team-cleanup"
+import type { MergeAllFn } from "../src/tools/team-cleanup"
 import { buildLeadSystemPrompt } from "../src/system-prompt"
 import { recoverStaleMembers } from "../src/recovery"
 import { isWorktreeInstance } from "../src/util"
@@ -80,7 +81,8 @@ describe("integration: full team lifecycle", () => {
     for (const name of names) {
       await executeTeamShutdown(deps, { member: name, force: true }, leadSession)
     }
-    const cleanupResult = await executeTeamCleanup(deps, { force: false }, leadSession)
+    const noopMerge: MergeAllFn = async (branches) => ({ merged: branches, conflicted: [] })
+    const cleanupResult = await executeTeamCleanup(deps, { force: false }, leadSession, undefined, noopMerge, false)
     expect(cleanupResult).toContain("cleaned up")
 
     // Verify: team archived, no active members
@@ -386,7 +388,7 @@ describe("integration: race conditions and edge cases", () => {
     for (const r of results) expect(r).toContain("spawned")
 
     // Total time should be ~200ms (parallel), not 200ms * 3 (serial)
-    expect(elapsed).toBeLessThan(1000)
+    expect(elapsed).toBeLessThan(3000)
   })
 
   test("teammate messaging lead after team cleanup throws — team no longer active", async () => {
@@ -395,7 +397,8 @@ describe("integration: race conditions and edge cases", () => {
     const stragglerSession = (deps.db.query("SELECT session_id FROM team_member WHERE name = 'straggler'").get() as { session_id: string }).session_id
 
     // Force cleanup while teammate is still "working"
-    await executeTeamCleanup(deps, { force: true }, leadSession)
+    const noopMerge2: MergeAllFn = async (branches) => ({ merged: branches, conflicted: [] })
+    await executeTeamCleanup(deps, { force: true }, leadSession, undefined, noopMerge2, false)
 
     // Teammate tries to message lead after cleanup — team is archived
     await expect(

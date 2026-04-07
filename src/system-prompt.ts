@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite"
 import { markDelivered } from "./messaging"
 
+/** Truncate a string to maxLen chars, appending "..." if truncated. */
+function truncate(s: string, maxLen: number): string {
+  return s.length > maxLen ? `${s.slice(0, maxLen)}...` : s
+}
+
 /** Status display mapping from DB status to human-readable label. */
 const STATUS_DISPLAY: Record<string, string> = {
   busy: "working",
@@ -50,6 +55,28 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
     teammateLine,
     `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
   ]
+
+  // Inline active and recently completed tasks
+  const activeTasks = db.query(
+    "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'in_progress' ORDER BY time_updated DESC LIMIT 5"
+  ).all(teamId) as Array<{ content: string; assignee: string | null }>
+
+  const recentCompleted = db.query(
+    "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'completed' ORDER BY time_updated DESC LIMIT 3"
+  ).all(teamId) as Array<{ content: string; assignee: string | null }>
+
+  if (activeTasks.length > 0) {
+    lines.push("Active tasks:")
+    for (const t of activeTasks) {
+      lines.push(`  [in_progress] ${truncate(t.content, 120)}${t.assignee ? ` → ${t.assignee}` : ""}`)
+    }
+  }
+  if (recentCompleted.length > 0) {
+    lines.push("Recently completed:")
+    for (const t of recentCompleted) {
+      lines.push(`  [completed] ${truncate(t.content, 120)}${t.assignee ? ` → ${t.assignee}` : ""}`)
+    }
+  }
 
   if (pendingMessages.length > 0) {
     lines.push("", "--- Team Messages ---")
@@ -141,8 +168,41 @@ export function buildTeamCompactionContext(
     `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
   ]
 
-  if (role === "member") {
+  if (role === "member" && memberName) {
     lines.push("IMPORTANT: You MUST send your results to the lead via team_message before stopping.")
+
+    // Include original task prompt
+    const member = db.query("SELECT prompt FROM team_member WHERE team_id = ? AND name = ?")
+      .get(teamId, memberName) as { prompt: string | null } | null
+    if (member?.prompt) {
+      lines.push(`Your original task: ${truncate(member.prompt, 300)}`)
+    }
+
+    // Include recent messages involving this member
+    const recentMsgs = db.query(
+      "SELECT from_name, content FROM team_message WHERE team_id = ? AND (from_name = ? OR to_name = ?) ORDER BY time_created DESC LIMIT 3"
+    ).all(teamId, memberName, memberName) as Array<{ from_name: string; content: string }>
+    if (recentMsgs.length > 0) {
+      lines.push("Recent context:")
+      for (const msg of recentMsgs) {
+        lines.push(`  [${msg.from_name}]: ${truncate(msg.content, 200)}`)
+      }
+    }
+  } else if (role === "member") {
+    lines.push("IMPORTANT: You MUST send your results to the lead via team_message before stopping.")
+  }
+
+  if (role === "lead") {
+    // Include recently completed tasks
+    const completedTasks = db.query(
+      "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'completed' ORDER BY time_updated DESC LIMIT 5"
+    ).all(teamId) as Array<{ content: string; assignee: string | null }>
+    if (completedTasks.length > 0) {
+      lines.push("Recently completed:")
+      for (const t of completedTasks) {
+        lines.push(`  [completed] ${truncate(t.content, 120)}${t.assignee ? ` (by ${t.assignee})` : ""}`)
+      }
+    }
   }
 
   return lines.join("\n")

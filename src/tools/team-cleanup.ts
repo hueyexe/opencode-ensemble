@@ -1,7 +1,63 @@
 import type { ToolDeps } from "../types"
 import { requireLead, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
+import { spawnFailures } from "./team-spawn"
 import { log } from "../log"
+
+/** Result of merging all branches. */
+export interface MergeAllResult {
+  merged: string[]
+  conflicted: string[]
+}
+
+/** Injectable function that merges all branches into the working directory. */
+export type MergeAllFn = (branches: string[], cwd: string) => Promise<MergeAllResult>
+
+/**
+ * Default merge implementation: stash user work, squash-merge each branch,
+ * unstage merged changes, restore user work. One stash/pop cycle for all branches.
+ */
+export async function mergeAllBranches(branches: string[], cwd: string): Promise<MergeAllResult> {
+  const merged: string[] = []
+  const conflicted: string[] = []
+
+  // Stash existing work to preserve staged/unstaged state
+  const stash = Bun.spawn(["git", "stash", "--include-untracked"], { cwd, stdout: "pipe", stderr: "pipe" })
+  const stashOut = await new Response(stash.stdout).text()
+  const stashExit = await stash.exited
+  const didStash = stashExit === 0 && !stashOut.includes("No local changes")
+
+  for (const branch of branches) {
+    const merge = Bun.spawn(["git", "merge", "--squash", branch], { cwd, stdout: "pipe", stderr: "pipe" })
+    const stderrPromise = new Response(merge.stderr).text()
+    const exit = await merge.exited
+    if (exit !== 0) {
+      const stderr = await stderrPromise
+      log(`cleanup:merge:conflict branch=${branch} err=${stderr.trim()}`)
+      const abort = Bun.spawn(["git", "merge", "--abort"], { cwd, stdout: "pipe", stderr: "pipe" })
+      await abort.exited
+      conflicted.push(branch)
+    } else {
+      const del = Bun.spawn(["git", "branch", "-D", branch], { cwd, stdout: "pipe", stderr: "pipe" })
+      await del.exited
+      merged.push(branch)
+    }
+  }
+
+  // Unstage merged changes so user reviews with `git diff`
+  if (merged.length > 0) {
+    const reset = Bun.spawn(["git", "reset", "HEAD"], { cwd, stdout: "pipe", stderr: "pipe" })
+    await reset.exited
+  }
+
+  // Restore user's original staged/unstaged work
+  if (didStash) {
+    const pop = Bun.spawn(["git", "stash", "pop", "--index"], { cwd, stdout: "pipe", stderr: "pipe" })
+    await pop.exited
+  }
+
+  return { merged, conflicted }
+}
 
 /**
  * Execute the team_cleanup tool. Archives the team and cleans up resources.
@@ -14,6 +70,8 @@ export async function executeTeamCleanup(
   args: { force: boolean; acknowledge_uncommitted?: boolean },
   sessionId: string,
   isDirty: IsDirtyFn = checkWorktreeDirty,
+  mergeAll: MergeAllFn = mergeAllBranches,
+  mergeOnCleanup = true,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
@@ -57,8 +115,25 @@ export async function executeTeamCleanup(
     }
   }
 
-  // Remove workspaces, worktrees, and collect branches for merging
-  const branches: string[] = []
+  // Collect branches and merge BEFORE removing worktrees (worktree.remove may delete the branch ref)
+  const branches = members
+    .map(m => m.worktree_branch)
+    .filter((b): b is string => b !== null)
+
+  let mergeResult = ""
+  if (branches.length > 0 && mergeOnCleanup) {
+    const { merged, conflicted } = await mergeAll(branches, deps.directory)
+    const parts: string[] = []
+    if (merged.length > 0) {
+      parts.push(`Merged ${merged.length} branch(es) into working directory (unstaged). Review changes with: git diff`)
+    }
+    if (conflicted.length > 0) {
+      parts.push(`Could not auto-merge: ${conflicted.join(", ")}. Merge manually with: git merge <branch>`)
+    }
+    mergeResult = parts.join("\n")
+  }
+
+  // Remove workspaces and worktrees (after merging)
   for (const member of members) {
     if (member.workspace_id) {
       try {
@@ -72,16 +147,18 @@ export async function executeTeamCleanup(
         deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
       } catch { /* best effort — worktree may already be gone */ }
     }
-    if (member.worktree_branch) {
-      branches.push(member.worktree_branch)
-    }
   }
 
   // Archive team
   deps.db.run("UPDATE team SET status = 'archived', time_updated = ? WHERE id = ?", [Date.now(), teamInfo.teamId])
 
-  // Clean up registry
+  // Clean up in-memory state
   deps.registry.unregisterTeam(teamInfo.teamId)
+  spawnFailures.delete(teamInfo.teamId)
+
+  if (mergeResult) {
+    return `Team "${teamInfo.teamName}" cleaned up.\n${mergeResult}`
+  }
 
   if (branches.length > 0) {
     const mergeCommands = branches.map(b => `  git merge ${b}`).join("\n")

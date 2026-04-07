@@ -80,13 +80,13 @@ describe("TokenBucket", () => {
   })
 
   test("partial interval elapsed does not refill", async () => {
-    const bucket = new TokenBucket({ capacity: 2, refillRate: 1, refillIntervalMs: 200 })
+    const bucket = new TokenBucket({ capacity: 2, refillRate: 1, refillIntervalMs: 1000 })
     expect(bucket.tryConsume()).toBe(true)
     expect(bucket.tryConsume()).toBe(true)
     expect(bucket.tryConsume()).toBe(false)
 
-    // Wait less than one full interval
-    await Bun.sleep(80)
+    // Wait well under one full interval
+    await Bun.sleep(50)
     expect(bucket.tryConsume()).toBe(false)
   })
 

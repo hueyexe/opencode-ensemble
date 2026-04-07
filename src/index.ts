@@ -13,6 +13,8 @@ import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
+import { loadConfig } from "./config"
+import { ProgressTracker } from "./progress"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamMessage } from "./tools/team-message"
@@ -30,10 +32,8 @@ import type { ToolDeps, } from "./types"
 import { TokenBucket } from "./rate-limit"
 import { Watchdog } from "./watchdog"
 
-const DEFAULT_RATE_LIMIT_CAPACITY = 10
 const DEFAULT_RATE_LIMIT_REFILL = 2
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 1000
-const DEFAULT_WATCHDOG_TTL_MS = 30 * 60 * 1000 // 30 minutes
 const DEFAULT_WATCHDOG_CHECK_MS = 60 * 1000 // 60 seconds
 
 /**
@@ -47,10 +47,14 @@ const plugin: Plugin = async (input) => {
   mkdirSync(path.dirname(dbPath), { recursive: true })
   const db = createDb(dbPath)
 
+  // Load plugin configuration (global → project → env vars)
+  const config = loadConfig(input.directory)
+
   // Initialize in-memory state
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()
   const nudgedMembers = new Set<string>()
+  const progressTracker = new ProgressTracker()
 
   // Extract the working HeyAPI transport from the plugin-provided v1 client and pass it
   // to the v2 OpencodeClient. The plugin framework provides a v1 client which stores its
@@ -89,24 +93,22 @@ const plugin: Plugin = async (input) => {
     log(`init:skip-recovery (worktree instance: ${input.directory})`)
   }
 
-  // Initialize rate limiter
-  // OPENCODE_ENSEMBLE_RATE_LIMIT=0 disables it entirely
-  const rateLimitEnv = process.env.OPENCODE_ENSEMBLE_RATE_LIMIT
-  const rateLimitCapacity = rateLimitEnv === "0" ? 0 : (parseInt(rateLimitEnv ?? "", 10) || DEFAULT_RATE_LIMIT_CAPACITY)
+  // Initialize rate limiter — config value already accounts for env var override
   const rateLimiter = new TokenBucket({
-    capacity: rateLimitCapacity,
+    capacity: config.rateLimitCapacity,
     refillRate: DEFAULT_RATE_LIMIT_REFILL,
     refillIntervalMs: DEFAULT_RATE_LIMIT_INTERVAL_MS,
   })
 
-  // Initialize watchdog for teammate timeouts
-  // OPENCODE_ENSEMBLE_TIMEOUT=0 disables it entirely
-  const timeoutEnv = process.env.OPENCODE_ENSEMBLE_TIMEOUT
-  const watchdogTtl = timeoutEnv === "0" ? 0 : (parseInt(timeoutEnv ?? "", 10) || DEFAULT_WATCHDOG_TTL_MS)
+  // Initialize watchdog — config value already accounts for env var override
   const watchdog = new Watchdog({
     db, client, registry,
-    ttlMs: watchdogTtl,
+    ttlMs: config.timeoutMs,
     checkIntervalMs: DEFAULT_WATCHDOG_CHECK_MS,
+    progressTracker,
+    stallThresholdMs: config.stallThresholdMs,
+    stallMinSteps: config.stallMinSteps,
+    stallTokenThreshold: config.stallTokenThreshold,
   })
   watchdog.start()
 
@@ -183,6 +185,16 @@ const plugin: Plugin = async (input) => {
         const info = event.properties.info
         if (info.parentID) {
           handleSessionCreatedEvent(tracker, info.id, info.parentID)
+        }
+      }
+
+      // Track per-step output tokens for stall detection
+      if (event.type === "message.part.updated") {
+        const part = (event.properties as { part?: { type?: string; sessionID?: string; tokens?: { output?: number } } }).part
+        if (part?.type === "step-finish" && part.sessionID && part.tokens?.output !== undefined) {
+          if (registry.getBySession(part.sessionID)) {
+            progressTracker.recordStep(part.sessionID, part.tokens.output)
+          }
         }
       }
     },
@@ -283,6 +295,8 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamMessage(deps, args, ctx.sessionID)
+          // Track message activity for stall detection
+          progressTracker.recordMessage(ctx.sessionID)
           ctx.metadata({ title: `Message → ${args.to}` })
           return result
         },
@@ -295,6 +309,8 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamBroadcast(deps, args, ctx.sessionID)
+          // Track broadcast activity for stall detection
+          progressTracker.recordMessage(ctx.sessionID)
           ctx.metadata({ title: "Broadcast to team" })
           return result
         },
@@ -334,6 +350,8 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamTasksComplete(deps, args, ctx.sessionID)
+          // Track task completion for stall detection
+          progressTracker.recordTaskComplete(ctx.sessionID)
           ctx.metadata({ title: `Completed task` })
           return result
         },
@@ -372,6 +390,9 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamShutdown(deps, args, ctx.sessionID)
+          // Clean up progress tracking for the shut-down member
+          const member = deps.db.query("SELECT session_id FROM team_member WHERE name = ? AND status IN ('shutdown', 'shutdown_requested')").get(args.member) as { session_id: string } | null
+          if (member) progressTracker.remove(member.session_id)
           const hasWarning = result.includes("uncommitted")
           ctx.metadata({ title: hasWarning ? `${args.member} shut down — uncommitted changes` : `${args.member} shut down` })
           return result
@@ -385,7 +406,7 @@ const plugin: Plugin = async (input) => {
           acknowledge_uncommitted: tool.schema.boolean().default(false),
         },
         async execute(args, ctx) {
-          const result = await executeTeamCleanup(deps, args, ctx.sessionID)
+          const result = await executeTeamCleanup(deps, args, ctx.sessionID, undefined, undefined, config.mergeOnCleanup)
           const blocked = result.includes("uncommitted")
           ctx.metadata({ title: blocked ? "Cleanup blocked — uncommitted changes" : "Team cleaned up" })
           return result

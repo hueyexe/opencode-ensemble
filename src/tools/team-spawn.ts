@@ -4,6 +4,9 @@ import { requireLead } from "./shared"
 import { sendMessage } from "../messaging"
 import { log } from "../log"
 
+/** Tracks consecutive spawn failures per team for circuit breaker. */
+export const spawnFailures = new Map<string, { count: number; lastError: string }>()
+
 /** Timeout for worktree.create and session.create to prevent hanging on git lock contention. */
 function getSpawnTimeout(): number {
   return Number(process.env.SPAWN_TIMEOUT_MS) || 120_000
@@ -40,6 +43,12 @@ export async function executeTeamSpawn(
   if (nameError) throw new Error(nameError)
 
   const teamInfo = requireLead(deps, sessionId)
+
+  // Circuit breaker — stop retrying after 3 consecutive failures
+  const failures = spawnFailures.get(teamInfo.teamId)
+  if (failures && failures.count >= 3) {
+    throw new Error(`Spawn circuit breaker tripped for team "${teamInfo.teamName}": 3 consecutive failures. Last error: ${failures.lastError}. Investigate before retrying — the circuit breaker resets on the next successful spawn.`)
+  }
 
   // Check duplicate name
   const existing = deps.db.query("SELECT name FROM team_member WHERE team_id = ? AND name = ?")
@@ -146,6 +155,10 @@ export async function executeTeamSpawn(
     log(`spawn:session:done name=${args.name} sessionId=${childSessionId}`)
   } catch (err) {
     log(`spawn:session:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
+    // Track failure for circuit breaker
+    const errMsg = err instanceof Error ? err.message : String(err)
+    const prev = spawnFailures.get(teamInfo.teamId)
+    spawnFailures.set(teamInfo.teamId, { count: (prev?.count ?? 0) + 1, lastError: errMsg })
     // Rollback workspace and worktree if session creation failed
     if (workspaceId) {
       try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
@@ -319,6 +332,8 @@ export async function executeTeamSpawn(
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
+  // Reset circuit breaker on success
+  spawnFailures.delete(teamInfo.teamId)
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
   return `Teammate "${args.name}" spawned (agent: ${args.agent})${branchInfo}${planInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }
