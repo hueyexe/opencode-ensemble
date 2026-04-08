@@ -5,7 +5,7 @@ import { executeTeamSpawn } from "../src/tools/team-spawn"
 import { executeTeamMessage } from "../src/tools/team-message"
 import { executeTeamShutdown } from "../src/tools/team-shutdown"
 import { executeTeamCleanup } from "../src/tools/team-cleanup"
-import type { MergeAllFn } from "../src/tools/team-cleanup"
+import type { MergeBranchFn, DeleteBranchFn } from "../src/tools/merge-helper"
 import { buildLeadSystemPrompt } from "../src/system-prompt"
 import { recoverStaleMembers } from "../src/recovery"
 import { isWorktreeInstance } from "../src/util"
@@ -79,10 +79,11 @@ describe("integration: full team lifecycle", () => {
     // Set members to ready so shutdown works without force
     deps.db.run("UPDATE team_member SET status = 'ready', execution_status = 'idle' WHERE team_id = ?", [team.id])
     for (const name of names) {
-      await executeTeamShutdown(deps, { member: name, force: true }, leadSession)
+      await executeTeamShutdown(deps, { member: name, force: true }, leadSession, undefined, async () => true)
     }
-    const noopMerge: MergeAllFn = async (branches) => ({ merged: branches, conflicted: [] })
-    const cleanupResult = await executeTeamCleanup(deps, { force: false }, leadSession, undefined, noopMerge, false)
+    const noopMerge: MergeBranchFn = async () => ({ ok: true })
+    const noopDelete: DeleteBranchFn = async () => true
+    const cleanupResult = await executeTeamCleanup(deps, { force: false }, leadSession, undefined, noopMerge, noopDelete, false)
     expect(cleanupResult).toContain("cleaned up")
 
     // Verify: team archived, no active members
@@ -397,8 +398,9 @@ describe("integration: race conditions and edge cases", () => {
     const stragglerSession = (deps.db.query("SELECT session_id FROM team_member WHERE name = 'straggler'").get() as { session_id: string }).session_id
 
     // Force cleanup while teammate is still "working"
-    const noopMerge2: MergeAllFn = async (branches) => ({ merged: branches, conflicted: [] })
-    await executeTeamCleanup(deps, { force: true }, leadSession, undefined, noopMerge2, false)
+    const noopMerge2: MergeBranchFn = async () => ({ ok: true })
+    const noopDelete2: DeleteBranchFn = async () => true
+    await executeTeamCleanup(deps, { force: true }, leadSession, undefined, noopMerge2, noopDelete2, false)
 
     // Teammate tries to message lead after cleanup — team is archived
     await expect(

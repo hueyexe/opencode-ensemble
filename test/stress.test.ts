@@ -6,7 +6,7 @@ import { spawnFailures } from "../src/tools/team-spawn"
 import { executeTeamMessage } from "../src/tools/team-message"
 import { executeTeamShutdown } from "../src/tools/team-shutdown"
 import { executeTeamCleanup } from "../src/tools/team-cleanup"
-import type { MergeAllFn } from "../src/tools/team-cleanup"
+import type { MergeBranchFn, DeleteBranchFn } from "../src/tools/merge-helper"
 import { executeTeamTasksAdd } from "../src/tools/team-tasks-add"
 import { executeTeamTasksComplete } from "../src/tools/team-tasks-complete"
 import { executeTeamClaim } from "../src/tools/team-claim"
@@ -25,10 +25,11 @@ import os from "node:os"
 type Deps = ReturnType<typeof setupDeps>
 
 /** Noop merge for tests that don't need real git. */
-const noopMerge: MergeAllFn = async (branches) => ({ merged: branches, conflicted: [] })
+const noopMerge: MergeBranchFn = async () => ({ ok: true })
+const noopDelete: DeleteBranchFn = async () => true
 
 /** Failing merge for conflict tests. */
-const failMerge: MergeAllFn = async (branches) => ({ merged: [], conflicted: branches })
+const failMerge: MergeBranchFn = async () => ({ ok: false, error: "conflict" })
 
 // Helper to get a member's session ID
 function getSession(deps: Deps, name: string): string {
@@ -102,13 +103,13 @@ describe("stress: auto-merge on cleanup", () => {
     deps.db.run("UPDATE team_member SET status = 'shutdown', execution_status = 'completed' WHERE team_id = ?", [teamId])
 
     const mergedBranches: string[] = []
-    const trackMerge: MergeAllFn = async (branches) => {
-      mergedBranches.push(...branches)
-      return { merged: branches, conflicted: [] }
+    const trackMerge: MergeBranchFn = async (branch) => {
+      mergedBranches.push(branch)
+      return { ok: true }
     }
 
-    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, trackMerge, true)
-    expect(result).toContain("Merged 2 branch(es)")
+    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, trackMerge, noopDelete, true)
+    expect(result).toContain("Safety-net merged 2 unmerged branch")
     expect(mergedBranches).toHaveLength(2)
 
     // Worktree removal happened AFTER merge
@@ -123,12 +124,14 @@ describe("stress: auto-merge on cleanup", () => {
     await executeTeamSpawn(deps, { name: "bad", agent: "build", prompt: "t" }, lead)
     deps.db.run("UPDATE team_member SET status = 'shutdown', execution_status = 'completed' WHERE team_id = ?", [teamId])
 
-    const mixedMerge: MergeAllFn = async (branches) => {
-      return { merged: [branches[0]!], conflicted: branches.slice(1) }
+    let mixedCallCount = 0
+    const mixedMerge: MergeBranchFn = async () => {
+      mixedCallCount++
+      return mixedCallCount === 1 ? { ok: true } : { ok: false, error: "conflict" }
     }
 
-    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, mixedMerge, true)
-    expect(result).toContain("Merged 1 branch(es)")
+    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, mixedMerge, noopDelete, true)
+    expect(result).toContain("Safety-net merged 1 unmerged branch")
     expect(result).toContain("Could not auto-merge")
   })
 
@@ -138,7 +141,7 @@ describe("stress: auto-merge on cleanup", () => {
     await executeTeamSpawn(deps, { name: "x", agent: "build", prompt: "t" }, lead)
     deps.db.run("UPDATE team_member SET status = 'shutdown' WHERE team_id = ?", [teamId])
 
-    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, failMerge, true)
+    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, failMerge, noopDelete, true)
     expect(result).toContain("Could not auto-merge")
     expect(result).not.toContain("Merged")
   })
@@ -149,9 +152,7 @@ describe("stress: auto-merge on cleanup", () => {
     await executeTeamSpawn(deps, { name: "y", agent: "build", prompt: "t" }, lead)
     deps.db.run("UPDATE team_member SET status = 'shutdown' WHERE team_id = ?", [teamId])
 
-    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, noopMerge, false)
-    expect(result).toContain("git merge")
-    expect(result).not.toContain("Merged")
+    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, noopMerge, noopDelete, false)
   })
 })
 
@@ -215,7 +216,7 @@ describe("stress: spawn circuit breaker", () => {
     const teamId = getTeamId(deps, "cleanup-breaker")
     spawnFailures.set(teamId, { count: 3, lastError: "stuck" })
 
-    await executeTeamCleanup(deps, { force: true }, lead, undefined, noopMerge, false)
+    await executeTeamCleanup(deps, { force: true }, lead, undefined, noopMerge, noopDelete, false)
     expect(spawnFailures.has(teamId)).toBe(false)
   })
 })
@@ -595,12 +596,12 @@ describe("stress: full lifecycle with all v0.8.0 features", () => {
 
     // 9. Cleanup with auto-merge
     const mergedBranches: string[] = []
-    const trackMerge: MergeAllFn = async (branches) => {
-      mergedBranches.push(...branches)
-      return { merged: branches, conflicted: [] }
+    const trackMerge: MergeBranchFn = async (branch) => {
+      mergedBranches.push(branch)
+      return { ok: true }
     }
     // Members don't have worktree branches (worktree: false), so no merge happens
-    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, trackMerge, true)
+    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, trackMerge, noopDelete, true)
     expect(result).toContain("cleaned up")
 
     // 10. Team is archived, all tasks completed

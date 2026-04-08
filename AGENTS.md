@@ -56,7 +56,7 @@ populated from session events. When a team tool call arrives from an unknown
 session, walks the parent chain (max depth 10). If any ancestor is a team
 member, the call is blocked. This covers sub-agents at arbitrary depth.
 
-## The 13 Tools
+## The 14 Tools
 
 | Tool                | Who Can Use | Purpose                              |
 |---------------------|-------------|--------------------------------------|
@@ -69,8 +69,9 @@ member, the call is blocked. This covers sub-agents at arbitrary depth.
 | team_tasks_complete | Any member  | Mark a task complete, unblock deps   |
 | team_claim          | Any member  | Atomically claim a pending task      |
 | team_results        | Any member  | Retrieve full message content        |
-| team_shutdown       | Lead only   | Request teammate shutdown (supports force flag) |
-| team_cleanup        | Lead only   | Archive team and clean up resources  |
+| team_shutdown       | Lead only   | Request teammate shutdown, preserves branch |
+| team_merge          | Lead only   | Merge a shutdown teammate's branch   |
+| team_cleanup        | Lead only   | Archive team, safety-net merge remaining |
 | team_status         | Any member  | View members, statuses, task summary |
 | team_view           | Any member  | Navigate TUI to teammate's session   |
 
@@ -91,7 +92,7 @@ Three hooks wired in index.ts:
 
 1. SQLite via bun:sqlite — not file JSON, not in-memory-only
 2. promptAsync for message delivery — not session injection, not polling
-3. 13 separate tools — not a unified action tool, no exceptions
+3. 14 separate tools — not a unified action tool, no exceptions
 4. Fire-and-forget spawn — not blocking, not tmux
 5. tool.execute.before for rate limiting — token bucket, in-memory
 6. tool.execute.before for sub-agent isolation — full descendant tracking via parent chain
@@ -108,6 +109,43 @@ Three hooks wired in index.ts:
     are persisted in the DB first; the idle-flush backstop handles delivery.
 11. v1→v2 SDK transport extraction uses `._client` (underscore) — see
     "SDK Transport" section below. Do NOT change this property name.
+12. Branch preservation before session.abort() is MANDATORY — see
+    "Branch Preservation" section below. Every code path that calls
+    session.abort() MUST preserve the worktree branch first.
+
+## Branch Preservation (Critical — Do Not Skip)
+
+`session.abort()` triggers OpenCode's internal session cleanup, which
+asynchronously deletes the worktree AND its git branch. This is a race
+condition — sometimes the branch survives, sometimes it doesn't.
+
+### The invariant
+
+**Every code path that calls `session.abort()` MUST call
+`preserveBranch()` first.** No exceptions. This copies the worktree
+branch to `ensemble/preserved/{team}/{name}`, a standalone git ref
+that is not tied to any worktree. OpenCode cannot delete it.
+
+### Call sites (audit these if you change shutdown/cleanup)
+
+1. `team-shutdown.ts` → `preserveAndAbort()` — idle/force shutdown
+2. `team-shutdown.ts` → graceful path — preserves before sending
+   shutdown message (covers crash during shutdown_requested)
+3. `team-cleanup.ts` → force-abort path — preserves before aborting
+   active members
+
+### What goes wrong if you skip it
+
+The worktree branch is deleted by OpenCode's session cleanup. The
+safety-net merge in `team_cleanup` finds no branch to merge. The
+agent's committed work is permanently lost. This happened in v0.9.0
+and earlier — agent work was silently destroyed on shutdown.
+
+### How to verify
+
+After any `session.abort()` call, check that the preserved branch
+exists: `git branch --list ensemble/preserved/*`. If it's missing,
+the preservation was skipped or failed.
 
 ## SDK Transport (Critical — Do Not Change)
 

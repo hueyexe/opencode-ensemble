@@ -2,75 +2,22 @@ import type { ToolDeps } from "../types"
 import { requireLead, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
 import { spawnFailures } from "./team-spawn"
+import { mergeBranch, deleteBranch, preserveBranch, preservedBranchName } from "./merge-helper"
+import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn } from "./merge-helper"
 import { log } from "../log"
-
-/** Result of merging all branches. */
-export interface MergeAllResult {
-  merged: string[]
-  conflicted: string[]
-}
-
-/** Injectable function that merges all branches into the working directory. */
-export type MergeAllFn = (branches: string[], cwd: string) => Promise<MergeAllResult>
-
-/**
- * Default merge implementation: stash user work, squash-merge each branch,
- * unstage merged changes, restore user work. One stash/pop cycle for all branches.
- */
-export async function mergeAllBranches(branches: string[], cwd: string): Promise<MergeAllResult> {
-  const merged: string[] = []
-  const conflicted: string[] = []
-
-  // Stash existing work to preserve staged/unstaged state
-  const stash = Bun.spawn(["git", "stash", "--include-untracked"], { cwd, stdout: "pipe", stderr: "pipe" })
-  const stashOut = await new Response(stash.stdout).text()
-  const stashExit = await stash.exited
-  const didStash = stashExit === 0 && !stashOut.includes("No local changes")
-
-  for (const branch of branches) {
-    const merge = Bun.spawn(["git", "merge", "--squash", branch], { cwd, stdout: "pipe", stderr: "pipe" })
-    const stderrPromise = new Response(merge.stderr).text()
-    const exit = await merge.exited
-    if (exit !== 0) {
-      const stderr = await stderrPromise
-      log(`cleanup:merge:conflict branch=${branch} err=${stderr.trim()}`)
-      const abort = Bun.spawn(["git", "merge", "--abort"], { cwd, stdout: "pipe", stderr: "pipe" })
-      await abort.exited
-      conflicted.push(branch)
-    } else {
-      const del = Bun.spawn(["git", "branch", "-D", branch], { cwd, stdout: "pipe", stderr: "pipe" })
-      await del.exited
-      merged.push(branch)
-    }
-  }
-
-  // Unstage merged changes so user reviews with `git diff`
-  if (merged.length > 0) {
-    const reset = Bun.spawn(["git", "reset", "HEAD"], { cwd, stdout: "pipe", stderr: "pipe" })
-    await reset.exited
-  }
-
-  // Restore user's original staged/unstaged work
-  if (didStash) {
-    const pop = Bun.spawn(["git", "stash", "pop", "--index"], { cwd, stdout: "pipe", stderr: "pipe" })
-    await pop.exited
-  }
-
-  return { merged, conflicted }
-}
 
 /**
  * Execute the team_cleanup tool. Archives the team and cleans up resources.
- * Checks for uncommitted changes BEFORE aborting sessions or removing worktrees.
- * If force=true, aborts active sessions but still blocks on dirty worktrees.
- * Pass acknowledge_uncommitted=true to remove dirty worktrees.
+ * Acts as a safety net: merges any remaining unmerged preserved branches
+ * that the lead forgot to merge with team_merge.
  */
 export async function executeTeamCleanup(
   deps: ToolDeps,
   args: { force: boolean; acknowledge_uncommitted?: boolean },
   sessionId: string,
   isDirty: IsDirtyFn = checkWorktreeDirty,
-  mergeAll: MergeAllFn = mergeAllBranches,
+  merge: MergeBranchFn = mergeBranch,
+  delBranch: DeleteBranchFn = deleteBranch,
   mergeOnCleanup = true,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
@@ -85,7 +32,7 @@ export async function executeTeamCleanup(
     throw new Error(`Cannot clean up team "${teamInfo.teamName}": ${active.length} member(s) still active: ${names}. Use team_shutdown on each member first, or call team_cleanup with force: true to abort them immediately.`)
   }
 
-  // Check for uncommitted changes BEFORE aborting sessions — agents can still commit if warned
+  // Check for uncommitted changes BEFORE aborting sessions
   if (!args.acknowledge_uncommitted) {
     const dirty: Array<{ name: string; branch: string }> = []
     for (const member of members) {
@@ -99,53 +46,64 @@ export async function executeTeamCleanup(
         }
       }
     }
-
     if (dirty.length > 0) {
       const warnings = dirty.map(d => `  - ${d.name} (branch: ${d.branch})`).join("\n")
       return `Warning: ${dirty.length} teammate(s) have uncommitted changes in their worktrees:\n${warnings}\n\nCommit or merge their work first, then call team_cleanup with acknowledge_uncommitted: true to proceed.`
     }
   }
 
-  // Force-abort active members (only reached if worktrees are clean or acknowledged)
+  // Force-abort active members — preserve branches BEFORE aborting
   if (args.force) {
     for (const member of active) {
+      // Preserve branch before abort — session.abort() may destroy the worktree + branch
+      if (member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
+        const safeBranch = preservedBranchName(teamInfo.teamName, member.name)
+        const ok = await preserveBranch(member.worktree_branch, safeBranch, deps.directory)
+        if (ok) {
+          deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
+            [safeBranch, teamInfo.teamId, member.name])
+          member.worktree_branch = safeBranch
+        }
+      }
       try {
         await deps.client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
     }
   }
 
-  // Collect branches and merge BEFORE removing worktrees (worktree.remove may delete the branch ref)
-  const branches = members
-    .map(m => m.worktree_branch)
-    .filter((b): b is string => b !== null)
+  // Safety net: merge any remaining unmerged preserved branches
+  const unmerged = members.filter(m => m.worktree_branch !== null)
+  const merged: string[] = []
+  const conflicted: string[] = []
 
-  let mergeResult = ""
-  if (branches.length > 0 && mergeOnCleanup) {
-    const { merged, conflicted } = await mergeAll(branches, deps.directory)
-    const parts: string[] = []
-    if (merged.length > 0) {
-      parts.push(`Merged ${merged.length} branch(es) into working directory (unstaged). Review changes with: git diff`)
+  if (unmerged.length > 0 && mergeOnCleanup) {
+    for (const member of unmerged) {
+      const branch = member.worktree_branch!
+      const result = await merge(branch, deps.directory)
+      if (result.ok) {
+        await delBranch(branch, deps.directory)
+        deps.db.run("UPDATE team_member SET worktree_branch = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
+        merged.push(`${member.name} (${branch})`)
+      } else {
+        log(`cleanup:merge:conflict member=${member.name} branch=${branch} err=${result.error}`)
+        conflicted.push(`${member.name} (${branch})`)
+      }
     }
-    if (conflicted.length > 0) {
-      parts.push(`Could not auto-merge: ${conflicted.join(", ")}. Merge manually with: git merge <branch>`)
-    }
-    mergeResult = parts.join("\n")
   }
 
-  // Remove workspaces and worktrees (after merging)
+  // Remove workspaces and worktrees
   for (const member of members) {
     if (member.workspace_id) {
       try {
         await deps.client.workspace.remove({ id: member.workspace_id })
         deps.db.run("UPDATE team_member SET workspace_id = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch { /* best effort — workspace may already be gone */ }
+      } catch { /* best effort */ }
     }
     if (member.worktree_dir) {
       try {
         await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
         deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch { /* best effort — worktree may already be gone */ }
+      } catch { /* best effort */ }
     }
   }
 
@@ -156,14 +114,13 @@ export async function executeTeamCleanup(
   deps.registry.unregisterTeam(teamInfo.teamId)
   spawnFailures.delete(teamInfo.teamId)
 
-  if (mergeResult) {
-    return `Team "${teamInfo.teamName}" cleaned up.\n${mergeResult}`
+  // Build response
+  const parts: string[] = [`Team "${teamInfo.teamName}" cleaned up.`]
+  if (merged.length > 0) {
+    parts.push(`Safety-net merged ${merged.length} unmerged branch(es): ${merged.join(", ")}. Review with: git diff`)
   }
-
-  if (branches.length > 0) {
-    const mergeCommands = branches.map(b => `  git merge ${b}`).join("\n")
-    return `Team "${teamInfo.teamName}" cleaned up. Worktrees removed.\n\nMerge teammate branches:\n${mergeCommands}`
+  if (conflicted.length > 0) {
+    parts.push(`Could not auto-merge: ${conflicted.join(", ")}. Merge manually.`)
   }
-
-  return `Team "${teamInfo.teamName}" cleaned up.`
+  return parts.join("\n")
 }

@@ -5,7 +5,7 @@ import path from "node:path"
 import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
 import { wrapThrowingClient } from "./client"
-import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees } from "./recovery"
+import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees, recoverOrphanedBranches } from "./recovery"
 import { MemberRegistry, DescendantTracker } from "./state"
 import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
@@ -21,6 +21,7 @@ import { executeTeamMessage } from "./tools/team-message"
 import { executeTeamBroadcast } from "./tools/team-broadcast"
 import { executeTeamShutdown } from "./tools/team-shutdown"
 import { executeTeamCleanup } from "./tools/team-cleanup"
+import { executeTeamMerge } from "./tools/team-merge"
 import { executeTeamTasksList } from "./tools/team-tasks-list"
 import { executeTeamTasksAdd } from "./tools/team-tasks-add"
 import { executeTeamTasksComplete } from "./tools/team-tasks-complete"
@@ -71,7 +72,7 @@ const plugin: Plugin = async (input) => {
   // calls back to the server, which deadlocks because the server is still handling session.create.
   if (!isWorktreeInstance(input.directory)) {
     log("init:recovery:start (main instance)")
-    const recovery = await recoverStaleMembers(db, client)
+    const recovery = await recoverStaleMembers(db, client, input.directory)
     if (recovery.interrupted > 0) {
       log(`init:recovery:interrupted=${recovery.interrupted}`)
       const members = db.query(
@@ -87,6 +88,9 @@ const plugin: Plugin = async (input) => {
     })
     recoverOrphanedWorktrees(db, client).catch((err) => {
       log(`init:recover-worktrees:failed err=${err instanceof Error ? err.message : String(err)}`)
+    })
+    recoverOrphanedBranches(db, input.directory).catch((err) => {
+      log(`init:recover-branches:failed err=${err instanceof Error ? err.message : String(err)}`)
     })
     log("init:recovery:done")
   } else {
@@ -109,6 +113,7 @@ const plugin: Plugin = async (input) => {
     stallThresholdMs: config.stallThresholdMs,
     stallMinSteps: config.stallMinSteps,
     stallTokenThreshold: config.stallTokenThreshold,
+    cwd: input.directory,
   })
   watchdog.start()
 
@@ -150,12 +155,27 @@ const plugin: Plugin = async (input) => {
             } catch { /* TUI may not be available */ }
           } else if (transition.to === "busy_while_shutdown") {
             // Session went busy after shutdown was requested — re-issue abort
-            const entry = registry.getBySession(sessionID)
-            if (entry) {
-              try {
-                await client.session.abort({ sessionID })
-              } catch { /* best effort */ }
+            // Branch should already be preserved by the graceful shutdown path,
+            // but verify and re-preserve if needed
+            const member = deps.db.query(
+              "SELECT worktree_branch, name, team_id FROM team_member WHERE session_id = ?"
+            ).get(sessionID) as { worktree_branch: string | null; name: string; team_id: string } | null
+            if (member?.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
+              const teamRow = deps.db.query("SELECT name FROM team WHERE id = ?").get(member.team_id) as { name: string } | null
+              if (teamRow) {
+                const { preserveBranch: preserve, preservedBranchName: branchName } = await import("./tools/merge-helper")
+                const safeBranch = branchName(teamRow.name, member.name)
+                const ok = await preserve(member.worktree_branch, safeBranch, deps.directory)
+                if (ok) {
+                  deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
+                    [safeBranch, member.team_id, member.name])
+                  log(`busy_while_shutdown:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
+                }
+              }
             }
+            try {
+              await client.session.abort({ sessionID })
+            } catch { /* best effort */ }
           }
 
           // Show working progress after every transition so the user sees who's still active
@@ -406,9 +426,24 @@ const plugin: Plugin = async (input) => {
           acknowledge_uncommitted: tool.schema.boolean().default(false),
         },
         async execute(args, ctx) {
-          const result = await executeTeamCleanup(deps, args, ctx.sessionID, undefined, undefined, config.mergeOnCleanup)
+          const result = await executeTeamCleanup(deps, args, ctx.sessionID, undefined, undefined, undefined, config.mergeOnCleanup)
           const blocked = result.includes("uncommitted")
           ctx.metadata({ title: blocked ? "Cleanup blocked — uncommitted changes" : "Team cleaned up" })
+          return result
+        },
+      }),
+
+      team_merge: tool({
+        description: "Merge a shutdown teammate's branch into the working directory as unstaged changes. " +
+          "Use this after team_shutdown to review and integrate a teammate's work. " +
+          "The teammate must be shut down first.",
+        args: {
+          member: tool.schema.string().describe("Teammate name whose branch to merge"),
+        },
+        async execute(args, ctx) {
+          const result = await executeTeamMerge(deps, args, ctx.sessionID)
+          const conflict = result.includes("conflict")
+          ctx.metadata({ title: conflict ? `Merge conflict: ${args.member}` : `Merged ${args.member}` })
           return result
         },
       }),

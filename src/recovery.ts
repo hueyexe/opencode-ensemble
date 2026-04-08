@@ -2,21 +2,24 @@ import type { Database } from "bun:sqlite"
 import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered } from "./messaging"
+import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
+import { log } from "./log"
 
 /**
  * Scan for team members stuck in 'busy' status (stale from a crash)
  * and mark them as 'error' with execution_status 'idle'.
- * Also aborts their orphaned sessions (best effort).
+ * Preserves worktree branches before aborting orphaned sessions.
  * Only processes members in active teams.
  * Returns the count of interrupted members.
  */
-export async function recoverStaleMembers(db: Database, client?: PluginClient): Promise<{ interrupted: number }> {
-  // Find stale members before updating so we can abort their sessions
+export async function recoverStaleMembers(db: Database, client?: PluginClient, cwd?: string): Promise<{ interrupted: number }> {
+  // Find stale members with branch info so we can preserve before aborting
   const stale = db.query(
-    `SELECT tm.session_id FROM team_member tm
+    `SELECT tm.session_id, tm.worktree_branch, tm.name, tm.team_id, t.name as team_name
+     FROM team_member tm
      JOIN team t ON tm.team_id = t.id
      WHERE tm.status = 'busy' AND t.status = 'active'`
-  ).all() as Array<{ session_id: string }>
+  ).all() as Array<{ session_id: string; worktree_branch: string | null; name: string; team_id: string; team_name: string }>
 
   const result = db.run(
     `UPDATE team_member SET status = 'error', execution_status = 'idle', time_updated = ?
@@ -25,9 +28,19 @@ export async function recoverStaleMembers(db: Database, client?: PluginClient): 
     [Date.now()]
   )
 
-  // Abort orphaned sessions (best effort)
+  // Preserve branches then abort orphaned sessions
   if (client) {
     for (const member of stale) {
+      // Preserve branch BEFORE abort — session.abort() may destroy the worktree + branch
+      if (cwd && member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
+        const safeBranch = preservedBranchName(member.team_name, member.name)
+        const ok = await preserveBranch(member.worktree_branch, safeBranch, cwd)
+        if (ok) {
+          db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
+            [safeBranch, member.team_id, member.name])
+          log(`recovery:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
+        }
+      }
       try {
         await client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }
@@ -124,4 +137,54 @@ export async function recoverUndeliveredMessages(
   }
 
   return { redelivered }
+}
+
+/**
+ * Clean up orphaned ensemble/preserved/* branches that belong to archived teams
+ * with no active members. Scoped carefully to avoid interfering with other
+ * running OpenCode sessions that may have active teams.
+ */
+export async function recoverOrphanedBranches(db: Database, cwd: string): Promise<{ removed: number }> {
+  let removed = 0
+
+  // Get archived team names that have NO active members
+  const archivedTeams = db.query(
+    `SELECT t.name FROM team t
+     WHERE t.status = 'archived'
+     AND NOT EXISTS (
+       SELECT 1 FROM team_member tm
+       WHERE tm.team_id = t.id AND tm.status NOT IN ('shutdown', 'error')
+     )`
+  ).all() as Array<{ name: string }>
+
+  if (archivedTeams.length === 0) return { removed: 0 }
+
+  const archivedNames = new Set(archivedTeams.map(t => t.name))
+
+  // List all local branches matching ensemble/preserved/*
+  const proc = Bun.spawn(["git", "branch", "--list", "ensemble/preserved/*"], { cwd, stdout: "pipe", stderr: "pipe" })
+  const stdoutPromise = new Response(proc.stdout).text()
+  await proc.exited
+  const stdout = await stdoutPromise
+
+  const branches = stdout.split("\n").map(b => b.trim().replace(/^\* /, "")).filter(Boolean)
+
+  for (const branch of branches) {
+    // Parse team name from branch: ensemble/preserved/{teamName}/{memberName}
+    const parts = branch.split("/")
+    if (parts.length < 4) continue
+    const teamName = parts[2]
+    if (!teamName || !archivedNames.has(teamName)) continue
+
+    try {
+      const del = Bun.spawn(["git", "branch", "-D", branch], { cwd, stdout: "pipe", stderr: "pipe" })
+      const exitCode = await del.exited
+      if (exitCode === 0) {
+        removed++
+        log(`recovery:branch:deleted branch=${branch}`)
+      }
+    } catch { /* best effort */ }
+  }
+
+  return { removed }
 }

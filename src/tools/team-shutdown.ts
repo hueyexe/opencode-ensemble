@@ -1,23 +1,22 @@
 import type { ToolDeps } from "../types"
 import { requireLead, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
+import { preserveBranch, preservedBranchName } from "./merge-helper"
+import type { PreserveBranchFn } from "./merge-helper"
+import { log } from "../log"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
  *
- * Graceful negotiation flow:
- * - If member is already shutdown_requested, treat as force (second call).
- * - If member is idle or force=true, abort immediately and set status='shutdown'.
- * - If member is busy and force=false, send a shutdown message via promptAsync
- *   and set status='shutdown_requested'. The member finishes work and reports back.
- *
- * Warns if the member's worktree has uncommitted changes.
+ * Before aborting, preserves the worktree branch to a safe ref so
+ * session.abort() cannot destroy the agent's committed work.
  */
 export async function executeTeamShutdown(
   deps: ToolDeps,
   args: { member: string; force?: boolean },
   sessionId: string,
   isDirty: IsDirtyFn = checkWorktreeDirty,
+  preserve: PreserveBranchFn = preserveBranch,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
@@ -30,8 +29,8 @@ export async function executeTeamShutdown(
 
   // Second call on an already-requested member → force abort
   if (member.status === "shutdown_requested") {
-    await abortAndShutdown(deps, teamInfo.teamId, args.member, member.session_id)
-    const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
+    await preserveAndAbort(deps, teamInfo.teamId, teamInfo.teamName, args.member, member.session_id, member.worktree_branch, preserve)
+    const branchInfo = getBranchInfo(deps, teamInfo.teamId, args.member)
     const dirtyWarning = await getDirtyWarning(member.worktree_dir, args.member, isDirty)
     return `Force shut down "${args.member}".${branchInfo}${dirtyWarning}`
   }
@@ -47,21 +46,35 @@ export async function executeTeamShutdown(
   }
 
   if (isIdle || force) {
-    await abortAndShutdown(deps, teamInfo.teamId, args.member, member.session_id)
-    const branchInfo = member.worktree_branch ? ` Changes on branch: ${member.worktree_branch}` : ""
+    await preserveAndAbort(deps, teamInfo.teamId, teamInfo.teamName, args.member, member.session_id, member.worktree_branch, preserve)
+    const branchInfo = getBranchInfo(deps, teamInfo.teamId, args.member)
     const dirtyWarning = await getDirtyWarning(member.worktree_dir, args.member, isDirty)
     return `Teammate "${args.member}" has been shut down.${branchInfo}${dirtyWarning}`
   }
 
-  // Busy + not force → graceful: send shutdown message, set shutdown_requested
+  // Busy + not force → graceful: preserve branch first, then send shutdown message
+  // Branch must be preserved NOW — if the session crashes during shutdown_requested,
+  // the worktree and branch could be lost before force-abort ever runs.
+  if (member.worktree_branch) {
+    const safeBranch = preservedBranchName(teamInfo.teamName, args.member)
+    const ok = await preserve(member.worktree_branch, safeBranch, deps.directory)
+    if (ok) {
+      deps.db.run(
+        "UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
+        [safeBranch, teamInfo.teamId, args.member],
+      )
+      log(`shutdown:branch:preserved-graceful src=${member.worktree_branch} target=${safeBranch}`)
+    }
+  }
+
   try {
-    await deps.client.session.promptAsync({
+    deps.client.session.promptAsync({
       sessionID: member.session_id,
       parts: [{
         type: "text",
         text: `[Shutdown requested]: The lead has requested you shut down. Finish your current task, send your final findings to the lead via team_message, then stop.`,
       }],
-    })
+    }).catch(() => { /* fire-and-forget */ })
   } catch {
     // promptAsync failed — best effort
   }
@@ -75,15 +88,35 @@ export async function executeTeamShutdown(
 }
 
 /**
- * Abort a member's session and set their status to shutdown.
- * Best-effort: if abort fails, we still mark them as shutdown.
+ * Preserve the worktree branch, then abort the session and mark shutdown.
+ * The branch is copied to ensemble/preserved/{team}/{name} BEFORE abort,
+ * so session.abort() cannot destroy the agent's committed work.
  */
-async function abortAndShutdown(
+async function preserveAndAbort(
   deps: ToolDeps,
   teamId: string,
+  teamName: string,
   memberName: string,
   sessionId: string,
+  worktreeBranch: string | null,
+  preserve: PreserveBranchFn,
 ): Promise<void> {
+  // Preserve the branch BEFORE aborting — session.abort() may delete the worktree + branch
+  if (worktreeBranch && !worktreeBranch.startsWith("ensemble/preserved/")) {
+    const safeBranch = preservedBranchName(teamName, memberName)
+    const ok = await preserve(worktreeBranch, safeBranch, deps.directory)
+    if (ok) {
+      deps.db.run(
+        "UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
+        [safeBranch, teamId, memberName],
+      )
+      log(`shutdown:branch:preserved src=${worktreeBranch} target=${safeBranch}`)
+    } else {
+      log(`shutdown:branch:preserve-failed src=${worktreeBranch} target=${safeBranch}`)
+    }
+  }
+
+  // Now safe to abort — the branch is preserved
   try {
     await deps.client.session.abort({ sessionID: sessionId })
   } catch {
@@ -94,6 +127,13 @@ async function abortAndShutdown(
     "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
     [Date.now(), teamId, memberName],
   )
+}
+
+/** Read the current branch from DB (may have been updated to preserved name). */
+function getBranchInfo(deps: ToolDeps, teamId: string, memberName: string): string {
+  const row = deps.db.query("SELECT worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { worktree_branch: string | null } | null
+  return row?.worktree_branch ? ` Changes preserved on branch: ${row.worktree_branch}. Use team_merge to merge.` : ""
 }
 
 /** Build a warning suffix if the member's worktree has uncommitted changes. */

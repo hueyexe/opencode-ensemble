@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-432%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-452%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
 [![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -101,7 +101,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.9.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.9.1"]
 }
 ```
 
@@ -109,7 +109,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.9.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.9.1"]
 }
 ```
 
@@ -159,7 +159,7 @@ export { default } from "/path/to/opencode-ensemble/src/index.ts"
 
 ## Tools
 
-13 tools. The lead has all of them. Teammates get 6 (messaging + tasks).
+14 tools. The lead has all of them. Teammates get 6 (messaging + tasks).
 
 **Team lifecycle** (lead only)
 
@@ -167,8 +167,9 @@ export { default } from "/path/to/opencode-ensemble/src/index.ts"
 |------|-------------|
 | `team_create` | Create a team. Caller becomes the lead. |
 | `team_spawn` | Start a new teammate with a task. Supports `plan_approval` mode. |
-| `team_shutdown` | Ask a teammate to stop. Supports `force` flag for immediate abort. |
-| `team_cleanup` | Remove the team when done. |
+| `team_shutdown` | Ask a teammate to stop. Preserves their branch before aborting. Supports `force` flag. |
+| `team_merge` | Merge a shutdown teammate's branch into working directory (unstaged). |
+| `team_cleanup` | Remove the team when done. Safety-net merges any forgotten branches. |
 | `team_status` | See all members, their status, and a task summary. |
 | `team_view` | Switch the TUI to a teammate's session. |
 
@@ -308,7 +309,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 432 tests
+bun test             # 452 tests
 bun run build
 ```
 
