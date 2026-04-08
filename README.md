@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-423%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-432%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
-[![zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)]()
+[![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 Run parallel AI agents in OpenCode. Each agent gets its own session, context window, and task. They coordinate through messaging and a shared task board.
@@ -95,13 +95,13 @@ Two steps: add the plugin, then allowlist worktree paths.
 
 ### 1. Add the plugin
 
-Add to your OpenCode config. Project-level or global.
+Add to your OpenCode config with a pinned version. Project-level or global.
 
 **Project-level** (`opencode.json` in your project root):
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.9.0"]
 }
 ```
 
@@ -109,11 +109,21 @@ Add to your OpenCode config. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.9.0"]
 }
 ```
 
-OpenCode auto-installs npm plugins at startup (cached in `~/.cache/opencode/node_modules/`). No `npm install` needed.
+OpenCode auto-installs npm plugins at startup. To update, bump the version number in your config and restart OpenCode.
+
+**Why pin versions?** OpenCode has a [known bug](https://github.com/anomalyco/opencode/issues/6774) where unpinned plugins (e.g., `"@hueyexe/opencode-ensemble"`) get cached on first install and never auto-update, even after restarting. Pinning to a specific version avoids this — when you change the version string, OpenCode sees a new package spec and installs it fresh.
+
+If you're stuck on an old version, clear the cache manually:
+
+```bash
+rm -rf ~/.cache/opencode/packages/@hueyexe
+```
+
+Then restart OpenCode.
 
 ### 2. Allow worktree directory access
 
@@ -298,7 +308,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 423 tests
+bun test             # 432 tests
 bun run build
 ```
 

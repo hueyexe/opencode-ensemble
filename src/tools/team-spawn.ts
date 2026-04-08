@@ -197,6 +197,14 @@ export async function executeTeamSpawn(
     `Your agent type is "${args.agent}".`,
   ]
 
+  // Show other teammates so this agent knows who to message
+  const otherMembers = deps.db.query(
+    "SELECT name FROM team_member WHERE team_id = ? AND name != ? AND status NOT IN ('shutdown', 'error')"
+  ).all(teamInfo.teamId, args.name) as Array<{ name: string }>
+  if (otherMembers.length > 0) {
+    context.push(`Other teammates: ${otherMembers.map(m => m.name).join(", ")}`)
+  }
+
   if (worktreeBranch && worktreeDir && !workspaceId) {
     // Workspace binding failed — fallback to prompt-based CWD instruction
     context.push(
@@ -276,7 +284,9 @@ export async function executeTeamSpawn(
   context.push(
     `${lastStep}. STOP. Do not send follow-up confirmations, status updates, or 'standing by' messages.`,
     "",
-    "If you are blocked, send ONE message to the lead describing the specific blocker.",
+    "If you are blocked:",
+    "- Send ONE message to the lead via team_message describing the specific blocker.",
+    "- Do NOT attempt workarounds or make assumptions. Wait for the lead's response.",
     "",
     "Your plain text output is NOT visible to the team. You MUST use team_message to communicate.",
   )

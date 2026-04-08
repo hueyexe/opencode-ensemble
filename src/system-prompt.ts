@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { markDelivered } from "./messaging"
+import { parseTaskResult, formatTaskResult } from "./result-parser"
 
 /** Truncate a string to maxLen chars, appending "..." if truncated. */
 function truncate(s: string, maxLen: number): string {
@@ -82,7 +83,12 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
     lines.push("", "--- Team Messages ---")
     const MAX_MSG = 500
     for (const msg of pendingMessages) {
-      if (msg.content.length > MAX_MSG) {
+      const parsed = parseTaskResult(msg.content)
+      if (parsed) {
+        // Truncate details for system prompt — full content available via team_results
+        const truncatedResult = { ...parsed, details: truncate(parsed.details, 500) }
+        lines.push(formatTaskResult(msg.from_name, truncatedResult))
+      } else if (msg.content.length > MAX_MSG) {
         lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (use team_results to read full message)`)
       } else {
         lines.push(`[From ${msg.from_name}]: ${msg.content}`)

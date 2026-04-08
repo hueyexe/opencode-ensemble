@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
+import { parseTaskResult, formatTaskResult } from "../result-parser"
 
 /** Row shape for unread messages query. */
 interface UnreadMessageRow {
@@ -39,6 +40,10 @@ export async function executeTeamResults(
   const placeholders = ids.map(() => "?").join(", ")
   deps.db.run(`UPDATE team_message SET read = 1 WHERE id IN (${placeholders})`, ids)
 
-  // Format output
-  return rows.map((r) => `[Message from ${r.from_name}]:\n${r.content}\n`).join("\n")
+  // Format output — parse structured task results when present
+  return rows.map((r) => {
+    const parsed = parseTaskResult(r.content)
+    if (parsed) return formatTaskResult(r.from_name, parsed)
+    return `[Message from ${r.from_name}]:\n${r.content}`
+  }).join("\n\n")
 }
