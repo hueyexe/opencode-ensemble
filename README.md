@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-452%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-460%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
 [![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -89,6 +89,31 @@ Lead: "All validation and tests are complete. 5 endpoints validated,
 
 All teammate changes are now in your working directory, unstaged, ready for you to review file-by-file with `git diff`.
 
+## Dashboard
+
+A real-time mission control dashboard runs at `http://localhost:4747` while OpenCode is active.
+
+![Ensemble Dashboard](docs/dashboard.png)
+
+- **Health ring** — at-a-glance team health indicator in the header
+- **Agent cards** — status, current task, activity sparklines, timing. Click to open detail drawer
+- **Agent drawer** — full prompt, model, execution status, chat-style message history with markdown rendering
+- **Task board** — progress bar, collapsible status groups, dependency arrows
+- **Activity feed** — chat-style message bubbles with avatars, expandable with full markdown
+- **Timeline** — horizontal event strip showing spawns, messages, completions, shutdowns
+- **Keyboard shortcuts** — `j/k` navigate agents, `Enter` opens drawer, `Esc` closes, `?` shows help
+- **Live clock** — current time + team session duration
+
+Configure the port in `.opencode/ensemble.json`:
+
+```json
+{
+  "dashboardPort": 4747
+}
+```
+
+Set to `0` to disable. The dashboard starts automatically when OpenCode loads the plugin.
+
 ## Install
 
 Two steps: add the plugin, then allowlist worktree paths.
@@ -101,7 +126,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.9.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.10.0"]
 }
 ```
 
@@ -109,7 +134,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.9.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.10.0"]
 }
 ```
 
@@ -237,7 +262,8 @@ Configure via JSON files, environment variables, or both. Project config overrid
   "stallMinSteps": 3,
   "stallTokenThreshold": 500,
   "timeoutMs": 1800000,
-  "rateLimitCapacity": 10
+  "rateLimitCapacity": 10,
+  "dashboardPort": 4747
 }
 ```
 
@@ -253,6 +279,7 @@ All fields are optional. Missing fields use defaults.
 | `stallTokenThreshold` | `500` | Output tokens per step below which the agent is considered stalled |
 | `timeoutMs` | `1800000` (30 min) | Hard timeout for busy teammates. `0` disables. |
 | `rateLimitCapacity` | `10` | Token bucket capacity for team tool calls. `0` disables. |
+| `dashboardPort` | `4747` | Dashboard server port. `0` disables. |
 
 ### Environment variables
 
@@ -309,7 +336,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 452 tests
+bun test             # 460 tests
 bun run build
 ```
 

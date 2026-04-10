@@ -15,6 +15,8 @@ export interface EnsembleConfig {
   timeoutMs?: number
   /** Rate limit capacity (default: 10, 0 to disable) */
   rateLimitCapacity?: number
+  /** Dashboard server port (default: 4747, 0 to disable) */
+  dashboardPort?: number
 }
 
 /** Default configuration values. */
@@ -25,6 +27,7 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   stallTokenThreshold: 500,
   timeoutMs: 30 * 60 * 1000,
   rateLimitCapacity: 10,
+  dashboardPort: 4747,
 }
 
 /** Read a JSON config file, returning an empty object on missing/invalid. */
@@ -40,6 +43,7 @@ function readConfigFile(filePath: string): Partial<EnsembleConfig> {
     if (typeof raw.stallTokenThreshold === "number") result.stallTokenThreshold = raw.stallTokenThreshold
     if (typeof raw.timeoutMs === "number") result.timeoutMs = raw.timeoutMs
     if (typeof raw.rateLimitCapacity === "number") result.rateLimitCapacity = raw.rateLimitCapacity
+    if (typeof raw.dashboardPort === "number") result.dashboardPort = raw.dashboardPort
     return result
   } catch (err) {
     if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") return {}

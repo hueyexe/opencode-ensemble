@@ -15,6 +15,7 @@ import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
 import { loadConfig } from "./config"
 import { ProgressTracker } from "./progress"
+import { startDashboard } from "./dashboard"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamMessage } from "./tools/team-message"
@@ -93,6 +94,13 @@ const plugin: Plugin = async (input) => {
       log(`init:recover-branches:failed err=${err instanceof Error ? err.message : String(err)}`)
     })
     log("init:recovery:done")
+
+    // Start dashboard server (main instance only, not worktree instances)
+    if (config.dashboardPort !== 0) {
+      startDashboard(db, config.dashboardPort).catch((err) => {
+        log(`init:dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
   } else {
     log(`init:skip-recovery (worktree instance: ${input.directory})`)
   }
