@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDb, insertTeam, insertMember } from "./helpers"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import type { Database } from "bun:sqlite"
@@ -183,5 +183,61 @@ describe("buildTeamCompactionContext", () => {
     expect(result).toContain("2 completed")
     expect(result).toContain("1 in progress")
     expect(result).toContain("2 pending")
+  })
+})
+
+// --- Peer message delivery in teammate system prompt ---
+
+describe("buildTeammateSystemPrompt peer messages", () => {
+  let db: ReturnType<typeof setupDb>
+
+  beforeEach(() => {
+    db = setupDb()
+    insertTeam(db, "t1", "test-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice", "busy", "running")
+    insertMember(db, "t1", "bob", "sess-bob", "busy", "running")
+  })
+
+  test("includes pending peer messages addressed to this teammate", () => {
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["msg-1", "t1", "bob", "alice", "Hey alice, I found a bug in auth.ts", Date.now()])
+
+    const result = buildTeammateSystemPrompt(db, "t1", "alice")
+    expect(result).toContain("Messages for you")
+    expect(result).toContain("bob")
+    expect(result).toContain("found a bug")
+  })
+
+  test("does not include messages addressed to other teammates", () => {
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["msg-1", "t1", "alice", "bob", "Message for bob only", Date.now()])
+
+    const result = buildTeammateSystemPrompt(db, "t1", "alice")
+    expect(result).not.toContain("Message for bob")
+  })
+
+  test("does not include already-delivered messages", () => {
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 1, ?)",
+      ["msg-1", "t1", "bob", "alice", "Already delivered message", Date.now()])
+
+    const result = buildTeammateSystemPrompt(db, "t1", "alice")
+    expect(result).not.toContain("Already delivered")
+  })
+
+  test("marks messages as delivered after injection", () => {
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["msg-1", "t1", "bob", "alice", "Peer message", Date.now()])
+
+    buildTeammateSystemPrompt(db, "t1", "alice")
+
+    const msg = db.query("SELECT delivered FROM team_message WHERE id = 'msg-1'").get() as { delivered: number }
+    expect(msg.delivered).toBe(1)
+  })
+
+  test("returns basic prompt when no peer messages", () => {
+    const result = buildTeammateSystemPrompt(db, "t1", "alice")
+    expect(result).toContain("alice")
+    expect(result).toContain("test-team")
+    expect(result).not.toContain("Messages for you")
   })
 })

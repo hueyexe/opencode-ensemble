@@ -122,6 +122,8 @@ const plugin: Plugin = async (input) => {
     stallMinSteps: config.stallMinSteps,
     stallTokenThreshold: config.stallTokenThreshold,
     cwd: input.directory,
+    peerMessageLimit: config.peerMessageLimit,
+    peerMessageWindowMs: config.peerMessageWindowMs,
   })
   watchdog.start()
 
@@ -203,6 +205,29 @@ const plugin: Plugin = async (input) => {
                 parts: [{ type: "text", text: `[System: ${pending.c} new team message(s) available]` }],
               }).catch((err) => {
                 log(`wake-lead:failed err=${err instanceof Error ? err.message : String(err)}`)
+              })
+            }
+          }
+
+          // Also flush peer messages for teammates that just went idle
+          // Only flush messages older than 5s to avoid double-delivery with the direct promptAsync path
+          const member = db.query(
+            `SELECT tm.team_id, tm.name FROM team_member tm
+             JOIN team t ON tm.team_id = t.id
+             WHERE tm.session_id = ? AND t.status = 'active'`
+          ).get(sessionID) as { team_id: string; name: string } | null
+          if (member) {
+            const staleThreshold = Date.now() - 5000
+            const peerMsgs = db.query(
+              "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = ? AND delivered = 0 AND time_created < ?"
+            ).get(member.team_id, member.name, staleThreshold) as { c: number }
+            if (peerMsgs.c > 0) {
+              log(`wake-peer: ${member.name} has ${peerMsgs.c} pending peer messages`)
+              client.session.promptAsync({
+                sessionID,
+                parts: [{ type: "text", text: `[System: ${peerMsgs.c} new message(s) from teammates]` }],
+              }).catch((err) => {
+                log(`wake-peer:failed err=${err instanceof Error ? err.message : String(err)}`)
               })
             }
           }
@@ -325,6 +350,8 @@ const plugin: Plugin = async (input) => {
           const result = await executeTeamMessage(deps, args, ctx.sessionID)
           // Track message activity for stall detection
           progressTracker.recordMessage(ctx.sessionID)
+          // Track peer messages for chatty detection
+          if (args.to !== "lead") progressTracker.recordPeerMessage(ctx.sessionID)
           ctx.metadata({ title: `Message → ${args.to}` })
           return result
         },

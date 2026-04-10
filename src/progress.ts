@@ -12,7 +12,9 @@ export class ProgressTracker {
   private steps = new Map<string, StepRecord[]>()
   private lastMessageAt = new Map<string, number>()
   private lastTaskAt = new Map<string, number>()
+  private peerMessages = new Map<string, number[]>()
   private reported = new Set<string>()
+  private chattyReported = new Set<string>()
   private readonly maxSteps: number
 
   constructor(maxSteps = 10) {
@@ -25,6 +27,40 @@ export class ProgressTracker {
     records.push({ outputTokens, timestamp: Date.now() })
     if (records.length > this.maxSteps) records.shift()
     this.steps.set(sessionId, records)
+  }
+
+  /** Record a peer message (not to lead). Used for chatty detection. */
+  recordPeerMessage(sessionId: string): void {
+    const timestamps = this.peerMessages.get(sessionId) ?? []
+    timestamps.push(Date.now())
+    this.peerMessages.set(sessionId, timestamps)
+  }
+
+  /** Check if agent is chatty: more than `limit` peer messages within `windowMs`. */
+  isChatty(sessionId: string, limit: number, windowMs: number): boolean {
+    if (limit === 0) return false
+    const timestamps = this.peerMessages.get(sessionId)
+    if (!timestamps) return false
+    const cutoff = Date.now() - windowMs
+    const recent = timestamps.filter(t => t >= cutoff)
+    // Prune old timestamps
+    this.peerMessages.set(sessionId, recent)
+    return recent.length >= limit
+  }
+
+  /** Mark chatty as reported (avoid spam). */
+  markChattyReported(sessionId: string): void {
+    this.chattyReported.add(sessionId)
+  }
+
+  /** Check if chatty already reported. */
+  isChattyReported(sessionId: string): boolean {
+    return this.chattyReported.has(sessionId)
+  }
+
+  /** Clear chatty report (e.g., when agent sends result to lead). */
+  clearChattyReport(sessionId: string): void {
+    this.chattyReported.delete(sessionId)
   }
 
   /** Record that this member sent a team_message. Clears stall report. */
@@ -80,6 +116,8 @@ export class ProgressTracker {
     this.steps.delete(sessionId)
     this.lastMessageAt.delete(sessionId)
     this.lastTaskAt.delete(sessionId)
+    this.peerMessages.delete(sessionId)
     this.reported.delete(sessionId)
+    this.chattyReported.delete(sessionId)
   }
 }

@@ -253,6 +253,19 @@ export async function executeTeamSpawn(
     )
   }
 
+  // Collaboration guidance for peer-to-peer communication
+  if (otherMembers.length > 0) {
+    context.push(
+      "",
+      "Collaboration:",
+      "- Check team_tasks_list to see what other teammates are working on.",
+      "- If you need information another teammate has, message them directly via team_message.",
+      "- If you discover something relevant to another teammate's task, share it with them.",
+      "- Use team_broadcast for updates that affect the whole team.",
+      "- Keep peer messages focused and actionable — coordinate, don't chat.",
+    )
+  }
+
   context.push("", "When you finish your task:")
   if (!isReadOnly && worktreeBranch) {
     context.push(`1. Commit your changes: git add -A && git commit -m "your summary"`)

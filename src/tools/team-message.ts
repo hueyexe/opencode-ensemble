@@ -18,6 +18,22 @@ export async function executeTeamMessage(
   const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
   const recipientSessionId = resolveRecipientSession(deps.db, deps.registry, teamInfo.teamId, args.to)
+
+  // If recipient not found, store the message for later delivery (they may not be spawned yet)
+  // Reject approve/reject flags for unspawned recipients — plan approval requires the member to exist
+  if (!recipientSessionId && args.to !== "lead") {
+    if (args.approve || args.reject) {
+      throw new Error(`Cannot approve/reject plan for "${args.to}" — they haven't been spawned yet.`)
+    }
+    sendMessage(deps.db, {
+      teamId: teamInfo.teamId,
+      from: senderName,
+      to: args.to,
+      content: args.text,
+    })
+    log(`team_message:queued from=${senderName} to=${args.to} (recipient not yet spawned)`)
+    return `Message queued for ${args.to} — they haven't been spawned yet. It will be delivered when they join the team.`
+  }
   if (!recipientSessionId) throw new Error(`Recipient "${args.to}" not found in team "${teamInfo.teamName}"`)
 
   // Handle plan approval/rejection

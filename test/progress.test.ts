@@ -109,4 +109,49 @@ describe("ProgressTracker", () => {
     pt.remove("s1")
     expect(pt.isTokenStalled("s2", 1, 500)).toBe(true)
   })
+
+  // --- Chatty detection ---
+
+  test("isChatty returns false with no peer messages", () => {
+    const pt = new ProgressTracker()
+    expect(pt.isChatty("s1", 5, 300_000)).toBe(false)
+  })
+
+  test("isChatty returns false below limit", () => {
+    const pt = new ProgressTracker()
+    pt.recordPeerMessage("s1")
+    pt.recordPeerMessage("s1")
+    pt.recordPeerMessage("s1")
+    expect(pt.isChatty("s1", 5, 300_000)).toBe(false)
+  })
+
+  test("isChatty returns true at limit", () => {
+    const pt = new ProgressTracker()
+    for (let i = 0; i < 5; i++) pt.recordPeerMessage("s1")
+    expect(pt.isChatty("s1", 5, 300_000)).toBe(true)
+  })
+
+  test("isChatty returns false when limit is 0 (disabled)", () => {
+    const pt = new ProgressTracker()
+    for (let i = 0; i < 10; i++) pt.recordPeerMessage("s1")
+    expect(pt.isChatty("s1", 0, 300_000)).toBe(false)
+  })
+
+  test("markChattyReported / isChattyReported / clearChattyReport lifecycle", () => {
+    const pt = new ProgressTracker()
+    expect(pt.isChattyReported("s1")).toBe(false)
+    pt.markChattyReported("s1")
+    expect(pt.isChattyReported("s1")).toBe(true)
+    pt.clearChattyReport("s1")
+    expect(pt.isChattyReported("s1")).toBe(false)
+  })
+
+  test("remove cleans up chatty state", () => {
+    const pt = new ProgressTracker()
+    for (let i = 0; i < 5; i++) pt.recordPeerMessage("s1")
+    pt.markChattyReported("s1")
+    pt.remove("s1")
+    expect(pt.isChatty("s1", 5, 300_000)).toBe(false)
+    expect(pt.isChattyReported("s1")).toBe(false)
+  })
 })

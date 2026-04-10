@@ -48,9 +48,10 @@ describe("team_message", () => {
       .rejects.toThrow("not in a team")
   })
 
-  test("rejects if recipient not found", async () => {
-    await expect(executeTeamMessage(deps, { to: "unknown", text: "hi" }, "sess-alice"))
-      .rejects.toThrow("not found")
+  test("queues message if peer recipient not yet spawned", async () => {
+    const result = await executeTeamMessage(deps, { to: "unknown", text: "hi" }, "sess-alice")
+    expect(result).toContain("queued")
+    expect(result).toContain("unknown")
   })
 
   test("rejects messages over 10KB", async () => {

@@ -24,6 +24,10 @@ interface WatchdogOpts {
   stallTokenThreshold?: number
   /** Project directory for git operations. */
   cwd?: string
+  /** Max peer messages per agent per window before nudge. 0 disables. */
+  peerMessageLimit?: number
+  /** Time window for peer message rate limiting in ms. */
+  peerMessageWindowMs?: number
 }
 
 /**
@@ -41,6 +45,8 @@ export class Watchdog {
   private readonly stallMinSteps: number
   private readonly stallTokenThreshold: number
   private readonly cwd?: string
+  private readonly peerMessageLimit: number
+  private readonly peerMessageWindowMs: number
   private timer: ReturnType<typeof setInterval> | undefined
 
   constructor(opts: WatchdogOpts) {
@@ -54,6 +60,8 @@ export class Watchdog {
     this.stallMinSteps = opts.stallMinSteps ?? 3
     this.stallTokenThreshold = opts.stallTokenThreshold ?? 500
     this.cwd = opts.cwd
+    this.peerMessageLimit = opts.peerMessageLimit ?? 0
+    this.peerMessageWindowMs = opts.peerMessageWindowMs ?? 300_000
   }
 
   private static STALE_THRESHOLD_MS = Number(process.env.STALE_WORKTREE_THRESHOLD_MS) || 300_000
@@ -133,10 +141,46 @@ export class Watchdog {
     }
   }
 
+  /** Check for chatty agents sending too many peer messages. */
+  async checkChatty(): Promise<void> {
+    if (!this.progressTracker || this.peerMessageLimit === 0) return
+
+    const busy = this.db.query(
+      `SELECT tm.team_id, tm.name, tm.session_id
+       FROM team_member tm
+       JOIN team t ON tm.team_id = t.id
+       WHERE t.status = 'active' AND tm.status = 'busy'`
+    ).all() as Array<{ team_id: string; name: string; session_id: string }>
+
+    for (const member of busy) {
+      if (this.progressTracker.isChattyReported(member.session_id)) continue
+      if (!this.progressTracker.isChatty(member.session_id, this.peerMessageLimit, this.peerMessageWindowMs)) continue
+
+      this.progressTracker.markChattyReported(member.session_id)
+
+      // Nudge the agent
+      this.client.session.promptAsync({
+        sessionID: member.session_id,
+        parts: [{ type: "text", text: "[System]: You've sent several messages to teammates. Focus on completing your task and send your results to the lead via team_message." }],
+      }).catch(() => { /* best effort */ })
+
+      // Notify the lead
+      sendMessage(this.db, {
+        teamId: member.team_id,
+        from: "system",
+        to: "lead",
+        content: `Agent "${member.name}" is sending many peer messages and may be over-coordinating. Consider checking on them.`,
+      })
+
+      log(`watchdog:chatty member=${member.name} limit=${this.peerMessageLimit}`)
+    }
+  }
+
   /** Run a single check for stale busy members. */
   async check(): Promise<void> {
     await this.cleanupStaleWorktrees()
     await this.checkStalled()
+    await this.checkChatty()
     if (this.ttlMs === 0) return
 
     const cutoff = Date.now() - this.ttlMs

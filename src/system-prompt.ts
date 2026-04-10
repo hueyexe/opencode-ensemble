@@ -125,13 +125,39 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
 
 /**
  * Build the system prompt injected into a teammate's session.
- * Short role reminder with name, team name, and communication tool.
+ * Includes role reminder and delivers any pending peer messages.
  */
 export function buildTeammateSystemPrompt(db: Database, teamId: string, memberName: string): string {
   const team = db.query("SELECT name FROM team WHERE id = ?").get(teamId) as { name: string } | null
   if (!team) return ""
 
-  return `You are "${memberName}", a teammate in team "${team.name}". Use team_message to communicate. You MUST send your results to the lead via team_message before stopping.`
+  const lines = [
+    `You are "${memberName}", a teammate in team "${team.name}". Use team_message to communicate. You MUST send your results to the lead via team_message before stopping.`,
+  ]
+
+  // Deliver pending peer messages addressed to this teammate
+  const pendingMessages = db.query(
+    "SELECT id, from_name, content FROM team_message WHERE team_id = ? AND to_name = ? AND delivered = 0 ORDER BY time_created ASC"
+  ).all(teamId, memberName) as Array<{ id: string; from_name: string; content: string }>
+
+  if (pendingMessages.length > 0) {
+    lines.push("", "--- Messages for you ---")
+    const MAX_MSG = 500
+    for (const msg of pendingMessages) {
+      const parsed = parseTaskResult(msg.content)
+      if (parsed) {
+        lines.push(formatTaskResult(msg.from_name, { ...parsed, details: truncate(parsed.details, MAX_MSG) }))
+      } else if (msg.content.length > MAX_MSG) {
+        lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (truncated)`)
+      } else {
+        lines.push(`[From ${msg.from_name}]: ${msg.content}`)
+      }
+      markDelivered(db, msg.id)
+    }
+    lines.push("--- End Messages ---")
+  }
+
+  return lines.join("\n")
 }
 
 /**
