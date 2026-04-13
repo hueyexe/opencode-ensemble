@@ -611,3 +611,84 @@ describe("stress: full lifecycle with all v0.8.0 features", () => {
     expect(allTasks.every(t => t.status === "completed")).toBe(true)
   })
 })
+
+// ─── Model resolution ───
+
+describe("stress: model resolution", () => {
+  let deps: Deps
+  const lead = "lead-sess"
+
+  beforeEach(() => {
+    deps = setupDeps()
+    spawnFailures.clear()
+  })
+
+  test("explicit model param takes priority over config", async () => {
+    deps.config = { ...deps.config, defaultModel: "anthropic/claude-sonnet-4-6", modelsByAgent: { build: "openai/gpt-5.4" } }
+    await executeTeamCreate(deps, { name: "model-explicit" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "build", prompt: "t", model: "google/gemini-3.1-pro-preview", worktree: false }, lead)
+
+    const member = deps.db.query("SELECT model FROM team_member WHERE name = 'a'").get() as { model: string | null }
+    expect(member.model).toBe("google/gemini-3.1-pro-preview")
+  })
+
+  test("modelsByAgent maps agent type to model", async () => {
+    deps.config = { ...deps.config, modelsByAgent: { explore: "anthropic/claude-sonnet-4-6" } }
+    await executeTeamCreate(deps, { name: "model-byagent" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "explore", prompt: "t", worktree: false }, lead)
+
+    // Check the promptAsync call included the model
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const lastCall = promptCalls[promptCalls.length - 1]
+    expect(lastCall).toBeTruthy()
+    const callArgs = lastCall!.args[0] as { model?: { providerID: string; modelID: string } }
+    expect(callArgs.model).toEqual({ providerID: "anthropic", modelID: "claude-sonnet-4-6" })
+  })
+
+  test("rotation cycles through modelPool", async () => {
+    deps.config = { ...deps.config, modelPool: ["anthropic/claude-opus-4-6", "openai/gpt-5.4", "google/gemini-3.1-pro-preview"], modelAssignment: "rotate" }
+    await executeTeamCreate(deps, { name: "model-rotate" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "build", prompt: "t", worktree: false }, lead)
+    await executeTeamSpawn(deps, { name: "b", agent: "build", prompt: "t", worktree: false }, lead)
+    await executeTeamSpawn(deps, { name: "c", agent: "build", prompt: "t", worktree: false }, lead)
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const models = promptCalls.map(c => (c.args[0] as { model?: { providerID: string; modelID: string } }).model)
+    // 3 agents rotating through 3 models
+    expect(models[0]).toEqual({ providerID: "anthropic", modelID: "claude-opus-4-6" })
+    expect(models[1]).toEqual({ providerID: "openai", modelID: "gpt-5.4" })
+    expect(models[2]).toEqual({ providerID: "google", modelID: "gemini-3.1-pro-preview" })
+  })
+
+  test("random picks from modelPool", async () => {
+    deps.config = { ...deps.config, modelPool: ["anthropic/claude-opus-4-6", "openai/gpt-5.4"], modelAssignment: "random" }
+    await executeTeamCreate(deps, { name: "model-random" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "build", prompt: "t", worktree: false }, lead)
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const model = (promptCalls[0]!.args[0] as { model?: { providerID: string; modelID: string } }).model
+    expect(model).toBeTruthy()
+    // Model should be one of the pool entries
+    const validProviders = ["anthropic", "openai"]
+    expect(validProviders).toContain(model!.providerID)
+  })
+
+  test("defaultModel used when no other config matches", async () => {
+    deps.config = { ...deps.config, defaultModel: "opencode/zen-sonnet-4-6" }
+    await executeTeamCreate(deps, { name: "model-default" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "build", prompt: "t", worktree: false }, lead)
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const model = (promptCalls[0]!.args[0] as { model?: { providerID: string; modelID: string } }).model
+    expect(model).toEqual({ providerID: "opencode", modelID: "zen-sonnet-4-6" })
+  })
+
+  test("no model config results in no model param on promptAsync", async () => {
+    await executeTeamCreate(deps, { name: "model-none" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "build", prompt: "t", worktree: false }, lead)
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const model = (promptCalls[0]!.args[0] as { model?: unknown }).model
+    expect(model).toBeUndefined()
+  })
+})

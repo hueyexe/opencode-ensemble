@@ -10,6 +10,7 @@ import { MemberRegistry, DescendantTracker } from "./state"
 import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
+import { sendMessage } from "./messaging"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -66,7 +67,7 @@ const plugin: Plugin = async (input) => {
   const rawClient = new OpencodeClient({ client: pluginTransport })
   initLog(rawClient)
   const client = wrapThrowingClient(rawClient)
-  const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory }
+  const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory, config }
 
   // Recovery only runs for the main project instance — NOT for teammate worktree instances.
   // Worktree instances are created during session.create. Running recovery there makes HTTP
@@ -141,6 +142,39 @@ const plugin: Plugin = async (input) => {
             notifyTeamEvent(client, "shutdown", { memberName: transition.memberName })
           } else if (transition.to === "ready" && transition.from === "busy") {
             notifyTeamEvent(client, "completed", { memberName: transition.memberName })
+
+            // Fast-idle detection: if agent went idle within 15s of spawn with zero messages,
+            // the model likely failed silently (auth error, invalid model, etc.)
+            const fastIdleKey = `fastidle:${transition.teamId}:${transition.memberName}`
+            if (!nudgedMembers.has(fastIdleKey)) {
+              const memberInfo = db.query(
+                "SELECT time_created, model FROM team_member WHERE team_id = ? AND name = ?"
+              ).get(transition.teamId, transition.memberName) as { time_created: number; model: string | null } | null
+              if (memberInfo) {
+                const spawnAge = Date.now() - memberInfo.time_created
+                const msgCount = (db.query(
+                  "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND from_name = ?"
+                ).get(transition.teamId, transition.memberName) as { c: number }).c
+                if (spawnAge < 15_000 && msgCount === 0) {
+                  nudgedMembers.add(fastIdleKey)
+                  const modelInfo = memberInfo.model ? ` (model: ${memberInfo.model})` : ""
+                  log(`fast-idle: ${transition.memberName} went idle ${Math.round(spawnAge / 1000)}s after spawn with 0 messages${modelInfo}`)
+                  sendMessage(db, {
+                    teamId: transition.teamId,
+                    from: "system",
+                    to: "lead",
+                    content: `Warning: Teammate "${transition.memberName}" went idle immediately after spawning with no output${modelInfo}. This usually means the model failed to start (authentication error, invalid model, or provider issue). Check your API key and model configuration, then retry the spawn.`,
+                  })
+                  client.tui.showToast({
+                    title: "Team",
+                    message: `${transition.memberName} failed to produce output${modelInfo}`,
+                    variant: "warning",
+                    duration: 8000,
+                  }).catch(() => { /* TUI may not be available */ })
+                }
+              }
+            }
+
             // Nudge teammate if they went idle without reporting to the lead (once only)
             const nudgeKey = `${transition.teamId}:${transition.memberName}`
             if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName)) {
@@ -270,7 +304,7 @@ const plugin: Plugin = async (input) => {
       if (!teamInfo) return
       log(`system-prompt:transform role=${teamInfo.role} session=${input.sessionID}`)
       const prompt = teamInfo.role === "lead"
-        ? buildLeadSystemPrompt(db, teamInfo.teamId)
+        ? buildLeadSystemPrompt(db, teamInfo.teamId, config)
         : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
       log(`system-prompt:injected role=${teamInfo.role} len=${prompt.length}`)
       output.system.push(prompt)

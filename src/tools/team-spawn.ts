@@ -3,9 +3,39 @@ import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
 import { sendMessage } from "../messaging"
 import { log } from "../log"
+import type { EnsembleConfig } from "../config"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
+
+/** Parse "provider/model" string into { providerID, modelID } for the SDK. */
+function parseModelId(model: string): { providerID: string; modelID: string } | undefined {
+  const slash = model.indexOf("/")
+  if (slash <= 0 || slash === model.length - 1) return undefined
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
+}
+
+/**
+ * Resolve which model to use for a spawned agent.
+ * Priority: explicit arg > modelsByAgent > rotation/random > defaultModel > undefined.
+ */
+export function resolveModel(
+  explicitModel: string | undefined,
+  agentType: string,
+  teamMemberCount: number,
+  config: Required<EnsembleConfig>,
+): string | undefined {
+  if (explicitModel) return explicitModel
+  if (config.modelsByAgent[agentType]) return config.modelsByAgent[agentType]
+  if (config.modelAssignment === "rotate" && config.modelPool.length > 0) {
+    return config.modelPool[teamMemberCount % config.modelPool.length]
+  }
+  if (config.modelAssignment === "random" && config.modelPool.length > 0) {
+    return config.modelPool[Math.floor(Math.random() * config.modelPool.length)]
+  }
+  if (config.defaultModel) return config.defaultModel
+  return undefined
+}
 
 /** Timeout for worktree.create and session.create to prevent hanging on git lock contention. */
 function getSpawnTimeout(): number {
@@ -182,10 +212,15 @@ export async function executeTeamSpawn(
   // Register in DB
   const planApproval = usePlanApproval ? "pending" : "none"
   const now = Date.now()
+  // Resolve model before DB insert so the stored value matches what promptAsync uses
+  const memberCount = (deps.db.query("SELECT COUNT(*) as c FROM team_member WHERE team_id = ?").get(teamInfo.teamId) as { c: number }).c
+  const resolvedModel = resolveModel(args.model, args.agent, memberCount, deps.config)
+  if (resolvedModel) log(`spawn:model name=${args.name} model=${resolvedModel}`)
+
   deps.db.run(
     `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, workspace_id, plan_approval, time_created, time_updated)
      VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [teamInfo.teamId, args.name, childSessionId, args.agent, args.model ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
+    [teamInfo.teamId, args.name, childSessionId, args.agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
   )
 
   // Register in memory
@@ -316,16 +351,23 @@ export async function executeTeamSpawn(
 
   const contextStr = context.join("\n")
 
+  // Model was already resolved before DB insert — just parse for promptAsync
+  const modelParam = resolvedModel ? parseModelId(resolvedModel) : undefined
+  if (resolvedModel && !modelParam) {
+    log(`spawn:model:invalid name=${args.name} model=${resolvedModel} — expected "provider/model" format, falling back to default`)
+  }
+
   // Fire-and-forget: send prompt to teammate session.
   log(`spawn:promptAsync:fire name=${args.name} sessionId=${childSessionId}`)
   deps.client.session.promptAsync({
     sessionID: childSessionId,
     parts: [{ type: "text", text: contextStr }],
     agent: args.agent,
-  }).catch(() => {
-    log(`spawn:promptAsync:failed name=${args.name} — rolling back`)
+    ...(modelParam ? { model: modelParam } : {}),
+  }).catch((err) => {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    log(`spawn:promptAsync:failed name=${args.name} err=${errMsg} — rolling back`)
     try {
-      // Async rollback: clean up DB (by session_id to avoid deleting a re-spawned member with the same name), registry, session, and worktree
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
       deps.registry.unregister(childSessionId)
       deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
@@ -335,20 +377,18 @@ export async function executeTeamSpawn(
       if (worktreeDir) {
         deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
       }
-      // Notify user that spawn failed so the lead doesn't think the teammate is active
+      const modelInfo = resolvedModel ? ` (model: ${resolvedModel})` : ""
       deps.client.tui.showToast({
         title: "Team",
-        message: `Teammate "${args.name}" failed to start and was removed`,
+        message: `Teammate "${args.name}" failed to start${modelInfo}: ${errMsg}`,
         variant: "error",
-        duration: 5000,
+        duration: 8000,
       }).catch(() => { /* TUI may not be available */ })
-      // Notify the lead model so it can react (retry, adjust plan, etc.)
-      // Message delivered via system prompt transform on the lead's next turn.
       sendMessage(deps.db, {
         teamId: teamInfo.teamId,
         from: "system",
         to: "lead",
-        content: `Teammate "${args.name}" failed to start and was removed. You may retry the spawn.`,
+        content: `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
       })
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })

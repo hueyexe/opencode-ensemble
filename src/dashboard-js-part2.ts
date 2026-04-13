@@ -64,6 +64,7 @@ function rAgents(t){
         '<span class="text-[10px] px-1.5 py-[1px] rounded '+s.t+' bg-base-800/80 shrink-0">'+s.l+'</span>'+
         spark+
         '<span class="text-[10px] text-txt-500 ml-auto shrink-0">'+E(m.agent)+'</span>'+
+        (m.model?chip(E(m.model),'muted'):'')+
       '</div>'+
       (tr?'<div class="mt-2 text-[13px] text-txt-200 leading-snug truncate">'+E(tr)+'</div>':'')+
       '<div class="mt-2 flex items-center gap-1.5 flex-wrap">'+

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
 import { MemberRegistry, DescendantTracker } from "../src/state"
 import type { ToolDeps, PluginClient } from "../src/types"
+import { DEFAULT_CONFIG } from "../src/config"
 
 /** Create a fresh in-memory DB with migrations applied. */
 export function setupDb(): Database {
@@ -90,6 +91,7 @@ export function setupDeps(db?: Database): ToolDeps & { client: ReturnType<typeof
     tracker: new DescendantTracker(),
     client: mockClient(),
     directory: "/tmp/test-project",
+    config: { ...DEFAULT_CONFIG },
   }
 }
 

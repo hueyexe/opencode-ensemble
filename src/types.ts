@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import type { MemberRegistry, DescendantTracker } from "./state"
+import type { EnsembleConfig } from "./config"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -13,6 +14,8 @@ export interface ToolDeps {
   client: PluginClient
   /** The project root directory — used for reading AGENTS.md and other project files. */
   directory: string
+  /** Plugin configuration. */
+  config: Required<EnsembleConfig>
 }
 
 /** A single permission rule for session-level enforcement. */

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { markDelivered } from "./messaging"
 import { parseTaskResult, formatTaskResult } from "./result-parser"
+import type { EnsembleConfig } from "./config"
 
 /** Truncate a string to maxLen chars, appending "..." if truncated. */
 function truncate(s: string, maxLen: number): string {
@@ -20,7 +21,7 @@ const STATUS_DISPLAY: Record<string, string> = {
  * Build the system prompt injected into the lead's session.
  * Includes team name, member statuses, task counts, and anti-polling guidance.
  */
-export function buildLeadSystemPrompt(db: Database, teamId: string): string {
+export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Required<EnsembleConfig>): string {
   const team = db.query("SELECT name FROM team WHERE id = ?").get(teamId) as { name: string } | null
   if (!team) return ""
 
@@ -96,6 +97,38 @@ export function buildLeadSystemPrompt(db: Database, teamId: string): string {
       markDelivered(db, msg.id)
     }
     lines.push("--- End Messages ---")
+  }
+
+  // Model selection guidance (only when promptForModels is enabled)
+  if (config?.promptForModels) {
+    const poolOptions = (config.modelPool && config.modelPool.length > 0)
+      ? config.modelPool.map(m => `      { label: "${m}", description: "" }`).join(",\n")
+      : ""
+    lines.push(
+      "",
+      "MODEL SELECTION:",
+      "Before spawning teammates, use the question tool to ask the user about model preferences.",
+      "Do NOT spawn any agents until the user confirms their model preference.",
+      "Keep descriptions simple and clear — explain what each option means in plain language.",
+      "Example question tool call:",
+      '  question({ questions: [{ question: "Which AI models should your team agents use?", header: "Agent models", options: [',
+      '    { label: "Same as me (Recommended)", description: "Every agent uses the same model I\'m running on. Simplest option — no extra setup needed." },',
+      '    { label: "Mix of models", description: "Each agent gets a different model from your configured pool. Useful for getting diverse perspectives on the same problem." },',
+      '    { label: "I\'ll choose per agent", description: "You pick the exact model for each agent as I spawn them. Most control, but requires a choice per agent." }',
+      "  ]}]})",
+    )
+    if (poolOptions) {
+      lines.push(
+        'If user picks "Mix of models", ask which models with multiple: true:',
+        "  question({ questions: [{ question: \"Which models should agents rotate through? Pick all that apply.\", header: \"Model pool\", multiple: true, options: [",
+        poolOptions,
+        "  ]}]})",
+      )
+    }
+    lines.push(
+      'If user picks "I\'ll choose per agent", ask for each agent\'s model individually before each team_spawn call.',
+      "Pass the chosen model via the model parameter on each team_spawn call.",
+    )
   }
 
   lines.push(

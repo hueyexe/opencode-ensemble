@@ -21,7 +21,7 @@ Key SDK primitives:
 - client.session.abort() — cancel/shutdown teammates
 - client.session.status() — poll session idle/busy state
 - event hook — subscribe to session.status events for state transitions
-- tool hook — register the 13 team tools
+- tool hook — register the 14 team tools
 - tool.execute.before hook — rate limiting + sub-agent isolation
 
 ### Storage
@@ -133,6 +133,12 @@ that is not tied to any worktree. OpenCode cannot delete it.
    shutdown message (covers crash during shutdown_requested)
 3. `team-cleanup.ts` → force-abort path — preserves before aborting
    active members
+4. `recovery.ts` → `recoverStaleMembers()` — preserves before aborting
+   stale busy members on crash recovery
+5. `watchdog.ts` → timeout abort — preserves before aborting
+   timed-out members
+6. `index.ts` → `busy_while_shutdown` event — verifies/re-preserves
+   before re-aborting a session that went busy after shutdown request
 
 ### What goes wrong if you skip it
 

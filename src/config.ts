@@ -21,19 +21,34 @@ export interface EnsembleConfig {
   peerMessageLimit?: number
   /** Time window for peer message rate limiting in ms (default: 300000 = 5 min) */
   peerMessageWindowMs?: number
+  /** Default model for all agents (e.g. "opencode/zen-sonnet-4-6") */
+  defaultModel?: string
+  /** Pool of models for rotation/random assignment */
+  modelPool?: string[]
+  /** Map agent type to specific model e.g. {"build": "anthropic/claude-opus-4-6"} */
+  modelsByAgent?: Record<string, string>
+  /** How to assign models: "default" | "rotate" | "random" (default: "default") */
+  modelAssignment?: "default" | "rotate" | "random"
+  /** Lead asks user about model preferences before spawning (default: false) */
+  promptForModels?: boolean
 }
 
 /** Default configuration values. */
 export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   mergeOnCleanup: true,
-  stallThresholdMs: 180_000,
-  stallMinSteps: 3,
-  stallTokenThreshold: 500,
+  stallThresholdMs: 300_000,
+  stallMinSteps: 5,
+  stallTokenThreshold: 200,
   timeoutMs: 30 * 60 * 1000,
   rateLimitCapacity: 10,
   dashboardPort: 4747,
   peerMessageLimit: 5,
   peerMessageWindowMs: 300_000,
+  defaultModel: "",
+  modelPool: [],
+  modelsByAgent: {},
+  modelAssignment: "default",
+  promptForModels: false,
 }
 
 /** Read a JSON config file, returning an empty object on missing/invalid. */
@@ -52,6 +67,14 @@ function readConfigFile(filePath: string): Partial<EnsembleConfig> {
     if (typeof raw.dashboardPort === "number") result.dashboardPort = raw.dashboardPort
     if (typeof raw.peerMessageLimit === "number") result.peerMessageLimit = raw.peerMessageLimit
     if (typeof raw.peerMessageWindowMs === "number") result.peerMessageWindowMs = raw.peerMessageWindowMs
+    if (typeof raw.defaultModel === "string") result.defaultModel = raw.defaultModel
+    if (Array.isArray(raw.modelPool) && raw.modelPool.every((m: unknown) => typeof m === "string")) result.modelPool = raw.modelPool as string[]
+    if (typeof raw.modelsByAgent === "object" && raw.modelsByAgent !== null && !Array.isArray(raw.modelsByAgent)) {
+      const valid = Object.entries(raw.modelsByAgent as Record<string, unknown>).every(([, v]) => typeof v === "string")
+      if (valid) result.modelsByAgent = raw.modelsByAgent as Record<string, string>
+    }
+    if (typeof raw.modelAssignment === "string" && ["default", "rotate", "random"].includes(raw.modelAssignment)) result.modelAssignment = raw.modelAssignment as "default" | "rotate" | "random"
+    if (typeof raw.promptForModels === "boolean") result.promptForModels = raw.promptForModels
     return result
   } catch (err) {
     if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") return {}

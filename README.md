@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-471%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-477%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
 [![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -10,6 +10,16 @@
 Run parallel AI agents in OpenCode. Each agent gets its own session, context window, and task. They coordinate through messaging and a shared task board.
 
 Plugin built on the public OpenCode SDK. No internal dependencies.
+
+## Quick Start
+
+```json
+{
+  "plugin": ["@hueyexe/opencode-ensemble@0.12.0"]
+}
+```
+
+Add to your `opencode.json`, restart OpenCode, and ask it to do something that benefits from parallel work. The agent handles the rest. See [Install](#install) for full setup including worktree permissions.
 
 ## What actually happens
 
@@ -126,7 +136,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.11.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.12.0"]
 }
 ```
 
@@ -134,7 +144,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.11.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.12.0"]
 }
 ```
 
@@ -170,17 +180,15 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
-For working on the plugin itself, create `.opencode/plugins/ensemble.ts` in your project:
+To test a local build, point your plugin config at the built output:
 
-```ts
-export { default } from "@hueyexe/opencode-ensemble"
+```json
+{
+  "plugin": ["/path/to/opencode-ensemble/dist/index.js"]
+}
 ```
 
-Or point directly at the source checkout:
-
-```ts
-export { default } from "/path/to/opencode-ensemble/src/index.ts"
-```
+Build with `bun run build`, then restart OpenCode to pick up changes.
 
 ## Tools
 
@@ -217,7 +225,7 @@ export { default } from "/path/to/opencode-ensemble/src/index.ts"
 
 ## What you see in the TUI
 
-The plugin works within OpenCode's existing TUI. No custom team panel (that requires core TUI changes, which are [in progress upstream](https://github.com/sst/opencode)).
+The plugin works within OpenCode's existing TUI. For deeper visibility, open the [dashboard](#dashboard) at `http://localhost:4747`.
 
 What you get:
 
@@ -248,6 +256,56 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 - **Graceful shutdown**: busy teammates receive a shutdown message and finish their current work. Use `force: true` to abort immediately.
 - **Rate limiting**: token bucket (configurable via config file or `OPENCODE_ENSEMBLE_RATE_LIMIT`, default 10 tokens/sec)
 
+## Model Selection
+
+Control which AI models your agents use. By default, agents use whatever model OpenCode is configured with. You can override this per-agent, per-agent-type, or with automatic rotation.
+
+**All agents use the same model:**
+```json
+{
+  "defaultModel": "anthropic/claude-sonnet-4-6"
+}
+```
+
+**Different models for different agent types:**
+```json
+{
+  "modelsByAgent": {
+    "build": "anthropic/claude-opus-4-6",
+    "explore": "opencode/gpt-5-nano"
+  }
+}
+```
+
+**Rotate through a pool for diverse perspectives:**
+```json
+{
+  "modelPool": ["anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
+  "modelAssignment": "rotate"
+}
+```
+
+**Ask the user before spawning:**
+```json
+{
+  "promptForModels": true,
+  "modelPool": ["anthropic/claude-opus-4-6", "opencode/big-pickle", "opencode/gpt-5-nano"]
+}
+```
+
+When `promptForModels` is true, the lead uses the question tool to ask which models to use before spawning any agents. The user can pick the same model for all agents, mix from the pool, or choose per agent.
+
+**Resolution order** — when an agent is spawned, the model is determined by:
+1. Explicit `model` param on `team_spawn` (lead or user chose it)
+2. `modelsByAgent` mapping for this agent type
+3. `modelAssignment` strategy (`rotate` or `random` from `modelPool`)
+4. `defaultModel`
+5. OpenCode's default model
+
+The lead can always override by passing `model` directly on `team_spawn`, regardless of config.
+
+Model IDs use the `provider/model` format from [models.dev](https://models.dev) (e.g. `anthropic/claude-opus-4-6`, `openai/gpt-5.4`). For OpenCode Zen models, use the `opencode/` prefix (e.g. `opencode/big-pickle`).
+
 ## Configuration
 
 Configure via JSON files, environment variables, or both. Project config overrides global config. Env vars override everything.
@@ -259,12 +317,17 @@ Configure via JSON files, environment variables, or both. Project config overrid
 ```json
 {
   "mergeOnCleanup": true,
-  "stallThresholdMs": 180000,
-  "stallMinSteps": 3,
-  "stallTokenThreshold": 500,
+  "stallThresholdMs": 300000,
+  "stallMinSteps": 5,
+  "stallTokenThreshold": 200,
   "timeoutMs": 1800000,
   "rateLimitCapacity": 10,
-  "dashboardPort": 4747
+  "dashboardPort": 4747,
+  "defaultModel": "anthropic/claude-sonnet-4-6",
+  "modelPool": ["anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
+  "modelsByAgent": {},
+  "modelAssignment": "default",
+  "promptForModels": false
 }
 ```
 
@@ -275,12 +338,17 @@ All fields are optional. Missing fields use defaults.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mergeOnCleanup` | `true` | Auto-merge worktree branches on cleanup (squash + unstage) |
-| `stallThresholdMs` | `180000` (3 min) | Time without communication before stall escalation. `0` disables. |
-| `stallMinSteps` | `3` | Min model steps before token-based stall check kicks in |
-| `stallTokenThreshold` | `500` | Output tokens per step below which the agent is considered stalled |
+| `stallThresholdMs` | `300000` (5 min) | Time without communication before stall escalation. `0` disables. |
+| `stallMinSteps` | `5` | Min model steps before token-based stall check kicks in |
+| `stallTokenThreshold` | `200` | Output tokens per step below which the agent is considered stalled |
 | `timeoutMs` | `1800000` (30 min) | Hard timeout for busy teammates. `0` disables. |
 | `rateLimitCapacity` | `10` | Token bucket capacity for team tool calls. `0` disables. |
 | `dashboardPort` | `4747` | Dashboard server port. `0` disables. |
+| `defaultModel` | `""` | Default model for all agents (e.g. `"anthropic/claude-sonnet-4-6"`). Empty = OpenCode's default. |
+| `modelPool` | `[]` | List of models for rotation/random assignment. |
+| `modelsByAgent` | `{}` | Map agent type to model (e.g. `{"build": "anthropic/claude-opus-4-6"}`). |
+| `modelAssignment` | `"default"` | How to assign models: `"default"`, `"rotate"`, or `"random"`. |
+| `promptForModels` | `false` | Lead asks user about model preferences before spawning. |
 
 ### Environment variables
 
@@ -299,7 +367,7 @@ OPENCODE_ENSEMBLE_RATE_LIMIT=20
 # Disable rate limiting
 OPENCODE_ENSEMBLE_RATE_LIMIT=0
 
-# Adjust stall detection threshold (default: 180000ms = 3 minutes)
+# Adjust stall detection threshold (default: 300000ms = 5 minutes)
 STALL_THRESHOLD_MS=300000
 
 # Disable stall detection
@@ -337,7 +405,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 471 tests
+bun test             # 477 tests
 bun run build
 ```
 
