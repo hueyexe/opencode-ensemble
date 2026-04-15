@@ -9,6 +9,9 @@ export interface MergeResult {
 /** Injectable function for testing. */
 export type MergeBranchFn = (branch: string, cwd: string) => Promise<MergeResult>
 
+/** Injectable function for overlap detection before merge. */
+export type OverlapCheckFn = (branch: string, cwd: string) => Promise<string[]>
+
 /** Injectable function for preserving a branch before worktree deletion. */
 export type PreserveBranchFn = (sourceBranch: string, targetBranch: string, cwd: string) => Promise<boolean>
 
@@ -116,6 +119,25 @@ export async function mergeBranch(branch: string, cwd: string): Promise<MergeRes
     if (!restored) return { ok: true, error: "Merge succeeded but stashed work could not be restored — check git stash list" }
   }
   return { ok: true }
+}
+
+/**
+ * Detect files that both the lead (local changes) and the agent (branch) modified.
+ * Returns the list of overlapping file paths, or empty if safe to merge.
+ */
+export async function getOverlappingFiles(branch: string, cwd: string): Promise<string[]> {
+  const run = async (args: string[]) => {
+    const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
+    const out = await new Response(proc.stdout).text()
+    const exit = await proc.exited
+    if (exit !== 0) throw new Error(`git ${args.join(" ")} failed with exit code ${exit}`)
+    return out.split("\n").filter(Boolean)
+  }
+  const agentFiles = new Set(await run(["diff", "--name-only", "HEAD", branch]))
+  const localChanged = await run(["diff", "--name-only", "HEAD"])
+  const localUntracked = await run(["ls-files", "--others", "--exclude-standard"])
+  const localFiles = [...new Set([...localChanged, ...localUntracked])]
+  return localFiles.filter(f => agentFiles.has(f))
 }
 
 /**

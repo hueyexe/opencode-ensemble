@@ -2,8 +2,8 @@ import type { ToolDeps } from "../types"
 import { requireLead, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
 import { spawnFailures } from "./team-spawn"
-import { mergeBranch, deleteBranch, preserveBranch, preservedBranchName } from "./merge-helper"
-import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn } from "./merge-helper"
+import { mergeBranch, deleteBranch, preserveBranch, preservedBranchName, getOverlappingFiles } from "./merge-helper"
+import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
 
 /**
@@ -19,6 +19,7 @@ export async function executeTeamCleanup(
   merge: MergeBranchFn = mergeBranch,
   delBranch: DeleteBranchFn = deleteBranch,
   mergeOnCleanup = true,
+  overlapCheck: OverlapCheckFn = getOverlappingFiles,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
@@ -75,10 +76,18 @@ export async function executeTeamCleanup(
   const unmerged = members.filter(m => m.worktree_branch !== null)
   const merged: string[] = []
   const conflicted: string[] = []
+  const overlapWarnings: string[] = []
 
   if (unmerged.length > 0 && mergeOnCleanup) {
     for (const member of unmerged) {
       const branch = member.worktree_branch!
+      // Warn (but don't block) if lead has local changes to overlapping files
+      try {
+        const overlap = await overlapCheck(branch, deps.directory)
+        if (overlap.length > 0) {
+          overlapWarnings.push(`${member.name}: ${overlap.join(", ")}`)
+        }
+      } catch { /* best effort */ }
       const result = await merge(branch, deps.directory)
       if (result.ok) {
         await delBranch(branch, deps.directory)
@@ -121,6 +130,9 @@ export async function executeTeamCleanup(
   }
   if (conflicted.length > 0) {
     parts.push(`Could not auto-merge: ${conflicted.join(", ")}. Merge manually.`)
+  }
+  if (overlapWarnings.length > 0) {
+    parts.push(`Warning: safety-net merge overwrote local changes to overlapping files:\n${overlapWarnings.map(w => `  - ${w}`).join("\n")}\nCheck git stash list or git diff to recover.`)
   }
   return parts.join("\n")
 }

@@ -1,7 +1,7 @@
 import type { ToolDeps } from "../types"
 import { requireLead } from "./shared"
-import { mergeBranch, deleteBranch } from "./merge-helper"
-import type { MergeBranchFn, DeleteBranchFn } from "./merge-helper"
+import { mergeBranch, deleteBranch, getOverlappingFiles } from "./merge-helper"
+import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
 
 /**
@@ -14,6 +14,7 @@ export async function executeTeamMerge(
   sessionId: string,
   merge: MergeBranchFn = mergeBranch,
   delBranch: DeleteBranchFn = deleteBranch,
+  overlapCheck: OverlapCheckFn = getOverlappingFiles,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
@@ -32,6 +33,17 @@ export async function executeTeamMerge(
   const branch = member.worktree_branch
   log(`merge:start member=${args.member} branch=${branch}`)
 
+  // Block merge if lead has local changes to files the agent also modified
+  try {
+    const overlap = await overlapCheck(branch, deps.directory)
+    if (overlap.length > 0) {
+      const files = overlap.map(f => `  - ${f}`).join("\n")
+      return `Cannot merge ${args.member}'s branch — you have local changes to files that ${args.member} also modified:\n${files}\n\nCommit or stash your changes to these files first, then retry team_merge.\nBranch preserved: ${branch}`
+    }
+  } catch {
+    log(`merge:overlap-check:failed member=${args.member} branch=${branch}`)
+  }
+
   const result = await merge(branch, deps.directory)
   if (!result.ok) {
     return `Merge conflict with ${args.member}'s branch (${branch}). Resolve manually:\n  git merge --squash ${branch}\n\nError: ${result.error}`
@@ -45,5 +57,6 @@ export async function executeTeamMerge(
   )
 
   log(`merge:done member=${args.member} branch=${branch}`)
-  return `Merged ${args.member}'s changes into working directory (unstaged). Review with: git diff`
+  const msg = `Merged ${args.member}'s changes into working directory (unstaged). Review with: git diff`
+  return result.error ? `${msg}\n\nWarning: ${result.error}` : msg
 }

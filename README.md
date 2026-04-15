@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-477%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-482%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
 [![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -15,7 +15,7 @@ Plugin built on the public OpenCode SDK. No internal dependencies.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.12.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.12.1"]
 }
 ```
 
@@ -136,7 +136,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.12.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.12.1"]
 }
 ```
 
@@ -144,7 +144,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.12.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.12.1"]
 }
 ```
 
@@ -201,7 +201,7 @@ Build with `bun run build`, then restart OpenCode to pick up changes.
 | `team_create` | Create a team. Caller becomes the lead. |
 | `team_spawn` | Start a new teammate with a task. Supports `plan_approval` mode. |
 | `team_shutdown` | Ask a teammate to stop. Preserves their branch before aborting. Supports `force` flag. |
-| `team_merge` | Merge a shutdown teammate's branch into working directory (unstaged). |
+| `team_merge` | Merge a shutdown teammate's branch into working directory (unstaged). Blocks if you have local changes to overlapping files. |
 | `team_cleanup` | Remove the team when done. Safety-net merges any forgotten branches. |
 | `team_status` | See all members, their status, and a task summary. |
 | `team_view` | Switch the TUI to a teammate's session. |
@@ -252,6 +252,7 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 - **Stall detection**: detects teammates making no progress (low output tokens or no communication) and escalates to the lead
 - **Peer-to-peer communication**: teammates can message each other directly, with idle-flush delivery and chatty agent detection
 - **Auto-merge on cleanup**: worktree branches are squash-merged into your working directory as unstaged changes for review
+- **Overlap detection**: `team_merge` blocks when you have local changes to files the agent also modified, preventing silent overwrites
 - **Spawn circuit breaker**: stops retrying after 3 consecutive spawn failures
 - **Graceful shutdown**: busy teammates receive a shutdown message and finish their current work. Use `force: true` to abort immediately.
 - **Rate limiting**: token bucket (configurable via config file or `OPENCODE_ENSEMBLE_RATE_LIMIT`, default 10 tokens/sec)
@@ -405,7 +406,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 477 tests
+bun test             # 482 tests
 bun run build
 ```
 
