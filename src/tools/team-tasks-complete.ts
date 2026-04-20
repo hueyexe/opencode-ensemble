@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
+import { log } from "../log"
 
 /**
  * Execute the team_tasks_complete tool. Marks a task as completed
@@ -29,9 +30,8 @@ export async function executeTeamTasksComplete(
     const depIds: string[] = JSON.parse(t.depends_on)
     if (!depIds.includes(args.task_id)) continue
 
-    // Check if all dependencies are now resolved
     const allResolved = depIds.every(depId => {
-      if (depId === args.task_id) return true // just completed
+      if (depId === args.task_id) return true
       const dep = allTasks.find(d => d.id === depId)
       return dep && (dep.status === "completed" || dep.status === "cancelled")
     })
@@ -41,6 +41,22 @@ export async function executeTeamTasksComplete(
       unblocked++
     }
   }
+
+  // Fire progress toast so the lead has visibility
+  const counts = deps.db.query(
+    "SELECT status, COUNT(*) as c FROM team_task WHERE team_id = ? GROUP BY status"
+  ).all(teamInfo.teamId) as Array<{ status: string; c: number }>
+  const completed = counts.find(r => r.status === "completed")?.c ?? 0
+  const total = counts.reduce((sum, r) => sum + r.c, 0)
+  const who = teamInfo.memberName ?? "teammate"
+  try {
+    deps.client.tui.showToast({
+      title: "Team",
+      message: `${who}: ${completed}/${total} tasks complete`,
+      variant: "info",
+      duration: 3000,
+    }).catch(() => { /* TUI may not be available */ })
+  } catch { log(`tasks-complete:toast:failed`) }
 
   const unblockedMsg = unblocked > 0 ? ` Unblocked ${unblocked} dependent task${unblocked !== 1 ? "s" : ""}.` : ""
   return `Completed task: ${task.content}${unblockedMsg}`

@@ -132,7 +132,7 @@ export async function executeTeamCleanup(
     parts.push(`Could not auto-merge: ${conflicted.join(", ")}. Merge manually.`)
   }
   if (overlapWarnings.length > 0) {
-    parts.push(`Warning: safety-net merge overwrote local changes to overlapping files:\n${overlapWarnings.map(w => `  - ${w}`).join("\n")}\nCheck git stash list or git diff to recover.`)
+    parts.push(`Warning: safety-net merge overwrote local changes to overlapping files:\n${overlapWarnings.map(w => `  - ${w}`).join("\n")}\nReview with: git diff`)
   }
   return parts.join("\n")
 }

@@ -4,6 +4,21 @@ import { findTeamBySession } from "../types"
 /** Function type for dirty worktree check — injectable for testing. */
 export type IsDirtyFn = (dir: string) => Promise<boolean>
 
+/** Function type for counting commits on a branch — injectable for testing. */
+export type CommitCountFn = (branch: string, cwd: string) => Promise<number>
+
+/** Count commits a branch has ahead of HEAD. Approximate — may include base divergence. Returns -1 if check fails. */
+export async function countBranchCommits(branch: string, cwd: string): Promise<number> {
+  try {
+    const proc = Bun.spawn(["git", "rev-list", "--count", `HEAD..${branch}`], { cwd, stdout: "pipe", stderr: "pipe" })
+    const out = await new Response(proc.stdout).text()
+    const exit = await proc.exited
+    if (exit !== 0) return -1
+    const n = Number.parseInt(out.trim(), 10)
+    return Number.isNaN(n) ? -1 : n
+  } catch { return -1 }
+}
+
 /** Check if a worktree directory has uncommitted changes via git status. */
 export async function checkWorktreeDirty(dir: string): Promise<boolean> {
   try {

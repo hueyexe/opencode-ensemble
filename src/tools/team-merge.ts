@@ -38,7 +38,13 @@ export async function executeTeamMerge(
     const overlap = await overlapCheck(branch, deps.directory)
     if (overlap.length > 0) {
       const files = overlap.map(f => `  - ${f}`).join("\n")
-      return `Cannot merge ${args.member}'s branch — you have local changes to files that ${args.member} also modified:\n${files}\n\nCommit or stash your changes to these files first, then retry team_merge.\nBranch preserved: ${branch}`
+      return [
+        `Cannot merge ${args.member} — you have local changes to the same files:`,
+        files,
+        ``,
+        `Commit or stash your changes first, then retry team_merge.`,
+        `Branch preserved: ${branch}`,
+      ].join("\n")
     }
   } catch {
     log(`merge:overlap-check:failed member=${args.member} branch=${branch}`)
@@ -46,7 +52,14 @@ export async function executeTeamMerge(
 
   const result = await merge(branch, deps.directory)
   if (!result.ok) {
-    return `Merge conflict with ${args.member}'s branch (${branch}). Resolve manually:\n  git merge --squash ${branch}\n\nError: ${result.error}`
+    return [
+      `Merge conflict merging ${args.member}'s branch (${branch}).`,
+      `Resolve manually:`,
+      `  git merge --squash ${branch}`,
+      `  git reset HEAD`,
+      ``,
+      `Error: ${result.error}`,
+    ].join("\n")
   }
 
   // Merge succeeded — delete the preserved branch and clear DB
@@ -57,6 +70,5 @@ export async function executeTeamMerge(
   )
 
   log(`merge:done member=${args.member} branch=${branch}`)
-  const msg = `Merged ${args.member}'s changes into working directory (unstaged). Review with: git diff`
-  return result.error ? `${msg}\n\nWarning: ${result.error}` : msg
+  return `Merged ${args.member}'s changes into your working directory (unstaged). Review with: git diff`
 }

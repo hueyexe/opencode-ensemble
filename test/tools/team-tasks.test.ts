@@ -117,6 +117,22 @@ describe("team_tasks_complete", () => {
     expect(row.status).toBe("completed")
   })
 
+  test("fires a progress toast on completion", async () => {
+    const addResult = await executeTeamTasksAdd(deps, { tasks: [
+      { content: "Task A", priority: "high" },
+      { content: "Task B", priority: "high" },
+    ] }, "sess-alice")
+    const taskIds = [...addResult.matchAll(/task_[a-z0-9_]+/g)].map(m => m[0])
+
+    await executeTeamClaim(deps, { task_id: taskIds[0]! }, "sess-alice")
+    await executeTeamTasksComplete(deps, { task_id: taskIds[0]! }, "sess-alice")
+
+    const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
+    expect(toasts.length).toBeGreaterThanOrEqual(1)
+    const last = toasts[toasts.length - 1]!.args[0] as { message: string }
+    expect(last.message).toContain("1/2 tasks complete")
+  })
+
   test("unblocks dependent tasks when completed", async () => {
     const r1 = await executeTeamTasksAdd(deps, { tasks: [
       { content: "Task A", priority: "high" },

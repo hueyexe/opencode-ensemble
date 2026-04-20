@@ -15,7 +15,7 @@ Plugin built on the public OpenCode SDK. No internal dependencies.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.12.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.13.0"]
 }
 ```
 
@@ -136,7 +136,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.12.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.13.0"]
 }
 ```
 
@@ -144,7 +144,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.12.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.13.0"]
 }
 ```
 

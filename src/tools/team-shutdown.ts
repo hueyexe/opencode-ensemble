@@ -1,6 +1,6 @@
 import type { ToolDeps } from "../types"
-import { requireLead, checkWorktreeDirty } from "./shared"
-import type { IsDirtyFn } from "./shared"
+import { requireLead, checkWorktreeDirty, countBranchCommits } from "./shared"
+import type { IsDirtyFn, CommitCountFn } from "./shared"
 import { preserveBranch, preservedBranchName } from "./merge-helper"
 import type { PreserveBranchFn } from "./merge-helper"
 import { log } from "../log"
@@ -17,6 +17,7 @@ export async function executeTeamShutdown(
   sessionId: string,
   isDirty: IsDirtyFn = checkWorktreeDirty,
   preserve: PreserveBranchFn = preserveBranch,
+  commitCount: CommitCountFn = countBranchCommits,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
@@ -30,9 +31,8 @@ export async function executeTeamShutdown(
   // Second call on an already-requested member → force abort
   if (member.status === "shutdown_requested") {
     await preserveAndAbort(deps, teamInfo.teamId, teamInfo.teamName, args.member, member.session_id, member.worktree_branch, preserve)
-    const branchInfo = getBranchInfo(deps, teamInfo.teamId, args.member)
-    const dirtyWarning = await getDirtyWarning(member.worktree_dir, args.member, isDirty)
-    return `Force shut down "${args.member}".${branchInfo}${dirtyWarning}`
+    const status = await getBranchStatus(deps, teamInfo.teamId, args.member, member.worktree_dir, isDirty, commitCount)
+    return `Force shut down "${args.member}".${status}`
   }
 
   // Determine if member is idle or busy
@@ -47,9 +47,8 @@ export async function executeTeamShutdown(
 
   if (isIdle || force) {
     await preserveAndAbort(deps, teamInfo.teamId, teamInfo.teamName, args.member, member.session_id, member.worktree_branch, preserve)
-    const branchInfo = getBranchInfo(deps, teamInfo.teamId, args.member)
-    const dirtyWarning = await getDirtyWarning(member.worktree_dir, args.member, isDirty)
-    return `Teammate "${args.member}" has been shut down.${branchInfo}${dirtyWarning}`
+    const status = await getBranchStatus(deps, teamInfo.teamId, args.member, member.worktree_dir, isDirty, commitCount)
+    return `Teammate "${args.member}" has been shut down.${status}`
   }
 
   // Busy + not force → graceful: preserve branch first, then send shutdown message
@@ -129,20 +128,39 @@ async function preserveAndAbort(
   )
 }
 
-/** Read the current branch from DB (may have been updated to preserved name). */
-function getBranchInfo(deps: ToolDeps, teamId: string, memberName: string): string {
+/** Build a status line describing the teammate's work: commit count, dirty state, next step. */
+async function getBranchStatus(
+  deps: ToolDeps,
+  teamId: string,
+  memberName: string,
+  worktreeDir: string | null,
+  isDirty: IsDirtyFn,
+  commitCount: CommitCountFn,
+): Promise<string> {
   const row = deps.db.query("SELECT worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
     .get(teamId, memberName) as { worktree_branch: string | null } | null
-  return row?.worktree_branch ? ` Changes preserved on branch: ${row.worktree_branch}. Use team_merge to merge.` : ""
-}
+  if (!row?.worktree_branch) return ""
 
-/** Build a warning suffix if the member's worktree has uncommitted changes. */
-async function getDirtyWarning(worktreeDir: string | null, memberName: string, isDirty: IsDirtyFn): Promise<string> {
-  if (!worktreeDir) return ""
-  try {
-    if (await isDirty(worktreeDir)) {
-      return `\n\nWarning: ${memberName} has uncommitted changes in their worktree. Commit or merge before calling team_cleanup.`
-    }
-  } catch { /* best effort */ }
-  return ""
+  const branch = row.worktree_branch
+  const parts: string[] = []
+
+  const commits = await commitCount(branch, deps.directory)
+  // Best-effort dirty check — worktree may already be deleted by session.abort() race
+  const dirty = worktreeDir ? await isDirty(worktreeDir).catch(() => false) : false
+
+  if (commits > 0 && dirty) {
+    parts.push(`${memberName} committed ${commits} change${commits !== 1 ? "s" : ""} and has uncommitted work.`)
+  } else if (commits > 0) {
+    parts.push(`${memberName} committed ${commits} change${commits !== 1 ? "s" : ""}. Ready to merge.`)
+  } else if (dirty) {
+    parts.push(`${memberName} has uncommitted changes only — their work may be incomplete.`)
+  } else if (commits < 0) {
+    parts.push(`Could not determine ${memberName}'s commit status. Merge to check their work.`)
+  } else {
+    parts.push(`${memberName} made no changes.`)
+  }
+
+  parts.push(`Branch: ${branch}`)
+  parts.push("Use team_merge to merge their work.")
+  return `\n${parts.join("\n")}`
 }

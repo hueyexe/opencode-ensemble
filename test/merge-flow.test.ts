@@ -277,19 +277,14 @@ describe("team_merge", () => {
     expect(result).toContain("Merged alice's changes")
   })
 
-  test("surfaces stash-pop warning in merge output", async () => {
-    await executeTeamCreate(deps, { name: "stash-warn" }, lead)
+  test("merge output is clear and actionable", async () => {
+    await executeTeamCreate(deps, { name: "msg-test" }, lead)
     await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
     await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
 
-    const mergeWithWarning: MergeBranchFn = async () => ({
-      ok: true,
-      error: "Merge succeeded but stashed work could not be restored — check git stash list",
-    })
-
-    const result = await executeTeamMerge(deps, { member: "alice" }, lead, mergeWithWarning, noopDelete, noopOverlap)
-    expect(result).toContain("Merged alice's changes")
-    expect(result).toContain("stashed work could not be restored")
+    const result = await executeTeamMerge(deps, { member: "alice" }, lead, noopMerge, noopDelete, noopOverlap)
+    expect(result).toContain("Merged alice's changes into your working directory (unstaged)")
+    expect(result).toContain("git diff")
   })
 
   test("proceeds with merge when overlap check fails", async () => {

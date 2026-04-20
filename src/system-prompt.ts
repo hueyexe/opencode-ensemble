@@ -133,9 +133,8 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
 
   lines.push(
     "",
-    "CRITICAL: Spawn teammates ONE AT A TIME. Send only ONE team_spawn call per response.",
-    "Wait for the tool result before spawning the next teammate.",
-    "Multiple team_spawn calls in a single response will cause timeouts.",
+    "Spawn teammates ONE AT A TIME. Wait for each tool result before spawning the next.",
+    "This avoids git worktree contention. Once all are spawned, wait for their messages.",
     "",
     "Teammates work asynchronously and message you when done.",
     "Do NOT poll team_status or team_tasks_list repeatedly — wait for messages.",
@@ -145,7 +144,7 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
     "MERGE WORKFLOW:",
     "After a teammate finishes and you shut them down, use team_merge to merge their branch.",
     "Do NOT tell teammates to commit — they handle that themselves.",
-    "Do NOT run git merge manually — use team_merge which handles stashing and unstaging.",
+    "Do NOT run git merge manually — use team_merge which squash-merges and unstages for you.",
     "team_cleanup will safety-net merge any branches you forgot, but prefer explicit team_merge.",
     "",
     "Before calling team_cleanup, verify teammates have committed their work.",

@@ -74,7 +74,7 @@ describe("buildLeadSystemPrompt", () => {
     const result = buildLeadSystemPrompt(db, "t5")
 
     expect(result).toMatch(/one.*at a time/i)
-    expect(result).toMatch(/one team_spawn call per response/i)
+    expect(result).toMatch(/worktree contention/i)
   })
 
   test("delivers pending messages inline in system prompt and marks them delivered", () => {

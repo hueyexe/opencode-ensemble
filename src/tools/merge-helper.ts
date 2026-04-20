@@ -67,57 +67,21 @@ export async function mergeBranchRaw(branch: string, cwd: string): Promise<Merge
   return { ok: true }
 }
 
-/** Stash existing work. Returns true if something was stashed. */
-export async function gitStash(cwd: string): Promise<boolean> {
-  const stash = Bun.spawn(["git", "stash", "--include-untracked"], { cwd, stdout: "pipe", stderr: "pipe" })
-  const stashOut = await new Response(stash.stdout).text()
-  const stashExit = await stash.exited
-  return stashExit === 0 && !stashOut.includes("No local changes")
-}
-
-/** Unstage all changes. */
+/** Unstage all changes so merge results appear as unstaged. */
 export async function gitReset(cwd: string): Promise<void> {
   const reset = Bun.spawn(["git", "reset", "HEAD"], { cwd, stdout: "pipe", stderr: "pipe" })
   await reset.exited
 }
 
-/** Restore stashed work, preserving staged/unstaged state. Returns true if successful. */
-export async function gitStashPop(cwd: string): Promise<boolean> {
-  const pop = Bun.spawn(["git", "stash", "pop", "--index"], { cwd, stdout: "pipe", stderr: "pipe" })
-  const exit = await pop.exited
-  if (exit !== 0) {
-    // --index is strict about staged/unstaged distinction — fall back to plain pop
-    const fallback = Bun.spawn(["git", "stash", "pop"], { cwd, stdout: "pipe", stderr: "pipe" })
-    const fallbackExit = await fallback.exited
-    if (fallbackExit !== 0) {
-      log("merge-helper:stash-pop:failed — stashed work remains in git stash list")
-      return false
-    }
-  }
-  return true
-}
-
 /**
- * Stash-safe squash merge of a single branch into the working directory.
- * Stashes existing work, merges, unstages, restores stash.
+ * Squash merge a branch into the working directory as unstaged changes.
+ * No stashing — existing unstaged changes from previous merges are preserved.
+ * If the merge conflicts, the lead resolves it with git.
  */
 export async function mergeBranch(branch: string, cwd: string): Promise<MergeResult> {
-  const didStash = await gitStash(cwd)
-
   const result = await mergeBranchRaw(branch, cwd)
-  if (!result.ok) {
-    if (didStash) {
-      const restored = await gitStashPop(cwd)
-      if (!restored) return { ok: false, error: `${result.error}. WARNING: stashed work could not be restored — check git stash list` }
-    }
-    return result
-  }
-
+  if (!result.ok) return result
   await gitReset(cwd)
-  if (didStash) {
-    const restored = await gitStashPop(cwd)
-    if (!restored) return { ok: true, error: "Merge succeeded but stashed work could not be restored — check git stash list" }
-  }
   return { ok: true }
 }
 
