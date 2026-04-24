@@ -24,6 +24,17 @@ bun run typecheck && bun test && bun run build
 
 All three must pass.
 
+## Submitting Changes
+
+1. Fork the repo and create a branch off `main`
+2. Make your changes following TDD and the code standards below
+3. Run `bun run typecheck && bun test && bun run build` — all must pass
+4. Open a PR against `main`
+5. The `check` CI status must pass on your PR
+6. A maintainer (@hueyexe) will review and merge
+
+All PRs require at least one approval from a code owner before merging. Direct pushes to `main` are not allowed.
+
 ## Code Standards
 
 - TypeScript strict mode — no `any` types
