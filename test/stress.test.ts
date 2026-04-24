@@ -16,7 +16,8 @@ import { buildLeadSystemPrompt, buildTeamCompactionContext } from "../src/system
 import { ProgressTracker } from "../src/progress"
 import { Watchdog } from "../src/watchdog"
 import { loadConfig, DEFAULT_CONFIG } from "../src/config"
-import { sendMessage } from "../src/messaging"
+import { sendMessage, hasReportedCompletion } from "../src/messaging"
+import { handleSessionStatusEvent } from "../src/hooks"
 import type { ToolDeps } from "../src/types"
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import path from "node:path"
@@ -690,5 +691,109 @@ describe("stress: model resolution", () => {
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     const model = (promptCalls[0]!.args[0] as { model?: unknown }).model
     expect(model).toBeUndefined()
+  })
+})
+
+// ─── Completion loop stress (issue #3) ───
+
+describe("stress: completion loop prevention (issue #3)", () => {
+  let deps: Deps
+  const lead = "lead-sess"
+
+  beforeEach(() => {
+    deps = setupDeps()
+    spawnFailures.clear()
+  })
+
+  test("full lifecycle: 3 teammates complete → lead replies to all → no infinite loop", async () => {
+    // 1. Create team and spawn 3 teammates
+    await executeTeamCreate(deps, { name: "loop-stress" }, lead)
+    const teamId = getTeamId(deps, "loop-stress")
+    for (const name of ["alice", "bob", "carol"]) {
+      await executeTeamSpawn(deps, { name, agent: "build", prompt: `Task for ${name}`, worktree: false }, lead)
+    }
+
+    const aliceSess = getSession(deps, "alice")
+    const bobSess = getSession(deps, "bob")
+    const carolSess = getSession(deps, "carol")
+
+    // 2. All three report to lead
+    await executeTeamMessage(deps, { to: "lead", text: "alice done" }, aliceSess)
+    await executeTeamMessage(deps, { to: "lead", text: "bob done" }, bobSess)
+    await executeTeamMessage(deps, { to: "lead", text: "carol done" }, carolSess)
+
+    // 3. All three go idle (busy→ready) — sets reported_to_lead
+    for (const sess of [aliceSess, bobSess, carolSess]) {
+      deps.db.run("UPDATE team_member SET status = 'busy' WHERE session_id = ?", [sess])
+      handleSessionStatusEvent(deps.db, deps.registry, sess, "idle")
+    }
+
+    expect(hasReportedCompletion(deps.db, teamId, "alice")).toBe(true)
+    expect(hasReportedCompletion(deps.db, teamId, "bob")).toBe(true)
+    expect(hasReportedCompletion(deps.db, teamId, "carol")).toBe(true)
+
+    // 4. Reset call log — simulate the Kimi K2.6 ping-pong
+    deps.client.calls.length = 0
+
+    // Lead sends courtesy replies to all three (this is what chatty models do)
+    for (const name of ["alice", "bob", "carol"]) {
+      const result = await executeTeamMessage(deps, { to: name, text: `thanks ${name}!` }, lead)
+      expect(result).toContain("completed")
+    }
+
+    // Lead broadcasts a follow-up
+    const { executeTeamBroadcast } = await import("../src/tools/team-broadcast")
+    const broadcastResult = await executeTeamBroadcast(deps, { text: "great work everyone" }, lead)
+
+    // 5. Verify: ZERO promptAsync calls to any teammate session
+    const teammateSessions = new Set([aliceSess, bobSess, carolSess])
+    const teammateWakes = deps.client.calls.filter(c => {
+      if (c.method !== "session.promptAsync") return false
+      const args = c.args[0] as { sessionID: string }
+      return teammateSessions.has(args.sessionID)
+    })
+    expect(teammateWakes).toHaveLength(0)
+
+    // 6. Verify: messages ARE stored in DB (not lost, just not pushed)
+    const storedMsgs = deps.db.query(
+      "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND from_name = 'lead'"
+    ).get(teamId) as { c: number }
+    expect(storedMsgs.c).toBeGreaterThanOrEqual(3)
+
+    // 7. Shutdown and cleanup still works
+    for (const name of ["alice", "bob", "carol"]) {
+      await executeTeamShutdown(deps, { member: name, force: true }, lead)
+    }
+    const result = await executeTeamCleanup(deps, { force: false }, lead, undefined, noopMerge, noopDelete, false)
+    expect(result).toContain("cleaned up")
+  })
+
+  test("re-activated teammate can receive messages again", async () => {
+    await executeTeamCreate(deps, { name: "reactivate" }, lead)
+    const teamId = getTeamId(deps, "reactivate")
+    await executeTeamSpawn(deps, { name: "dave", agent: "build", prompt: "task", worktree: false }, lead)
+    const daveSess = getSession(deps, "dave")
+
+    // Dave reports and goes idle
+    await executeTeamMessage(deps, { to: "lead", text: "first pass done" }, daveSess)
+    deps.db.run("UPDATE team_member SET status = 'busy' WHERE session_id = ?", [daveSess])
+    handleSessionStatusEvent(deps.db, deps.registry, daveSess, "idle")
+    expect(hasReportedCompletion(deps.db, teamId, "dave")).toBe(true)
+
+    // Lead's reply is blocked (dave completed)
+    deps.client.calls.length = 0
+    const blocked = await executeTeamMessage(deps, { to: "dave", text: "blocked reply" }, lead)
+    expect(blocked).toContain("completed")
+
+    // Dave gets re-activated (goes busy again) — flag resets
+    handleSessionStatusEvent(deps.db, deps.registry, daveSess, "busy")
+    expect(hasReportedCompletion(deps.db, teamId, "dave")).toBe(false)
+
+    // Now lead's message goes through
+    deps.client.calls.length = 0
+    const delivered = await executeTeamMessage(deps, { to: "dave", text: "do one more thing" }, lead)
+    expect(delivered).toBe("Message sent to dave.")
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(1)
   })
 })

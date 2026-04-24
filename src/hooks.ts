@@ -41,11 +41,26 @@ export function handleSessionStatusEvent(
       "UPDATE team_member SET status = ?, execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
       [newStatus, Date.now(), entry.teamId, entry.memberName]
     )
+    // Mark teammate as having reported if they sent at least one message to lead (issue #3).
+    // Set on busy→ready transition so Q&A messages during work don't prematurely block delivery.
+    if (member.status === "busy" && newStatus === "ready") {
+      const leadMsgCount = (db.query(
+        "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND from_name = ? AND to_name = 'lead'"
+      ).get(entry.teamId, entry.memberName) as { c: number }).c
+      if (leadMsgCount > 0) {
+        db.run(
+          "UPDATE team_member SET reported_to_lead = 1 WHERE team_id = ? AND name = ?",
+          [entry.teamId, entry.memberName]
+        )
+      }
+    }
     return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: newStatus }
   } else if (status === "busy") {
     if (member.status === "ready" || member.status === "error") {
+      // Reset reported_to_lead so re-activated teammates can receive messages again (issue #3).
+      // INVARIANT: every promptAsync delivery path must check hasReportedCompletion() to prevent loops.
       db.run(
-        "UPDATE team_member SET status = 'busy', execution_status = 'running', time_updated = ? WHERE team_id = ? AND name = ?",
+        "UPDATE team_member SET status = 'busy', execution_status = 'running', reported_to_lead = 0, time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), entry.teamId, entry.memberName]
       )
       return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "busy" }

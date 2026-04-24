@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite"
 import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
-import { getUndeliveredMessages, markDelivered } from "./messaging"
+import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
 import { log } from "./log"
 
@@ -122,6 +122,12 @@ export async function recoverUndeliveredMessages(
       }
 
       if (!recipientSessionId) continue
+
+      // Skip delivery to teammates who have already reported completion (issue #3)
+      if (hasReportedCompletion(db, team.id, msg.to_name!)) {
+        markDelivered(db, msg.id)
+        continue
+      }
 
       try {
         await client.session.promptAsync({

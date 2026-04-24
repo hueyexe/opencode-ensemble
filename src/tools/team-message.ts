@@ -1,7 +1,7 @@
 import type { ToolDeps } from "../types"
 import { resolveRecipientSession } from "../types"
 import { requireTeamMember } from "./shared"
-import { sendMessage, markDelivered } from "../messaging"
+import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { log } from "../log"
 
 /**
@@ -88,6 +88,11 @@ export async function executeTeamMessage(
       log(`team_message:wake-lead:failed from=${senderName} err=${err instanceof Error ? err.message : String(err)}`)
     })
     return `Message sent to ${args.to}.`
+  }
+
+  // Guard: skip promptAsync delivery to teammates who have already reported completion (issue #3)
+  if (hasReportedCompletion(deps.db, teamInfo.teamId, args.to)) {
+    return `Message stored for ${args.to} (teammate has completed their task — message will not wake them).`
   }
 
   // For member-to-member messages, fire-and-forget delivery is safe.
