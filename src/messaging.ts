@@ -76,3 +76,14 @@ export function getUndeliveredMessages(db: Database, teamId: string): MessageRow
 export function markDelivered(db: Database, messageId: string): void {
   db.run("UPDATE team_message SET delivered = 1 WHERE id = ?", [messageId])
 }
+
+/**
+ * Check if a teammate has reported completion to the lead.
+ * Returns true if the reported_to_lead flag is set on the member.
+ */
+export function hasReportedCompletion(db: Database, teamId: string, memberName: string): boolean {
+  const row = db.query(
+    "SELECT reported_to_lead FROM team_member WHERE team_id = ? AND name = ?"
+  ).get(teamId, memberName) as { reported_to_lead: number } | null
+  return row?.reported_to_lead === 1
+}

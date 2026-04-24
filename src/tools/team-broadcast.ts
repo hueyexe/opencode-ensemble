@@ -1,6 +1,6 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
-import { broadcastMessage, markDelivered } from "../messaging"
+import { broadcastMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { log } from "../log"
 
 /**
@@ -40,8 +40,14 @@ export async function executeTeamBroadcast(
   }
 
   // Fire-and-forget: deliver to all recipients. Message is already persisted in DB.
+  // Skip completed teammates to prevent re-waking them (issue #3).
   let delivered = 0
+  let skipped = 0
   for (const recipient of recipients) {
+    if (recipient.name !== "lead" && hasReportedCompletion(deps.db, teamInfo.teamId, recipient.name)) {
+      skipped++
+      continue
+    }
     deps.client.session.promptAsync({
       sessionID: recipient.sessionId,
       parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
@@ -53,5 +59,6 @@ export async function executeTeamBroadcast(
     })
   }
 
-  return `Broadcast sent to ${recipients.length} recipient${recipients.length !== 1 ? "s" : ""}.`
+  const sent = recipients.length - skipped
+  return `Broadcast sent to ${sent} recipient${sent !== 1 ? "s" : ""}.`
 }

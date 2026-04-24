@@ -80,6 +80,8 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team ADD COLUMN lead_agent TEXT;`,
   // Migration 6: Track workspace ID for worktree-session binding
   `ALTER TABLE team_member ADD COLUMN workspace_id TEXT;`,
+  // Migration 7: Track whether teammate has reported to lead (completion loop prevention, issue #3)
+  `ALTER TABLE team_member ADD COLUMN reported_to_lead INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 /**

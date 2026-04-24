@@ -10,7 +10,7 @@ import { MemberRegistry, DescendantTracker } from "./state"
 import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
-import { sendMessage } from "./messaging"
+import { sendMessage, hasReportedCompletion } from "./messaging"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -58,6 +58,8 @@ const plugin: Plugin = async (input) => {
   const tracker = new DescendantTracker()
   const nudgedMembers = new Set<string>()
   const progressTracker = new ProgressTracker()
+  const wakeLeadTimestamps = new Map<string, number>()
+  const WAKE_LEAD_COOLDOWN_MS = 5000
 
   // Extract the working HeyAPI transport from the plugin-provided v1 client and pass it
   // to the v2 OpencodeClient. The plugin framework provides a v1 client which stores its
@@ -176,8 +178,9 @@ const plugin: Plugin = async (input) => {
             }
 
             // Nudge teammate if they went idle without reporting to the lead (once only)
+            // Skip if they already reported completion (issue #3 — prevents re-waking completed teammates)
             const nudgeKey = `${transition.teamId}:${transition.memberName}`
-            if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName)) {
+            if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
               nudgedMembers.add(nudgeKey)
               log(`nudge:idle-without-report name=${transition.memberName}`)
               client.session.promptAsync({
@@ -232,7 +235,13 @@ const plugin: Plugin = async (input) => {
           const team = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'").get(sessionID) as { id: string } | null
           if (team) {
             const pending = db.query("SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = 'lead' AND delivered = 0").get(team.id) as { c: number }
-            if (pending.c > 0) {
+            // Skip wake if all teammates are done or if we woke recently (issue #3 — breaks completion loop)
+            const allDone = (db.query(
+              "SELECT COUNT(*) as c FROM team_member WHERE team_id = ? AND status NOT IN ('ready', 'shutdown', 'error')"
+            ).get(team.id) as { c: number }).c === 0
+            const lastWake = wakeLeadTimestamps.get(team.id) ?? 0
+            if (pending.c > 0 && !allDone && Date.now() - lastWake > WAKE_LEAD_COOLDOWN_MS) {
+              wakeLeadTimestamps.set(team.id, Date.now())
               log(`wake-lead: ${pending.c} pending messages, sending promptAsync`)
               client.session.promptAsync({
                 sessionID,
@@ -250,7 +259,7 @@ const plugin: Plugin = async (input) => {
              JOIN team t ON tm.team_id = t.id
              WHERE tm.session_id = ? AND t.status = 'active'`
           ).get(sessionID) as { team_id: string; name: string } | null
-          if (member) {
+          if (member && !hasReportedCompletion(db, member.team_id, member.name)) {
             const staleThreshold = Date.now() - 5000
             const peerMsgs = db.query(
               "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = ? AND delivered = 0 AND time_created < ?"
