@@ -809,3 +809,72 @@ describe("stress: completion loop prevention (issue #3)", () => {
     expect(promptCalls).toHaveLength(1)
   })
 })
+
+// --- Read-only agent lifecycle (issue #6) ---
+
+describe("stress: read-only agents skip worktree through full lifecycle", () => {
+  let deps: Deps
+  const lead = "lead-sess"
+
+  beforeEach(() => {
+    deps = setupDeps()
+    spawnFailures.clear()
+  })
+
+  test("explore agent: spawn → message → shutdown → cleanup without worktree", async () => {
+    await executeTeamCreate(deps, { name: "readonly-team" }, lead)
+    const teamId = getTeamId(deps, "readonly-team")
+
+    // Spawn without explicit worktree: false — should auto-skip
+    const result = await executeTeamSpawn(deps, {
+      name: "researcher",
+      agent: "explore",
+      prompt: "Find all usages of the auth module",
+    }, lead)
+    expect(result).toContain("spawned")
+    expect(result).not.toContain("branch:")
+
+    // No worktree.create call
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+
+    // DB confirms no worktree
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = 'researcher'")
+      .get() as { worktree_dir: string | null; worktree_branch: string | null }
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+
+    // Researcher messages lead
+    const sess = getSession(deps, "researcher")
+    await executeTeamMessage(deps, { to: "lead", text: "Found 12 usages across 4 files" }, sess)
+
+    // Shutdown
+    deps.db.run("UPDATE team_member SET status = 'ready', execution_status = 'idle' WHERE name = 'researcher'")
+    await executeTeamShutdown(deps, { member: "researcher", force: true }, lead)
+
+    // Cleanup — no merge needed, no worktree to remove
+    const result2 = await executeTeamCleanup(deps, { force: false }, lead, undefined, noopMerge, noopDelete, true)
+    expect(result2).toContain("cleaned up")
+
+    const wtRemoves = deps.client.calls.filter(c => c.method === "worktree.remove")
+    expect(wtRemoves).toHaveLength(0)
+  })
+
+  test("mixed team: build gets worktree, explore does not", async () => {
+    await executeTeamCreate(deps, { name: "mixed-team" }, lead)
+    const teamId = getTeamId(deps, "mixed-team")
+
+    await executeTeamSpawn(deps, { name: "builder", agent: "build", prompt: "Implement feature" }, lead)
+    await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Research patterns" }, lead)
+
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(1) // Only builder
+
+    const builder = deps.db.query("SELECT worktree_branch FROM team_member WHERE name = 'builder'")
+      .get() as { worktree_branch: string | null }
+    const explorer = deps.db.query("SELECT worktree_branch FROM team_member WHERE name = 'explorer'")
+      .get() as { worktree_branch: string | null }
+    expect(builder.worktree_branch).toBeTruthy()
+    expect(explorer.worktree_branch).toBeNull()
+  })
+})
