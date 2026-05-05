@@ -220,6 +220,44 @@ describe("team_spawn", () => {
 
   // --- Worktree tests ---
 
+  test("skips worktree for read-only agents (explore) even without explicit worktree: false", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "researcher",
+      agent: "explore",
+      prompt: "Search the codebase",
+    }, "lead-sess")
+
+    // No worktree.create call — read-only agents don't need file isolation
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+
+    // DB should have null worktree columns
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("researcher") as Record<string, string | null>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+
+    expect(result).toContain("researcher")
+    expect(result).toContain("spawned")
+  })
+
+  test("skips worktree for read-only agents (plan) even without explicit worktree: false", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "planner",
+      agent: "plan",
+      prompt: "Plan the architecture",
+    }, "lead-sess")
+
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("planner") as Record<string, string | null>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+
+    expect(result).toContain("planner")
+    expect(result).toContain("spawned")
+  })
+
   test("skips worktree creation when already inside a worktree", async () => {
     deps.directory = "/home/user/.local/share/opencode/worktree/abc123/some-worktree"
     const result = await executeTeamSpawn(deps, {
@@ -579,26 +617,24 @@ describe("team_spawn — agent mode enforcement", () => {
     { permission: "team_claim", pattern: "*", action: "allow" },
   ]
 
-  test("plan agent gets worktree edit allow + deny + team tool allow rules on session.create", async () => {
+  test("plan agent gets deny rules + team tool allow (no worktree) on session.create", async () => {
     await executeTeamSpawn(deps, { name: "planner", agent: "plan", prompt: "Plan it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
     expect(opts.permission).toEqual([
-      { permission: "edit", pattern: "/tmp/worktree-ensemble-my-team-planner/**", action: "allow" },
       { permission: "edit", pattern: "*", action: "deny" },
       { permission: "bash", pattern: "*", action: "deny" },
       ...TEAM_TOOL_PERMISSIONS,
     ])
   })
 
-  test("explore agent gets worktree edit allow + deny + team tool allow rules on session.create", async () => {
+  test("explore agent gets deny rules + team tool allow (no worktree) on session.create", async () => {
     await executeTeamSpawn(deps, { name: "explorer", agent: "explore", prompt: "Explore it" }, "lead-sess")
 
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
     expect(opts.permission).toEqual([
-      { permission: "edit", pattern: "/tmp/worktree-ensemble-my-team-explorer/**", action: "allow" },
       { permission: "edit", pattern: "*", action: "deny" },
       { permission: "bash", pattern: "*", action: "deny" },
       ...TEAM_TOOL_PERMISSIONS,

@@ -135,6 +135,8 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
     "",
     "Spawn teammates ONE AT A TIME. Wait for each tool result before spawning the next.",
     "This avoids git worktree contention. Once all are spawned, wait for their messages.",
+    "Read-only agents (explore, plan) automatically skip worktree creation.",
+    "For other agents that only need to read, pass worktree: false to avoid unnecessary isolation.",
     "",
     "Teammates work asynchronously and message you when done.",
     "Do NOT poll team_status or team_tasks_list repeatedly — wait for messages.",

@@ -85,7 +85,8 @@ export async function executeTeamSpawn(
     .get(teamInfo.teamId, args.name)
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
-  const useWorktree = args.worktree !== false && !isWorktreeDirectory(deps.directory)
+  const isReadOnly = args.agent === "plan" || args.agent === "explore"
+  const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
   const usePlanApproval = args.plan_approval === true
 
   log(`spawn:start name=${args.name} agent=${args.agent} worktree=${useWorktree}`)
@@ -143,7 +144,6 @@ export async function executeTeamSpawn(
   // Permission rules on session.create are the hard gate (server-enforced).
   // For read-only agents, deny write tools and explicitly allow team tools.
   // For all agents with worktrees, allowlist the worktree path for edit/bash.
-  const isReadOnly = args.agent === "plan" || args.agent === "explore"
   const TEAM_TOOLS = ["team_message", "team_broadcast", "team_tasks_list", "team_tasks_add", "team_tasks_complete", "team_claim"] as const
   const permission: PermissionRule[] = []
 
