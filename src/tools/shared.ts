@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { findTeamBySession } from "../types"
+import { log } from "../log"
 
 /** Function type for dirty worktree check — injectable for testing. */
 export type IsDirtyFn = (dir: string) => Promise<boolean>
@@ -51,4 +52,49 @@ export function requireTeamMember(
   const teamInfo = findTeamBySession(deps.db, deps.registry, sessionId)
   if (!teamInfo) throw new Error("This session is not in a team.")
   return teamInfo
+}
+
+/** Run git rev-parse in the given cwd. Returns the resolved SHA. */
+export async function gitRevParse(cwd: string, ref: string): Promise<string> {
+  const proc = Bun.spawn(["git", "rev-parse", ref], { cwd, stdout: "pipe", stderr: "pipe" })
+  const out = await new Response(proc.stdout).text()
+  const exit = await proc.exited
+  if (exit !== 0) throw new Error(`git rev-parse ${ref} failed: ${await new Response(proc.stderr).text()}`)
+  return out.trim()
+}
+
+/** Create a new branch from a given commit SHA in the given cwd. */
+export async function gitBranch(cwd: string, name: string, startPoint: string): Promise<boolean> {
+  const proc = Bun.spawn(["git", "branch", name, startPoint], { cwd, stdout: "pipe", stderr: "pipe" })
+  const exit = await proc.exited
+  if (exit !== 0) {
+    const stderr = await new Response(proc.stderr).text()
+    log(`shared:gitBranch:failed name=${name} err=${stderr.trim()}`)
+    return false
+  }
+  return true
+}
+
+/** Create a git worktree at the given path from the given branch in the given cwd. */
+export async function gitWorktreeAdd(cwd: string, worktreePath: string, branch: string): Promise<boolean> {
+  const proc = Bun.spawn(["git", "worktree", "add", worktreePath, branch], { cwd, stdout: "pipe", stderr: "pipe" })
+  const exit = await proc.exited
+  if (exit !== 0) {
+    const stderr = await new Response(proc.stderr).text()
+    log(`shared:gitWorktreeAdd:failed path=${worktreePath} branch=${branch} err=${stderr.trim()}`)
+    return false
+  }
+  return true
+}
+
+/** Remove a git worktree. Returns true if successful. */
+export async function gitWorktreeRemove(cwd: string, worktreePath: string): Promise<boolean> {
+  const proc = Bun.spawn(["git", "worktree", "remove", worktreePath], { cwd, stdout: "pipe", stderr: "pipe" })
+  const exit = await proc.exited
+  if (exit !== 0) {
+    const stderr = await new Response(proc.stderr).text()
+    log(`shared:gitWorktreeRemove:failed path=${worktreePath} err=${stderr.trim()}`)
+    return false
+  }
+  return true
 }

@@ -5,6 +5,7 @@ import { spawnFailures } from "./team-spawn"
 import { mergeBranch, deleteBranch, preserveBranch, preservedBranchName, getOverlappingFiles } from "./merge-helper"
 import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
+import path from "node:path"
 
 /**
  * Execute the team_cleanup tool. Archives the team and cleans up resources.
@@ -23,8 +24,8 @@ export async function executeTeamCleanup(
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, workspace_id FROM team_member WHERE team_id = ?")
-    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; workspace_id: string | null }>
+  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, workspace_id, worktree_base FROM team_member WHERE team_id = ?")
+    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; workspace_id: string | null; worktree_base: string | null }>
 
   const active = members.filter(m => m.status !== "shutdown" && m.status !== "shutdown_requested" && m.status !== "error")
 
@@ -57,9 +58,12 @@ export async function executeTeamCleanup(
   if (args.force) {
     for (const member of active) {
       // Preserve branch before abort — session.abort() may destroy the worktree + branch
+      const memberCwd = member.worktree_base
+        ? path.resolve(deps.directory, member.worktree_base)
+        : deps.directory
       if (member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
         const safeBranch = preservedBranchName(teamInfo.teamName, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, deps.directory)
+        const ok = await preserveBranch(member.worktree_branch, safeBranch, memberCwd)
         if (ok) {
           deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
             [safeBranch, teamInfo.teamId, member.name])
@@ -81,16 +85,19 @@ export async function executeTeamCleanup(
   if (unmerged.length > 0 && mergeOnCleanup) {
     for (const member of unmerged) {
       const branch = member.worktree_branch!
+      const memberCwd = member.worktree_base
+        ? path.resolve(deps.directory, member.worktree_base)
+        : deps.directory
       // Warn (but don't block) if lead has local changes to overlapping files
       try {
-        const overlap = await overlapCheck(branch, deps.directory)
+        const overlap = await overlapCheck(branch, memberCwd)
         if (overlap.length > 0) {
           overlapWarnings.push(`${member.name}: ${overlap.join(", ")}`)
         }
       } catch { /* best effort */ }
-      const result = await merge(branch, deps.directory)
+      const result = await merge(branch, memberCwd)
       if (result.ok) {
-        await delBranch(branch, deps.directory)
+        await delBranch(branch, memberCwd)
         deps.db.run("UPDATE team_member SET worktree_branch = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
         merged.push(`${member.name} (${branch})`)
       } else {

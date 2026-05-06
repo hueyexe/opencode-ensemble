@@ -248,7 +248,7 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 - **Git worktree isolation**: each teammate gets their own worktree by default, so multiple agents can edit files without conflicts. Opt out with `worktree: false` for read-only agents.
 - **System prompt injection**: the lead's system prompt includes team state (member statuses, task counts) on every LLM call. Teammates get a short role reminder.
 - **Compaction safety**: team context is preserved when OpenCode compacts long conversations
-- **Shell environment**: teammate shells get `ENSEMBLE_TEAM`, `ENSEMBLE_MEMBER`, `ENSEMBLE_ROLE`, and `ENSEMBLE_BRANCH` variables
+- **Shell environment**: teammate shells get `ENSEMBLE_TEAM`, `ENSEMBLE_MEMBER`, `ENSEMBLE_ROLE`, `ENSEMBLE_BRANCH`, and `ENSEMBLE_WORKTREE_BASE` variables
 - **Sub-agent isolation**: teammates' sub-agents can't use team tools (parent chain tracking, max depth 10)
 - **Crash recovery**: stale busy members marked as errored on restart, orphaned sessions aborted, orphaned worktrees cleaned up, undelivered messages redelivered
 - **Spawn rollback**: if the initial prompt fails, the member, session, and worktree are all cleaned up
@@ -388,6 +388,29 @@ STALL_THRESHOLD_MS=0
 - Use `plan_approval: true` for risky changes. The teammate sends a plan first, you review and approve before they write any code.
 - Don't micromanage. Teammates message you when done or when they're blocked.
 - Don't poll `team_status` in a loop. Wait for messages.
+
+## Monorepo Sub-Repo Support
+
+When your project is a monorepo with independent git sub-repos (each with their own `.git`, not submodules), use `worktree_base` to create worktrees from the correct repository:
+
+```typescript
+team_spawn({
+  name: "alice",
+  agent: "build",
+  prompt: "Implement the login feature",
+  worktree_base: "practiveo-front-web"  // sub-repo directory
+})
+```
+
+| `worktree_base` | Behavior |
+|---|---|
+| Not set (default) | Worktree from project root (current behavior) |
+| `"sub-repo-a"` | Worktree created from `sub-repo-a/.git` |
+| `"."` | Explicit alias for project root |
+
+The worktree is created at `.worktrees/<team>/<member>/` inside the project root. Commits go to the sub-repo's git, and `team_merge` merges from the correct repository.
+
+**Environment variable**: spawned agents get `ENSEMBLE_WORKTREE_BASE` set to the sub-repo path.
 
 ## Known limitations
 

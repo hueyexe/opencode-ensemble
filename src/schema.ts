@@ -82,6 +82,8 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team_member ADD COLUMN workspace_id TEXT;`,
   // Migration 7: Track whether teammate has reported to lead (completion loop prevention, issue #3)
   `ALTER TABLE team_member ADD COLUMN reported_to_lead INTEGER NOT NULL DEFAULT 0;`,
+  // Migration 8: Add worktree_base column for sub-repo worktree support
+  `ALTER TABLE team_member ADD COLUMN worktree_base TEXT;`,
 ]
 
 /**

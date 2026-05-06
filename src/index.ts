@@ -336,13 +336,16 @@ const plugin: Plugin = async (input) => {
       output.env.ENSEMBLE_ROLE = teamInfo.role
       if (teamInfo.memberName) {
         output.env.ENSEMBLE_MEMBER = teamInfo.memberName
-        const member = db.query("SELECT worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
-          .get(teamInfo.teamId, teamInfo.memberName) as { worktree_branch: string | null; worktree_dir: string | null } | null
+        const member = db.query("SELECT worktree_branch, worktree_dir, worktree_base FROM team_member WHERE team_id = ? AND name = ?")
+          .get(teamInfo.teamId, teamInfo.memberName) as { worktree_branch: string | null; worktree_dir: string | null; worktree_base: string | null } | null
         if (member?.worktree_branch) {
           output.env.ENSEMBLE_BRANCH = member.worktree_branch
         }
         if (member?.worktree_dir) {
           output.env.ENSEMBLE_WORKTREE_DIR = member.worktree_dir
+        }
+        if (member?.worktree_base) {
+          output.env.ENSEMBLE_WORKTREE_BASE = member.worktree_base
         }
       }
     },
@@ -373,6 +376,7 @@ const plugin: Plugin = async (input) => {
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
           worktree: tool.schema.boolean().default(true).describe("Create a git worktree for file isolation (default: true, set false for read-only agents)"),
           plan_approval: tool.schema.boolean().default(false).describe("Require teammate to send a plan for approval before writing files (default: false)"),
+          worktree_base: tool.schema.string().optional().describe("Relative path from project root to an independent git repo for worktree creation (for monorepo sub-repos)"),
         },
         async execute(args, ctx) {
           const result = await executeTeamSpawn(deps, args, ctx.sessionID)

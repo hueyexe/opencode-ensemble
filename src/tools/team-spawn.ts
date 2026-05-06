@@ -1,9 +1,10 @@
 import type { ToolDeps, PermissionRule } from "../types"
 import { validateMemberName } from "../util"
-import { requireLead } from "./shared"
+import { requireLead, gitRevParse, gitBranch, gitWorktreeAdd, gitWorktreeRemove } from "./shared"
 import { sendMessage } from "../messaging"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
+import path from "node:path"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -66,7 +67,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  */
 export async function executeTeamSpawn(
   deps: ToolDeps,
-  args: { name: string; agent: string; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean },
+  args: { name: string; agent: string; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean; worktree_base?: string },
   sessionId: string,
 ): Promise<string> {
   const nameError = validateMemberName(args.name)
@@ -88,36 +89,70 @@ export async function executeTeamSpawn(
   const isReadOnly = args.agent === "plan" || args.agent === "explore"
   const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
   const usePlanApproval = args.plan_approval === true
+  const worktreeBase = args.worktree_base && args.worktree_base !== "."
+    ? path.resolve(deps.directory, args.worktree_base)
+    : deps.directory
 
-  log(`spawn:start name=${args.name} agent=${args.agent} worktree=${useWorktree}`)
+  log(`spawn:start name=${args.name} agent=${args.agent} worktree=${useWorktree} worktreeBase=${worktreeBase === deps.directory ? "root" : args.worktree_base}`)
 
   // Create worktree if enabled
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
+  let manualWorktree = false
 
   if (useWorktree) {
     const worktreeName = `ensemble-${teamInfo.teamName}-${args.name}`
-    try {
-      log(`spawn:worktree:start name=${args.name}`)
-      const result = await withTimeout(
-        deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }),
-        getSpawnTimeout(), `worktree.create for "${args.name}"`
-      )
-      if (result.data) {
-        worktreeDir = result.data.directory
-        worktreeBranch = result.data.branch
-      }
-      log(`spawn:worktree:done name=${args.name} dir=${worktreeDir}`)
-    } catch (err) {
-      log(`spawn:worktree:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
+    const branchName = `ensemble/${teamInfo.teamName}/${args.name}`
+
+    if (worktreeBase !== deps.directory) {
+      // Manual worktree creation from sub-repo
+      manualWorktree = true
+      const worktreePath = path.join(deps.directory, ".worktrees", teamInfo.teamName, args.name)
       try {
-        await deps.client.tui.showToast({
-          title: "Team",
-          message: `Worktree creation failed for ${args.name}, using shared directory`,
-          variant: "warning",
-          duration: 4000,
-        })
-      } catch { /* TUI may not be available */ }
+        log(`spawn:worktree:manual:start name=${args.name} base=${args.worktree_base}`)
+        const headSha = await gitRevParse(worktreeBase, "HEAD")
+        const branchOk = await gitBranch(worktreeBase, branchName, headSha)
+        if (!branchOk) throw new Error("git branch failed")
+        const wtOk = await gitWorktreeAdd(worktreeBase, worktreePath, branchName)
+        if (!wtOk) throw new Error("git worktree add failed")
+        worktreeDir = worktreePath
+        worktreeBranch = branchName
+        log(`spawn:worktree:manual:done name=${args.name} dir=${worktreeDir}`)
+      } catch (err) {
+        log(`spawn:worktree:manual:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
+        try {
+          await deps.client.tui.showToast({
+            title: "Team",
+            message: `Sub-repo worktree failed for ${args.name}, using shared directory`,
+            variant: "warning",
+            duration: 4000,
+          })
+        } catch { /* TUI may not be available */ }
+      }
+    } else {
+      // Current behavior: use plugin's worktree.create
+      try {
+        log(`spawn:worktree:start name=${args.name}`)
+        const result = await withTimeout(
+          deps.client.worktree.create({ worktreeCreateInput: { name: worktreeName } }),
+          getSpawnTimeout(), `worktree.create for "${args.name}"`
+        )
+        if (result.data) {
+          worktreeDir = result.data.directory
+          worktreeBranch = result.data.branch
+        }
+        log(`spawn:worktree:done name=${args.name} dir=${worktreeDir}`)
+      } catch (err) {
+        log(`spawn:worktree:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
+        try {
+          await deps.client.tui.showToast({
+            title: "Team",
+            message: `Worktree creation failed for ${args.name}, using shared directory`,
+            variant: "warning",
+            duration: 4000,
+          })
+        } catch { /* TUI may not be available */ }
+      }
     }
   }
 
@@ -194,7 +229,11 @@ export async function executeTeamSpawn(
       try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
     }
     if (worktreeDir) {
-      try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
+      if (manualWorktree) {
+        try { await gitWorktreeRemove(worktreeBase, worktreeDir) } catch { /* best effort */ }
+      } else {
+        try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
+      }
     }
     throw new Error(`Failed to create session for teammate "${args.name}": ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -204,7 +243,11 @@ export async function executeTeamSpawn(
       try { await deps.client.workspace.remove({ id: workspaceId }) } catch { /* best effort */ }
     }
     if (worktreeDir) {
-      try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
+      if (manualWorktree) {
+        try { await gitWorktreeRemove(worktreeBase, worktreeDir) } catch { /* best effort */ }
+      } else {
+        try { await deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }) } catch { /* best effort */ }
+      }
     }
     throw new Error("Failed to create teammate session")
   }
@@ -218,9 +261,9 @@ export async function executeTeamSpawn(
   if (resolvedModel) log(`spawn:model name=${args.name} model=${resolvedModel}`)
 
   deps.db.run(
-    `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, workspace_id, plan_approval, time_created, time_updated)
-     VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [teamInfo.teamId, args.name, childSessionId, args.agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
+    `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, workspace_id, plan_approval, worktree_base, time_created, time_updated)
+     VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [teamInfo.teamId, args.name, childSessionId, args.agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, worktreeBase !== deps.directory ? (args.worktree_base ?? null) : null, now, now]
   )
 
   // Register in memory
@@ -256,6 +299,14 @@ export async function executeTeamSpawn(
     )
   } else if (worktreeBranch) {
     context.push(`You are working on branch "${worktreeBranch}". Your changes are isolated from other teammates.`)
+  }
+
+  if (manualWorktree && worktreeDir) {
+    context.push(
+      `You are working in an isolated worktree of the sub-repo at ${worktreeDir}.`,
+      `ALL file operations MUST target ${worktreeDir}.`,
+      `cd to ${worktreeDir} before running git commands.`,
+    )
   }
 
   // Plan approval mode — teammate must send plan before writing
@@ -364,7 +415,7 @@ export async function executeTeamSpawn(
     parts: [{ type: "text", text: contextStr }],
     agent: args.agent,
     ...(modelParam ? { model: modelParam } : {}),
-  }).catch((err) => {
+  }).catch(async (err) => {
     const errMsg = err instanceof Error ? err.message : String(err)
     log(`spawn:promptAsync:failed name=${args.name} err=${errMsg} — rolling back`)
     try {
@@ -375,7 +426,11 @@ export async function executeTeamSpawn(
         deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
       }
       if (worktreeDir) {
-        deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
+        if (manualWorktree) {
+          try { await gitWorktreeRemove(worktreeBase, worktreeDir) } catch { /* best effort */ }
+        } else {
+          deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
+        }
       }
       const modelInfo = resolvedModel ? ` (model: ${resolvedModel})` : ""
       deps.client.tui.showToast({

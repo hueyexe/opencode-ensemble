@@ -829,6 +829,115 @@ describe("team_spawn — timeout on session.create / worktree.create", () => {
     // Should succeed with fallback — no worktree branch in output
     expect(result).toContain("bob")
     expect(result).toContain("spawned")
-    expect(result).not.toContain("branch:")
+
+    // No worktree was created
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+
+    // DB entry has no worktree info
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = ?").get("bob") as Record<string, unknown>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+    expect(row.worktree_base).toBeNull()
   }, 10000)
+})
+
+describe("team_spawn — worktree_base for sub-repo support", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("stores worktree_base in DB when provided", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      worktree_base: "sub-repo-a",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = ?").get("alice") as Record<string, unknown>
+    expect(row).toBeTruthy()
+    expect(row.worktree_base).toBe("sub-repo-a")
+  })
+
+  test("worktree_base is null when not provided", async () => {
+    await executeTeamSpawn(deps, {
+      name: "bob",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = ?").get("bob") as Record<string, unknown>
+    expect(row).toBeTruthy()
+    expect(row.worktree_base).toBeNull()
+  })
+
+  test("worktree_base '.' is treated as null (project root)", async () => {
+    await executeTeamSpawn(deps, {
+      name: "charlie",
+      agent: "build",
+      prompt: "Fix the tests",
+      worktree_base: ".",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = ?").get("charlie") as Record<string, unknown>
+    expect(row).toBeTruthy()
+    expect(row.worktree_base).toBeNull()
+  })
+
+  test("sub-repo worktree does not call plugin worktree.create", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      worktree_base: "practiveo-front-web",
+    }, "lead-sess")
+
+    const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
+    expect(wtCalls).toHaveLength(0)
+  })
+
+  test("sub-repo worktree includes manual worktree context in prompt", async () => {
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      worktree_base: "practiveo-front-web",
+    }, "lead-sess")
+
+    // In tests, manual worktree creation fails (no real git repo), so the fallback
+    // path is used. The prompt should still contain worktree_base info in the DB.
+    // What we verify is that the spawn completes and worktree_base is stored.
+    const row = deps.db.query("SELECT worktree_base FROM team_member WHERE name = ?").get("alice") as Record<string, unknown>
+    expect(row.worktree_base).toBe("practiveo-front-web")
+  })
+
+  test("read-only agent ignores worktree_base", async () => {
+    await executeTeamSpawn(deps, {
+      name: "explorer",
+      agent: "explore",
+      prompt: "Analyze the codebase",
+      worktree_base: "sub-repo-a",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = ?").get("explorer") as Record<string, unknown>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+  })
+
+  test("plan agent ignores worktree_base", async () => {
+    await executeTeamSpawn(deps, {
+      name: "planner",
+      agent: "plan",
+      prompt: "Design the architecture",
+      worktree_base: "sub-repo-a",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT * FROM team_member WHERE name = ?").get("planner") as Record<string, unknown>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+  })
 })

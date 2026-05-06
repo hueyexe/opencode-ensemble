@@ -3,6 +3,7 @@ import { requireLead } from "./shared"
 import { mergeBranch, deleteBranch, getOverlappingFiles } from "./merge-helper"
 import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
+import path from "node:path"
 
 /**
  * Execute the team_merge tool. Merges a shutdown teammate's preserved
@@ -18,8 +19,8 @@ export async function executeTeamMerge(
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT status, worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null } | null
+  const member = deps.db.query("SELECT status, worktree_branch, worktree_base FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null; worktree_base: string | null } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
 
   if (member.status !== "shutdown" && member.status !== "error") {
@@ -33,9 +34,13 @@ export async function executeTeamMerge(
   const branch = member.worktree_branch
   log(`merge:start member=${args.member} branch=${branch}`)
 
+  const mergeCwd = member.worktree_base
+    ? path.resolve(deps.directory, member.worktree_base)
+    : deps.directory
+
   // Block merge if lead has local changes to files the agent also modified
   try {
-    const overlap = await overlapCheck(branch, deps.directory)
+    const overlap = await overlapCheck(branch, mergeCwd)
     if (overlap.length > 0) {
       const files = overlap.map(f => `  - ${f}`).join("\n")
       return [
@@ -50,7 +55,7 @@ export async function executeTeamMerge(
     log(`merge:overlap-check:failed member=${args.member} branch=${branch}`)
   }
 
-  const result = await merge(branch, deps.directory)
+  const result = await merge(branch, mergeCwd)
   if (!result.ok) {
     return [
       `Merge conflict merging ${args.member}'s branch (${branch}).`,
@@ -63,7 +68,7 @@ export async function executeTeamMerge(
   }
 
   // Merge succeeded — delete the preserved branch and clear DB
-  await delBranch(branch, deps.directory)
+  await delBranch(branch, mergeCwd)
   deps.db.run(
     "UPDATE team_member SET worktree_branch = NULL WHERE team_id = ? AND name = ?",
     [teamInfo.teamId, args.member],
