@@ -26,7 +26,7 @@ All three must pass.
 
 ## Submitting Changes
 
-1. Fork the repo and create a branch off `main`
+1. Fork the repo and create a branch off `main` using `bugfix/`, `feature/`, or `chore/` as the prefix
 2. Make your changes following TDD and the code standards below
 3. Run `bun run typecheck && bun test && bun run build` — all must pass
 4. Open a PR against `main`

@@ -1,0 +1,24 @@
+name: Branch name
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch prefix
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            bugfix/*|feature/*|chore/*)
+              exit 0
+              ;;
+            *)
+              echo "Branch names must start with bugfix/, feature/, or chore/."
+              echo "Examples: feature/add-widget, bugfix/login-timeout, chore/update-deps"
+              exit 1
+              ;;
+          esac
