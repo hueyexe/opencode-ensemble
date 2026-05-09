@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
 import { wrapThrowingClient } from "./client"
 import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees, recoverOrphanedBranches } from "./recovery"
-import { MemberRegistry, DescendantTracker } from "./state"
+import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
@@ -56,6 +56,7 @@ const plugin: Plugin = async (input) => {
   // Initialize in-memory state
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()
+  const purgeApprovals = new PendingPurgeApprovals()
   const nudgedMembers = new Set<string>()
   const progressTracker = new ProgressTracker()
   const wakeLeadTimestamps = new Map<string, number>()
@@ -69,7 +70,7 @@ const plugin: Plugin = async (input) => {
   const rawClient = new OpencodeClient({ client: pluginTransport })
   initLog(rawClient)
   const client = wrapThrowingClient(rawClient)
-  const deps: ToolDeps = { db, registry, tracker, client, directory: input.directory, config }
+  const deps: ToolDeps = { db, registry, tracker, purgeApprovals, client, directory: input.directory, config }
 
   // Recovery only runs for the main project instance — NOT for teammate worktree instances.
   // Worktree instances are created during session.create. Running recovery there makes HTTP
@@ -306,6 +307,12 @@ const plugin: Plugin = async (input) => {
       }
     },
 
+    "tool.execute.after": async (input, output) => {
+      if (input.tool === "question") {
+        purgeApprovals.recordQuestionAnswer(input.sessionID, output.output, input.args)
+      }
+    },
+
     // System prompt injection — keeps lead aware of team state, reminds teammates of role
     "experimental.chat.system.transform": async (input, output) => {
       if (!input.sessionID) return
@@ -498,15 +505,38 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_cleanup: tool({
-        description: "Clean up the team. All teammates must be shut down first. Removes team data and frees resources.",
+        description: "Clean up the current team, or purge archived teams after human approval. " +
+          "Omit purge for normal cleanup. Pass purge with archived team names, or ['*'] for all archived teams. " +
+          "First purge call returns a preview, exact approval and denial options, and confirmation token only. " +
+          "Archived worktree/workspace references and stale Ensemble-owned branches are shown in the preview and cleaned during confirmed purge. " +
+          "Use the question tool with those exact options, then call again with confirm_purge: true and confirm_token only if the user selected the exact approval option.",
         args: {
           force: tool.schema.boolean().default(false).describe("Force cleanup even if members are active (will abort them)"),
           acknowledge_uncommitted: tool.schema.boolean().default(false),
+          purge: tool.schema.array(tool.schema.string()).optional().describe("Archived team names to permanently delete, or ['*'] for all archived teams. Requires human approval."),
+          confirm_purge: tool.schema.boolean().default(false).describe("Set true only after the user explicitly selects the exact approval option from the purge preview via the question tool."),
+          confirm_token: tool.schema.string().optional().describe("Confirmation token from the purge preview. Valid only after the matching exact approval answer is selected in this session."),
         },
         async execute(args, ctx) {
-          const result = await executeTeamCleanup(deps, args, ctx.sessionID, undefined, undefined, undefined, config.mergeOnCleanup)
+          const approvePurge = args.purge && args.purge.length > 0 && args.confirm_purge
+            ? async (preview: string) => {
+              await ctx.ask({
+                permission: "team_cleanup.purge",
+                patterns: args.purge ?? [],
+                always: [],
+                metadata: {
+                  title: "Purge archived teams",
+                  preview,
+                },
+              })
+            }
+            : undefined
+          const result = await executeTeamCleanup(deps, args, ctx.sessionID, undefined, undefined, undefined, config.mergeOnCleanup, undefined, approvePurge)
           const blocked = result.includes("uncommitted")
-          ctx.metadata({ title: blocked ? "Cleanup blocked — uncommitted changes" : "Team cleaned up" })
+          const title = args.purge
+            ? result.startsWith("No archived teams") ? "No archived teams to purge" : result.startsWith("Purge preview") ? "Purge confirmation required" : "Archived teams purged"
+            : blocked ? "Cleanup blocked — uncommitted changes" : "Team cleaned up"
+          ctx.metadata({ title })
           return result
         },
       }),

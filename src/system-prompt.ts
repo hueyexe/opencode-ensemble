@@ -152,6 +152,11 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
     "Before calling team_cleanup, verify teammates have committed their work.",
     "team_shutdown will warn you if a teammate has uncommitted changes.",
     "team_cleanup will block if any worktree has uncommitted changes — merge or commit first.",
+    "To permanently delete archived teams, call team_cleanup with purge: [\"team-name\"] or purge: [\"*\"] for all archived teams.",
+    "The first purge call is preview-only and deletes nothing.",
+    "Use the question tool to ask the user for visible human approval before deleting archived team records or preserved Ensemble branches.",
+    "The question must include the exact approval and denial option labels shown in the preview.",
+    "Only if the user selects that exact approval option, call team_cleanup again with the same purge value, confirm_purge: true, and the confirm_token from the preview.",
   )
 
   return lines.join("\n")

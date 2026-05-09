@@ -6,7 +6,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-512%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-558%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
 [![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -19,7 +19,7 @@ Plugin built on the public OpenCode SDK. No internal dependencies.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.13.3"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.14.0"]
 }
 ```
 
@@ -140,7 +140,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.13.3"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.14.0"]
 }
 ```
 
@@ -148,7 +148,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.13.3"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.14.0"]
 }
 ```
 
@@ -198,7 +198,7 @@ Build with `bun run build`, then restart OpenCode to pick up changes.
 
 14 tools. The lead has all of them. Teammates get 6 (messaging + tasks).
 
-**Team lifecycle** (lead only)
+**Team lifecycle** (lead only, except archived-team purge may also be run from the main session)
 
 | Tool | What it does |
 |------|-------------|
@@ -206,9 +206,11 @@ Build with `bun run build`, then restart OpenCode to pick up changes.
 | `team_spawn` | Start a new teammate with a task. Supports `plan_approval` mode. |
 | `team_shutdown` | Ask a teammate to stop. Preserves their branch before aborting. Supports `force` flag. |
 | `team_merge` | Merge a shutdown teammate's branch into working directory (unstaged). Blocks if you have local changes to overlapping files. |
-| `team_cleanup` | Remove the team when done. Safety-net merges any forgotten branches. |
+| `team_cleanup` | Remove the current team when done. Safety-net merges forgotten branches. With `purge`, previews archived-team deletion and returns exact approval labels plus a confirmation token. |
 | `team_status` | See all members, their status, and a task summary. |
 | `team_view` | Switch the TUI to a teammate's session. |
+
+Archived-team purge is intentionally two-step. First call `team_cleanup` with `purge` to get a preview, exact approval and denial option labels, and `confirm_token`; no data is deleted. Stale archived worktree/workspace references and stale Ensemble-owned branches are counted in the preview and cleaned during confirmed purge. Arbitrary non-Ensemble branches still block purge for safety. The lead must then use the question tool with those exact options. Only after the user selects the exact approval option should it call `team_cleanup` again with the same `purge`, `confirm_purge: true`, and the preview token.
 
 **Communication** (everyone)
 
@@ -410,7 +412,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 512 tests
+bun test             # 558 tests
 bun run build
 ```
 

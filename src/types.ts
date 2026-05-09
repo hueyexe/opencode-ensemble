@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite"
-import type { MemberRegistry, DescendantTracker } from "./state"
+import type { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import type { EnsembleConfig } from "./config"
 
 /**
@@ -10,6 +10,7 @@ export interface ToolDeps {
   db: Database
   registry: MemberRegistry
   tracker: DescendantTracker
+  purgeApprovals: PendingPurgeApprovals
   /** The OpenCode SDK client — used for session.create, promptAsync, abort, etc. */
   client: PluginClient
   /** The project root directory — used for reading AGENTS.md and other project files. */

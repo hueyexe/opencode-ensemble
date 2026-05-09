@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { MemberRegistry, DescendantTracker } from "../src/state"
+import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "../src/state"
 
 describe("MemberRegistry", () => {
   let registry: MemberRegistry
@@ -109,5 +109,93 @@ describe("DescendantTracker", () => {
     tracker.track("child", "parent")
     tracker.remove("child")
     expect(tracker.getParent("child")).toBeUndefined()
+  })
+})
+
+describe("PendingPurgeApprovals", () => {
+  function approvalQuestionArgs(label: string) {
+    return {
+      questions: [{
+        question: "Delete archived team?",
+        header: "Confirm Purge",
+        options: [
+          { label, description: "Delete the archived team." },
+          { label: label.replace("Approve", "Deny"), description: "Keep the archived team." },
+        ],
+        multiple: false,
+      }],
+    }
+  }
+
+  test("allows consuming a matching token after the same session selects the exact approval answer", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+    const label = approvals.approvalLabel(token)
+
+    approvals.recordQuestionAnswer("lead-sess", `User has answered your questions: "Delete?"="${label}".`, approvalQuestionArgs(label))
+
+    expect(() => approvals.consume("lead-sess", token, ["old-team"])).not.toThrow()
+  })
+
+  test("rejects consuming a token before an exact approval answer", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+
+    expect(() => approvals.consume("lead-sess", token, ["old-team"])).toThrow("approved")
+  })
+
+  test("rejects a denial answer even after the question tool runs", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+
+    approvals.recordQuestionAnswer("lead-sess", 'User has answered your questions: "Delete?"="Deny purge".', approvalQuestionArgs(approvals.approvalLabel(token)))
+
+    expect(() => approvals.consume("lead-sess", token, ["old-team"])).toThrow("approved")
+  })
+
+  test("rejects approval labels that appear in question text but not as the selected answer", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+    const label = approvals.approvalLabel(token)
+
+    approvals.recordQuestionAnswer("lead-sess", `User has answered your questions: "Select ${label} to delete."="Deny purge".`, approvalQuestionArgs(label))
+
+    expect(() => approvals.consume("lead-sess", token, ["old-team"])).toThrow("approved")
+  })
+
+  test("rejects approval answers from questions without the exact denial option", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+    const label = approvals.approvalLabel(token)
+    const malformedQuestion = {
+      questions: [{
+        question: "Delete archived team?",
+        header: "Confirm Purge",
+        options: [{ label, description: "Only approval is available." }],
+        multiple: false,
+      }],
+    }
+
+    approvals.recordQuestionAnswer("lead-sess", `User has answered your questions: "Delete?"="${label}".`, malformedQuestion)
+
+    expect(() => approvals.consume("lead-sess", token, ["old-team"])).toThrow("approved")
+  })
+
+  test("rejects tokens from a different session", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+    const label = approvals.approvalLabel(token)
+    approvals.recordQuestionAnswer("lead-sess", `User has answered your questions: "Delete?"="${label}".`, approvalQuestionArgs(label))
+
+    expect(() => approvals.consume("other-sess", token, ["old-team"])).toThrow("confirmation token")
+  })
+
+  test("rejects tokens for a different purge value", () => {
+    const approvals = new PendingPurgeApprovals()
+    const token = approvals.create("lead-sess", ["old-team"])
+    const label = approvals.approvalLabel(token)
+    approvals.recordQuestionAnswer("lead-sess", `User has answered your questions: "Delete?"="${label}".`, approvalQuestionArgs(label))
+
+    expect(() => approvals.consume("lead-sess", token, ["other-team"])).toThrow("confirmation token")
   })
 })

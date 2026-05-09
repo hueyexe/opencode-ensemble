@@ -77,6 +77,22 @@ describe("buildLeadSystemPrompt", () => {
     expect(result).toMatch(/worktree contention/i)
   })
 
+  test("documents archived team purge through team_cleanup", () => {
+    const db = setupDb()
+    insertTeam(db, "t5", "seq-team", "lead-sess")
+
+    const result = buildLeadSystemPrompt(db, "t5")
+
+    expect(result).toContain("team_cleanup")
+    expect(result).toContain("purge")
+    expect(result).toContain('["*"]')
+    expect(result).toContain("human approval")
+    expect(result).toContain("question tool")
+    expect(result).toContain("exact approval and denial option labels")
+    expect(result).toContain("confirm_purge: true")
+    expect(result).toContain("confirm_token")
+  })
+
   test("delivers pending messages inline in system prompt and marks them delivered", () => {
     const db = setupDb()
     insertTeam(db, "t6", "msg-team", "lead-sess")

@@ -52,3 +52,38 @@ export function requireTeamMember(
   if (!teamInfo) throw new Error("This session is not in a team.")
   return teamInfo
 }
+
+/** Validate that a session can purge archived teams. Throws if not allowed. */
+export function requireCanPurgeArchivedTeams(
+  deps: Pick<ToolDeps, "db" | "registry" | "tracker">,
+  sessionId: string,
+): void {
+  const activeMembers = deps.db.query(
+    `SELECT tm.session_id
+     FROM team_member tm
+     JOIN team t ON tm.team_id = t.id
+     WHERE t.status = 'active'`
+  ).all() as Array<{ session_id: string }>
+
+  if (activeMembers.some(member => member.session_id === sessionId)) {
+    throw new Error("Team members cannot purge archived teams")
+  }
+
+  const activeLeads = deps.db.query("SELECT lead_session_id FROM team WHERE status = 'active'")
+    .all() as Array<{ lead_session_id: string }>
+
+  if (deps.tracker.getParent(sessionId)) {
+    throw new Error("Sub-agents cannot purge archived teams")
+  }
+
+  if (activeLeads.some(team => team.lead_session_id === sessionId)) return
+
+  const activeTeamSessions = new Set([
+    ...activeMembers.map(member => member.session_id),
+    ...activeLeads.map(team => team.lead_session_id),
+  ])
+
+  if (deps.tracker.isDescendantOf(sessionId, activeTeamSessions)) {
+    throw new Error("Sub-agents cannot purge archived teams")
+  }
+}

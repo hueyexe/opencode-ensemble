@@ -56,17 +56,26 @@ All PRs require at least one approval from a code owner before merging. Direct p
 
 ```
 src/
-├── index.ts          # Plugin entry point
-├── db.ts             # SQLite connection + init
-├── schema.ts         # CREATE TABLE migrations
-├── state.ts          # In-memory registry + descendant tracker
-├── messaging.ts      # Message persistence + delivery helpers
-├── recovery.ts       # Crash recovery (stale members + undelivered messages)
-├── hooks.ts          # Event hook + sub-agent isolation
-├── rate-limit.ts     # Token bucket rate limiter
-├── types.ts          # Shared types + helper functions
-├── util.ts           # ID generation + name validation
-└── tools/            # One file per tool (13 total)
+├── index.ts             # Plugin entry point and tool registration
+├── client.ts            # SDK wrapper that throws on API errors
+├── config.ts            # Global/project/env configuration loading
+├── dashboard*.ts        # Dashboard HTML, JS, and data endpoint
+├── db.ts                # SQLite connection + init
+├── hooks.ts             # Event hook + sub-agent isolation
+├── log.ts               # Plugin logging helpers
+├── messaging.ts         # Message persistence + delivery helpers
+├── notify.ts            # TUI notification helpers
+├── progress.ts          # Progress/stall tracking
+├── rate-limit.ts        # Token bucket rate limiter
+├── recovery.ts          # Crash recovery and orphan cleanup
+├── result-parser.ts     # Teammate result parsing helpers
+├── schema.ts            # CREATE TABLE migrations
+├── state.ts             # In-memory registry, descendant tracker, and purge approval state
+├── system-prompt.ts     # Lead/teammate prompt injection text
+├── types.ts             # Shared types + helper functions
+├── util.ts              # ID generation + name validation
+├── watchdog.ts          # Timeout and stall watchdog
+└── tools/               # 14 team tools plus shared/merge helpers
 
 test/
 ├── helpers.ts        # Shared test utilities (setupDb, mockClient, etc.)

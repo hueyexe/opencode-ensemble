@@ -40,7 +40,7 @@ describe("README social preview", () => {
   test("uses the bumped plugin version in install snippets", () => {
     const readme = readFileSync(readmePath, "utf8");
 
-    expect(readme).toContain("@hueyexe/opencode-ensemble@0.13.3");
-    expect(readme).not.toContain("@hueyexe/opencode-ensemble@0.13.2");
+    expect(readme).toContain("@hueyexe/opencode-ensemble@0.14.0");
+    expect(readme).not.toContain("@hueyexe/opencode-ensemble@0.13.3");
   });
 });

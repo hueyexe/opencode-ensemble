@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
-import { MemberRegistry, DescendantTracker } from "../src/state"
+import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "../src/state"
 import type { ToolDeps, PluginClient } from "../src/types"
 import { DEFAULT_CONFIG } from "../src/config"
 
@@ -89,6 +89,7 @@ export function setupDeps(db?: Database): ToolDeps & { client: ReturnType<typeof
     db: d,
     registry: new MemberRegistry(),
     tracker: new DescendantTracker(),
+    purgeApprovals: new PendingPurgeApprovals(),
     client: mockClient(),
     directory: "/tmp/test-project",
     config: { ...DEFAULT_CONFIG },
