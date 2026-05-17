@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { findTeamBySession } from "../types"
+import { runCommand } from "../process"
 
 /** Function type for dirty worktree check — injectable for testing. */
 export type IsDirtyFn = (dir: string) => Promise<boolean>
@@ -10,11 +11,9 @@ export type CommitCountFn = (branch: string, cwd: string) => Promise<number>
 /** Count commits a branch has ahead of HEAD. Approximate — may include base divergence. Returns -1 if check fails. */
 export async function countBranchCommits(branch: string, cwd: string): Promise<number> {
   try {
-    const proc = Bun.spawn(["git", "rev-list", "--count", `HEAD..${branch}`], { cwd, stdout: "pipe", stderr: "pipe" })
-    const out = await new Response(proc.stdout).text()
-    const exit = await proc.exited
-    if (exit !== 0) return -1
-    const n = Number.parseInt(out.trim(), 10)
+    const result = await runCommand(["git", "rev-list", "--count", `HEAD..${branch}`], { cwd })
+    if (result.exitCode !== 0) return -1
+    const n = Number.parseInt(result.stdout.trim(), 10)
     return Number.isNaN(n) ? -1 : n
   } catch { return -1 }
 }
@@ -22,11 +21,9 @@ export async function countBranchCommits(branch: string, cwd: string): Promise<n
 /** Check if a worktree directory has uncommitted changes via git status. */
 export async function checkWorktreeDirty(dir: string): Promise<boolean> {
   try {
-    const proc = Bun.spawn(["git", "-C", dir, "status", "--porcelain"], { stdout: "pipe", stderr: "pipe" })
-    const output = await new Response(proc.stdout).text()
-    const exitCode = await proc.exited
-    if (exitCode !== 0) return false // git failed — assume clean
-    return output.trim().length > 0
+    const result = await runCommand(["git", "-C", dir, "status", "--porcelain"])
+    if (result.exitCode !== 0) return false // git failed — assume clean
+    return result.stdout.trim().length > 0
   } catch {
     return false // can't check — assume clean
   }

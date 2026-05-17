@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite"
+import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"

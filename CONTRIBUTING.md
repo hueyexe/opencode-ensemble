@@ -42,7 +42,7 @@ All PRs require at least one approval from a code owner before merging. Direct p
 - `const` over `let`, early returns over `else`
 - `snake_case` for SQL columns, `camelCase` for TypeScript
 - Functional array methods over `for` loops
-- Zero external dependencies beyond `@opencode-ai/sdk`, `@opencode-ai/plugin`, and `bun:sqlite`
+- Zero external dependencies beyond `@opencode-ai/sdk` and `@opencode-ai/plugin`; SQLite goes through the internal adapter (`bun:sqlite` on Bun, `node:sqlite` on Node/Electron)
 
 ## Testing
 

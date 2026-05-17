@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite"
+import type { Database } from "./db"
 import { markDelivered } from "./messaging"
 import { parseTaskResult, formatTaskResult } from "./result-parser"
 import type { EnsembleConfig } from "./config"

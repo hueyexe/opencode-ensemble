@@ -66,7 +66,8 @@ Key SDK primitives:
 
 ### Storage
 
-SQLite via bun:sqlite (zero dependencies). Four tables:
+SQLite via the internal database adapter (zero external dependencies): `bun:sqlite`
+when running on Bun, `node:sqlite` when running on Node/Electron. Four tables:
 - team — team config (name, lead session, status, delegate mode)
 - team_member — member registry (name, session ID, agent, status)
 - team_task — shared task board (content, status, priority, assignee, deps)
@@ -130,7 +131,7 @@ Three hooks wired in index.ts:
 
 ## Settled Decisions (Do Not Re-Debate)
 
-1. SQLite via bun:sqlite — not file JSON, not in-memory-only
+1. SQLite via the internal database adapter — not file JSON, not in-memory-only, not external native packages
 2. promptAsync for message delivery — not session injection, not polling
 3. 14 separate tools — not a unified action tool, no exceptions
 4. Fire-and-forget spawn — not blocking, not tmux
@@ -316,7 +317,7 @@ Teammates do not need to know how agent teams work internally.
 
 - TypeScript strict mode
 - Biome linter with `noExplicitAny: error` — no `any` types, no `as any` casts
-- Zero external deps beyond @opencode-ai/sdk, @opencode-ai/plugin, bun:sqlite
+- Zero external deps beyond @opencode-ai/sdk and @opencode-ai/plugin; SQLite access stays behind src/db.ts
 - Every exported function has a JSDoc comment
 - const over let, early returns over else
 - snake_case for SQL columns, camelCase for TypeScript
@@ -352,7 +353,7 @@ Default to using Bun instead of Node.js.
 - Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
 - Use `bunx <package> <command>` instead of `npx <package> <command>`
 - Bun automatically loads .env, so don't use dotenv.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
+- Use the database adapter in `src/db.ts` for SQLite. It selects `bun:sqlite` on Bun and `node:sqlite` on Node/Electron. Don't use `better-sqlite3`, and don't import runtime-specific SQLite modules outside `src/db.ts`.
 - Prefer `Bun.file` over `node:fs`'s readFile/writeFile
 
 ## Publishing

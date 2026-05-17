@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDb, insertTeam, insertMember } from "./helpers"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
-import type { Database } from "bun:sqlite"
+import type { Database } from "../src/db"
 
 function insertTask(db: Database, teamId: string, id: string, status: string, priority = "medium") {
   db.run(

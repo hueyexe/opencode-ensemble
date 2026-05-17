@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite"
+import type { Database } from "./db"
 
 /** Migration SQL statements, applied in order. Version = index + 1. */
 export const MIGRATIONS: string[] = [

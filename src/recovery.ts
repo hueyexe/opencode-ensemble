@@ -1,9 +1,10 @@
-import type { Database } from "bun:sqlite"
+import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
 import { log } from "./log"
+import { runCommand } from "./process"
 
 /**
  * Scan for team members stuck in 'busy' status (stale from a crash)
@@ -168,12 +169,9 @@ export async function recoverOrphanedBranches(db: Database, cwd: string): Promis
   const archivedNames = new Set(archivedTeams.map(t => t.name))
 
   // List all local branches matching ensemble/preserved/*
-  const proc = Bun.spawn(["git", "branch", "--list", "ensemble/preserved/*"], { cwd, stdout: "pipe", stderr: "pipe" })
-  const stdoutPromise = new Response(proc.stdout).text()
-  await proc.exited
-  const stdout = await stdoutPromise
+  const result = await runCommand(["git", "branch", "--list", "ensemble/preserved/*"], { cwd })
 
-  const branches = stdout.split("\n").map(b => b.trim().replace(/^\* /, "")).filter(Boolean)
+  const branches = result.stdout.split("\n").map(b => b.trim().replace(/^\* /, "")).filter(Boolean)
 
   for (const branch of branches) {
     // Parse team name from branch: ensemble/preserved/{teamName}/{memberName}
@@ -183,9 +181,8 @@ export async function recoverOrphanedBranches(db: Database, cwd: string): Promis
     if (!teamName || !archivedNames.has(teamName)) continue
 
     try {
-      const del = Bun.spawn(["git", "branch", "-D", branch], { cwd, stdout: "pipe", stderr: "pipe" })
-      const exitCode = await del.exited
-      if (exitCode === 0) {
+      const deleteResult = await runCommand(["git", "branch", "-D", branch], { cwd })
+      if (deleteResult.exitCode === 0) {
         removed++
         log(`recovery:branch:deleted branch=${branch}`)
       }

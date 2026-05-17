@@ -1,4 +1,6 @@
-import type { Database } from "bun:sqlite"
+import { createServer } from "node:http"
+import type { IncomingMessage, Server, ServerResponse } from "node:http"
+import type { Database } from "./db"
 import { DASHBOARD_HEAD } from "./dashboard-html"
 import { DASHBOARD_JS_PART1 } from "./dashboard-js-part1"
 import { DASHBOARD_JS_PART2 } from "./dashboard-js-part2"
@@ -49,13 +51,6 @@ interface MessageRow {
   delivered: number
   read: number
   time_created: number
-}
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-  })
 }
 
 function parseDependsOn(value: string | null): string[] {
@@ -122,60 +117,92 @@ function buildState(db: Database): { teams: unknown[] } {
   }
 }
 
+/** Dashboard server handle returned by startDashboard. */
+export interface DashboardServer {
+  stop(force?: boolean): void
+}
+
+function sendJson(res: ServerResponse, data: unknown): void {
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+  })
+  res.end(JSON.stringify(data))
+}
+
+function handleDashboardRequest(db: Database, port: number, req: IncomingMessage, res: ServerResponse): void {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `localhost:${port}`}`)
+
+  if (url.pathname === "/api/health") {
+    sendJson(res, { ensemble: true, pid: process.pid })
+    return
+  }
+
+  if (url.pathname === "/api/state") {
+    sendJson(res, buildState(db))
+    return
+  }
+
+  if (url.pathname === "/") {
+    res.writeHead(200, { "Content-Type": "text/html" })
+    res.end(DASHBOARD_HTML)
+    return
+  }
+
+  res.writeHead(404, { "Content-Type": "text/plain" })
+  res.end("Not Found")
+}
+
+function toDashboardServer(server: Server): DashboardServer {
+  return {
+    stop() {
+      server.close()
+    },
+  }
+}
+
 /**
  * Start the dashboard HTTP server.
  * Serves a JSON API for team state and the dashboard HTML.
  * Singleton: if the port is already in use by another ensemble instance, skips silently.
  * Returns the server instance, or null if skipped.
  */
-export async function startDashboard(db: Database, port: number): Promise<ReturnType<typeof Bun.serve> | null> {
-  try {
-    const server = Bun.serve({
-      port,
-      fetch(req) {
-        const url = new URL(req.url)
+export async function startDashboard(db: Database, port: number): Promise<DashboardServer | null> {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => handleDashboardRequest(db, port, req, res))
 
-        if (url.pathname === "/api/health") {
-          return jsonResponse({ ensemble: true, pid: process.pid })
-        }
-
-        if (url.pathname === "/api/state") {
-          return jsonResponse(buildState(db))
-        }
-
-        if (url.pathname === "/") {
-          return new Response(DASHBOARD_HTML, {
-            headers: { "Content-Type": "text/html" },
-          })
-        }
-
-        return new Response("Not Found", { status: 404 })
-      },
-    })
-    log(`dashboard:started port=${port} url=http://localhost:${port}`)
-    return server
-  } catch (err) {
-    if (err && typeof err === "object" && "code" in err && err.code === "EADDRINUSE") {
-      try {
-        const res = await fetch(`http://localhost:${port}/api/health`)
-        const data = await res.json() as { ensemble?: boolean; pid?: number }
-        if (data.ensemble && data.pid) {
-          // Check if the other process is still alive
-          let alive = false
-          try { process.kill(data.pid, 0); alive = true } catch { /* process is dead */ }
-          if (alive && data.pid !== process.pid) {
-            log(`dashboard:already-running port=${port} pid=${data.pid}`)
-            return null
+    server.once("error", async (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        try {
+          const res = await fetch(`http://localhost:${port}/api/health`)
+          const data = await res.json() as { ensemble?: boolean; pid?: number }
+          if (data.ensemble && data.pid) {
+            // Check if the other process is still alive
+            let alive = false
+            try { process.kill(data.pid, 0); alive = true } catch { /* process is dead */ }
+            if (alive && data.pid !== process.pid) {
+              log(`dashboard:already-running port=${port} pid=${data.pid}`)
+              resolve(null)
+              return
+            }
+            // Stale server from a dead process — warn the user
+            log(`dashboard:stale-server port=${port} stale-pid=${data.pid} — run: kill -9 ${data.pid} || lsof -ti:${port} | xargs kill -9`)
+            resolve(null)
+            return
           }
-          // Stale server from a dead process — warn the user
-          log(`dashboard:stale-server port=${port} stale-pid=${data.pid} — run: kill -9 ${data.pid} || lsof -ti:${port} | xargs kill -9`)
-          return null
-        }
-      } catch { /* health check failed — port held by something else */ }
-      log(`dashboard:port-in-use port=${port} (not an ensemble instance)`)
-      return null
-    }
-    log(`dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
-    return null
-  }
+        } catch { /* health check failed — port held by something else */ }
+        log(`dashboard:port-in-use port=${port} (not an ensemble instance)`)
+        resolve(null)
+        return
+      }
+
+      log(`dashboard:failed err=${err.message}`)
+      resolve(null)
+    })
+
+    server.listen(port, () => {
+      log(`dashboard:started port=${port} url=http://localhost:${port}`)
+      resolve(toDashboardServer(server))
+    })
+  })
 }

@@ -1,6 +1,6 @@
 {
   "name": "@hueyexe/opencode-ensemble",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "Agent teams for OpenCode — parallel agents with peer-to-peer communication, shared tasks, and coordinated execution",
   "module": "src/index.ts",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
     "lint": "bunx biome lint src/",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts --outdir dist --target node",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "devDependencies": {
@@ -41,7 +41,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.14.45",
-    "@opencode-ai/sdk": "^1.14.45"
+    "@opencode-ai/plugin": "^1.15.1",
+    "@opencode-ai/sdk": "^1.15.1"
   }
 }

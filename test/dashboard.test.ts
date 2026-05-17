@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import type { Database } from "bun:sqlite"
+import type { Database } from "../src/db"
 import { setupDb, insertTeam, insertMember } from "./helpers"
 import { startDashboard } from "../src/dashboard"
 

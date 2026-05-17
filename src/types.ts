@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite"
+import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import type { EnsembleConfig } from "./config"
 

@@ -1,4 +1,5 @@
 import { log } from "../log"
+import { runCommand } from "../process"
 
 /** Result of merging a single branch. */
 export interface MergeResult {
@@ -24,11 +25,9 @@ export type DeleteBranchFn = (branch: string, cwd: string) => Promise<boolean>
  * Returns true if the branch was successfully copied.
  */
 export async function preserveBranch(sourceBranch: string, targetBranch: string, cwd: string): Promise<boolean> {
-  const proc = Bun.spawn(["git", "branch", targetBranch, sourceBranch], { cwd, stdout: "pipe", stderr: "pipe" })
-  const exit = await proc.exited
-  if (exit !== 0) {
-    const stderr = await new Response(proc.stderr).text()
-    log(`merge-helper:preserve:failed src=${sourceBranch} target=${targetBranch} err=${stderr.trim()}`)
+  const result = await runCommand(["git", "branch", targetBranch, sourceBranch], { cwd })
+  if (result.exitCode !== 0) {
+    log(`merge-helper:preserve:failed src=${sourceBranch} target=${targetBranch} err=${result.stderr.trim()}`)
     return false
   }
   return true
@@ -38,9 +37,8 @@ export async function preserveBranch(sourceBranch: string, targetBranch: string,
  * Delete a git branch. Returns true if successful.
  */
 export async function deleteBranch(branch: string, cwd: string): Promise<boolean> {
-  const proc = Bun.spawn(["git", "branch", "-D", branch], { cwd, stdout: "pipe", stderr: "pipe" })
-  const exit = await proc.exited
-  if (exit !== 0) {
+  const result = await runCommand(["git", "branch", "-D", branch], { cwd })
+  if (result.exitCode !== 0) {
     log(`merge-helper:delete:failed branch=${branch}`)
     return false
   }
@@ -52,16 +50,13 @@ export async function deleteBranch(branch: string, cwd: string): Promise<boolean
  * Used by mergeBranch (single) and mergeMultipleBranches (batch).
  */
 export async function mergeBranchRaw(branch: string, cwd: string): Promise<MergeResult> {
-  const merge = Bun.spawn(["git", "merge", "--squash", branch], { cwd, stdout: "pipe", stderr: "pipe" })
-  const stderrPromise = new Response(merge.stderr).text()
-  const mergeExit = await merge.exited
+  const result = await runCommand(["git", "merge", "--squash", branch], { cwd })
 
-  if (mergeExit !== 0) {
-    const stderr = await stderrPromise
+  if (result.exitCode !== 0) {
+    const stderr = result.stderr.trim()
     log(`merge-helper:merge:conflict branch=${branch} err=${stderr.trim()}`)
-    const abort = Bun.spawn(["git", "merge", "--abort"], { cwd, stdout: "pipe", stderr: "pipe" })
-    await abort.exited
-    return { ok: false, error: stderr.trim() || `merge exited with code ${mergeExit}` }
+    await runCommand(["git", "merge", "--abort"], { cwd })
+    return { ok: false, error: stderr || `merge exited with code ${result.exitCode}` }
   }
 
   return { ok: true }
@@ -69,8 +64,7 @@ export async function mergeBranchRaw(branch: string, cwd: string): Promise<Merge
 
 /** Unstage all changes so merge results appear as unstaged. */
 export async function gitReset(cwd: string): Promise<void> {
-  const reset = Bun.spawn(["git", "reset", "HEAD"], { cwd, stdout: "pipe", stderr: "pipe" })
-  await reset.exited
+  await runCommand(["git", "reset", "HEAD"], { cwd })
 }
 
 /**
@@ -91,11 +85,9 @@ export async function mergeBranch(branch: string, cwd: string): Promise<MergeRes
  */
 export async function getOverlappingFiles(branch: string, cwd: string): Promise<string[]> {
   const run = async (args: string[]) => {
-    const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
-    const out = await new Response(proc.stdout).text()
-    const exit = await proc.exited
-    if (exit !== 0) throw new Error(`git ${args.join(" ")} failed with exit code ${exit}`)
-    return out.split("\n").filter(Boolean)
+    const result = await runCommand(["git", ...args], { cwd })
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed with exit code ${result.exitCode}`)
+    return result.stdout.split("\n").filter(Boolean)
   }
   const agentFiles = new Set(await run(["diff", "--name-only", "HEAD", branch]))
   const localChanged = await run(["diff", "--name-only", "HEAD"])

@@ -6,7 +6,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
-[![tests](https://img.shields.io/badge/tests-561%20passing-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-568%20passing-brightgreen.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)]()
 [![OpenCode SDK](https://img.shields.io/badge/deps-OpenCode%20SDK%20only-blue.svg)]()
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -19,7 +19,7 @@ Plugin built on the public OpenCode SDK. No internal dependencies.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.14.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.14.2"]
 }
 ```
 
@@ -175,7 +175,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.14.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.14.2"]
 }
 ```
 
@@ -183,7 +183,7 @@ Add to your OpenCode config with a pinned version. Project-level or global.
 
 ```json
 {
-  "plugin": ["@hueyexe/opencode-ensemble@0.14.1"]
+  "plugin": ["@hueyexe/opencode-ensemble@0.14.2"]
 }
 ```
 
@@ -280,7 +280,7 @@ Teammate messages arrive in the lead's session as `[Team message from alice]: ..
 
 ## Architecture
 
-- **SQLite** (`bun:sqlite`, WAL mode) for teams, members, tasks, and messages
+- **SQLite** (WAL mode) for teams, members, tasks, and messages. Uses `bun:sqlite` in Bun and `node:sqlite` in Node/Electron through the internal database adapter.
 - **promptAsync** for message delivery: injects a message and starts the prompt loop in one call
 - **Git worktree isolation**: each teammate gets their own worktree by default, so multiple agents can edit files without conflicts. Opt out with `worktree: false` for read-only agents.
 - **System prompt injection**: the lead's system prompt includes team state (member statuses, task counts) on every LLM call. Teammates get a short role reminder.
@@ -447,7 +447,7 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 561 tests
+bun test             # 568 tests
 bun run build
 ```
 

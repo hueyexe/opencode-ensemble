@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite"
+import type { Database } from "./db"
 import { generateId } from "./util"
 
 const MAX_CONTENT_BYTES = 10 * 1024 // 10KB

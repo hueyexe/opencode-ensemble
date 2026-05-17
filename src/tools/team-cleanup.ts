@@ -5,6 +5,7 @@ import { spawnFailures } from "./team-spawn"
 import { mergeBranch, deleteBranch, preserveBranch, preservedBranchName, getOverlappingFiles } from "./merge-helper"
 import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
+import { runCommand } from "../process"
 
 type PurgeApprovalFn = (preview: string) => Promise<void>
 type ListBranchesFn = (teamName: string, cwd: string) => Promise<string[]>
@@ -36,12 +37,9 @@ interface PurgeMemberResource {
 
 async function listPreservedBranches(teamName: string, cwd: string): Promise<string[]> {
   try {
-    const proc = Bun.spawn(["git", "branch", "--list", `ensemble/preserved/${teamName}/*`, "--format", "%(refname:short)"], { cwd, stdout: "pipe", stderr: "pipe" })
-    const out = await new Response(proc.stdout).text()
-    const stderr = await new Response(proc.stderr).text()
-    const exit = await proc.exited
-    if (exit !== 0) throw new Error(stderr.trim() || `git branch exited with code ${exit}`)
-    return out.split("\n").map(branch => branch.trim()).filter(Boolean)
+    const result = await runCommand(["git", "branch", "--list", `ensemble/preserved/${teamName}/*`, "--format", "%(refname:short)"], { cwd })
+    if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `git branch exited with code ${result.exitCode}`)
+    return result.stdout.split("\n").map(branch => branch.trim()).filter(Boolean)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (message.includes("not a git repository")) return []
@@ -51,15 +49,12 @@ async function listPreservedBranches(teamName: string, cwd: string): Promise<str
 
 async function branchExists(branch: string, cwd: string): Promise<boolean> {
   try {
-    const proc = Bun.spawn(["git", "branch", "--list", branch, "--format", "%(refname:short)"], { cwd, stdout: "pipe", stderr: "pipe" })
-    const out = await new Response(proc.stdout).text()
-    const stderr = await new Response(proc.stderr).text()
-    const exit = await proc.exited
-    if (exit !== 0) {
-      if (stderr.includes("not a git repository")) return false
-      throw new Error(stderr.trim() || `git branch exited with code ${exit}`)
+    const result = await runCommand(["git", "branch", "--list", branch, "--format", "%(refname:short)"], { cwd })
+    if (result.exitCode !== 0) {
+      if (result.stderr.includes("not a git repository")) return false
+      throw new Error(result.stderr.trim() || `git branch exited with code ${result.exitCode}`)
     }
-    return out.split("\n").map(item => item.trim()).includes(branch)
+    return result.stdout.split("\n").map(item => item.trim()).includes(branch)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (message.includes("not a git repository")) return false
