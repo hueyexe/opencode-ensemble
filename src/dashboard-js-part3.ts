@@ -85,10 +85,11 @@ document.addEventListener('keydown',function(e){
 document.getElementById('sel').addEventListener('change',function(){selId=this.value;render()});
 
 // Verbose toggle
-document.getElementById('vl').addEventListener('click',function(e){e.preventDefault();toggleVerbose()});
+document.getElementById('vb').addEventListener('click',function(){toggleVerbose()});
+document.getElementById('vb').addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();toggleVerbose()}});
 
 // Initialize toggle visual state
-(function(){var vt=document.getElementById('vt'),vtk=document.getElementById('vtk');if(vt&&vtk){vt.style.backgroundColor=verbose?'#3b82f6':'#2a3144';vtk.style.transform=verbose?'translateX(16px)':'translateX(0)';vtk.style.backgroundColor=verbose?'#fff':'#8a96aa'}})();
+(function(){var vt=document.getElementById('vt'),vtk=document.getElementById('vtk'),vb=document.getElementById('vb');if(vt&&vtk){vt.style.backgroundColor=verbose?'#3b82f6':'#2a3144';vtk.style.transform=verbose?'translateX(16px)':'translateX(0)';vtk.style.backgroundColor=verbose?'#fff':'#8a96aa'}if(vb)vb.setAttribute('aria-pressed',String(verbose));})();
 
 // Initial poll
 poll();

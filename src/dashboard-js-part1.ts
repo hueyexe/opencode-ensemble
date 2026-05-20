@@ -4,7 +4,7 @@ let S=null,selId=null,fails=0,pollT=Date.now(),prevMC=0,selCard=-1;
 let verbose=localStorage.getItem('ensemble-verbose')==='1';
 const expCards=new Set(),expMsgs=new Set();
 const E=s=>s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):'';
-function toggleVerbose(){verbose=!verbose;localStorage.setItem('ensemble-verbose',verbose?'1':'0');var vt=document.getElementById('vt'),vtk=document.getElementById('vtk');if(vt&&vtk){vt.style.backgroundColor=verbose?'#3b82f6':'#2a3144';vtk.style.transform=verbose?'translateX(16px)':'translateX(0)';vtk.style.backgroundColor=verbose?'#fff':'#8a96aa'}render()}
+function toggleVerbose(){verbose=!verbose;localStorage.setItem('ensemble-verbose',verbose?'1':'0');var vt=document.getElementById('vt'),vtk=document.getElementById('vtk'),vb=document.getElementById('vb');if(vt&&vtk){vt.style.backgroundColor=verbose?'#3b82f6':'#2a3144';vtk.style.transform=verbose?'translateX(16px)':'translateX(0)';vtk.style.backgroundColor=verbose?'#fff':'#8a96aa'}if(vb)vb.setAttribute('aria-pressed',String(verbose));render()}
 const D=ms=>{const s=Math.floor(Math.abs(ms)/1000);return s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'};
 const T=e=>new Date(e).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 function relT(ep){const ms=Date.now()-ep;if(ms<60000)return Math.floor(ms/1000)+'s ago';if(ms<3600000)return Math.floor(ms/60000)+'m ago';if(ms<86400000)return Math.floor(ms/3600000)+'h ago';return T(ep)}
@@ -117,7 +117,6 @@ function deriveSparkline(name,msgs){
   return '<svg class="inline-block text-blue-500/60" width="60" height="14" viewBox="0 0 60 14">'+bars+'</svg>';
 }
 
-function deriveVerboseLogs(name,msgs){return msgs.filter(function(m){return m.fromName===name||m.toName===name}).sort(function(a,b){return a.timeCreated-b.timeCreated})}
 function deriveTimeline(t){
   const ev=[];
   (t.members||[]).forEach(m=>{ev.push({t:m.timeCreated,type:'spawn',label:E(m.name)+' spawned',c:'bg-blue-400'});if(m.status==='shutdown')ev.push({t:m.timeUpdated,type:'off',label:E(m.name)+' shut down',c:'bg-txt-500'});if(m.status==='error')ev.push({t:m.timeUpdated,type:'err',label:E(m.name)+' error',c:'bg-red-500'})});

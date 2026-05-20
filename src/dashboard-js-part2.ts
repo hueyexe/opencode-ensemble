@@ -65,6 +65,7 @@ function rAgents(t){
   const el=document.getElementById('agents'),mm=t.members||[];
   if(!mm.length){patch(el,'<div class="col-span-full text-center py-12"><div class="text-txt-400 text-sm mb-1">No agents yet</div><div class="text-txt-500 text-[11px]">Spawn teammates with <code class="px-1 py-0.5 bg-base-900 rounded font-mono text-[10px]">team_spawn</code></div></div>');return}
   const n=Date.now(),msgs=t.messages||[],sorted=[...mm].sort((a,b)=>rankAgent(a,b,t));
+  const msgCounts={};if(verbose){msgs.forEach(function(x){if(x.fromName){msgCounts[x.fromName]=(msgCounts[x.fromName]||0)+1}})}
   const html=sorted.map((m,idx)=>{
     const s=si(m.status),task=activeTaskFor(m.name,t.tasks||[]),msg=lastMessageFor(m.name,msgs),blocked=blockedTaskFor(m.name,t.tasks||[]);
     const d=D(n-m.timeUpdated),mi=msg?relT(msg.timeCreated):'\\u2014';
@@ -73,7 +74,7 @@ function rAgents(t){
     const mp=msg?(msg.content.length>maxMsgLen?msg.content.slice(0,maxMsgLen)+'\\u2026':msg.content):'';
     const spark=deriveSparkline(m.name,msgs);
     const isSel=selCard===idx;
-    const verboseChips=verbose?chip('msgs '+(msgs.filter(function(x){return x.fromName===m.name}).length),'muted')+chip('updated '+d,'muted'):'';
+    const verboseChips=verbose?chip('msgs '+(msgCounts[m.name]||0),'muted')+chip('updated '+d,'muted'):'';
     return '<button type="button" class="text-left rounded-lg border '+s.c+' p-3 transition-all duration-300 cursor-pointer hover:border-base-600 focus-visible:border-blue-400'+(isSel?' card-sel':'')+'" data-card="'+E(m.name)+'" onclick="openDrawer(this.dataset.card)" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();openDrawer(this.dataset.card)}">'+
       '<div class="flex items-center gap-2">'+
         '<span class="w-[8px] h-[8px] rounded-full '+s.d+(m.status==='busy'?' pulse':'')+' shrink-0"></span>'+
@@ -154,7 +155,7 @@ function openDrawer(name){
   // Verbose interaction log
   if(verbose){
     h+='<div class="mt-4 pt-4 border-t border-base-800/50"><div class="text-txt-400 text-[10px] uppercase tracking-wider mb-3">Verbose Interaction Log <span class="text-txt-500 normal-case">(raw task results and tool calls)</span></div>';
-    var teamMsgs=(t.messages||[]).sort(function(a,b){return a.timeCreated-b.timeCreated});
+    var teamMsgs=[...(t.messages||[])].sort(function(a,b){return a.timeCreated-b.timeCreated});
     teamMsgs.forEach(function(tm){
       var tag='';
       if(tm.fromName===name)tag='<span class="text-blue-400">sent</span>';
@@ -244,7 +245,11 @@ function rActivity(t){
     const initial=m.fromName.charAt(0).toUpperCase();
     const avatarColor=m.fromName==='system'?'bg-amber-500/20 text-amber-400':isPeer?'bg-violet-500/20 text-violet-400':isFromAgent?'bg-blue-500/20 text-blue-400':'bg-emerald-500/20 text-emerald-400';
     const msgId=E(m.id);
-    html+='<div class="'+align+(isNew?' hl':'')+(verbose?'':' cursor-pointer')+'" role="button" tabindex="0" aria-expanded="'+(isExp?'true':'false')+'" data-msg="'+msgId+'" onclick="toggleMsg(this.dataset.msg)" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();toggleMsg(this.dataset.msg)}">';
+    if(verbose){
+      html+='<div class="'+align+(isNew?' hl':'')+'">';
+    }else{
+      html+='<div class="'+align+(isNew?' hl':'')+' cursor-pointer" role="button" tabindex="0" aria-expanded="'+(isExp?'true':'false')+'" data-msg="'+msgId+'" onclick="toggleMsg(this.dataset.msg)" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();toggleMsg(this.dataset.msg)}">';
+    }
     html+='<div class="flex items-start gap-2">';
     html+='<span class="w-5 h-5 rounded-full '+avatarColor+' flex items-center justify-center text-[9px] font-semibold shrink-0 mt-0.5">'+E(initial)+'</span>';
     html+='<div class="flex-1 min-w-0 rounded-xl border '+bubbleBg+' px-3 py-2">';

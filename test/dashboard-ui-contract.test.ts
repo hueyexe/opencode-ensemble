@@ -56,9 +56,10 @@ describe("dashboard UI contract", () => {
   })
 
   test("verbose toggle appears in header chrome", () => {
-    expect(DASHBOARD_HEAD).toContain('id="vl"')
+    expect(DASHBOARD_HEAD).toContain('id="vb"')
     expect(DASHBOARD_HEAD).toContain('id="vt"')
     expect(DASHBOARD_HEAD).toContain('id="vtk"')
+    expect(DASHBOARD_HEAD).toContain('aria-pressed')
     expect(DASHBOARD_HEAD).toContain("Toggle verbose mode")
   })
 

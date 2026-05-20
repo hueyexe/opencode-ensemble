@@ -51,10 +51,10 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 <select id="sel" class="bg-base-900 border border-base-700 rounded-md px-2 py-[3px] text-[11px] text-txt-200 font-mono outline-none cursor-pointer hover:border-base-600 transition-colors max-w-[180px] sm:max-w-[320px] min-w-0"></select>
 </div>
     <div class="flex items-center gap-2 sm:gap-4 shrink-0">
-<label class="flex items-center gap-1.5 cursor-pointer select-none" id="vl" title="Toggle verbose mode — show full message content, auto-expand details, raw interaction logs">
+<button type="button" class="flex items-center gap-1.5 cursor-pointer select-none bg-transparent border-0 p-0" id="vb" aria-pressed="false" title="Toggle verbose mode — show full message content, auto-expand details, raw interaction logs">
 <span class="text-[10px] text-txt-400 uppercase tracking-wider hidden sm:inline">Verbose</span>
-<div class="w-8 h-4 rounded-full bg-base-700 relative transition-colors duration-200" id="vt"><div class="w-3.5 h-3.5 rounded-full bg-txt-400 absolute top-[1px] left-[1px] transition-all duration-200" id="vtk"></div></div>
-</label>
+<div class="w-8 h-4 rounded-full bg-base-700 relative transition-colors duration-200 pointer-events-none" id="vt"><div class="w-3.5 h-3.5 rounded-full bg-txt-400 absolute top-[1px] left-[1px] transition-all duration-200 pointer-events-none" id="vtk"></div></div>
+</button>
 <div id="hring" class="w-6 h-6 rounded-full" title="Team health"></div>
 <div class="flex items-center gap-2">
 <span id="clk" class="text-[11px] text-txt-400 font-mono"></span>
