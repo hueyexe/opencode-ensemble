@@ -40,6 +40,7 @@ export interface PluginClient {
       workspaceID?: string
       directory?: string
     }): Promise<{ data?: { id: string } }>
+    messages(options: { sessionID: string; directory?: string }): Promise<{ data?: unknown }>
     promptAsync(options: {
       sessionID: string
       parts: Array<{ type: "text"; text: string }>

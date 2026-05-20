@@ -1,10 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { setupDb, insertTeam, insertMember } from "./helpers"
+import { setupDb, insertTeam, insertMember, mockClient } from "./helpers"
 import { startDashboard } from "../src/dashboard"
+import type { PluginClient } from "../src/types"
 
 function randomPort(): number {
   return 19000 + Math.floor(Math.random() * 10000)
+}
+
+function makeClient(): PluginClient & { calls: Array<{ method: string; args: unknown[] }> } {
+  return mockClient()
 }
 
 function insertTask(db: Database, teamId: string, id: string, content: string, status = "pending", priority = "medium", assignee: string | null = null, dependsOn: string | null = null) {
@@ -29,10 +34,12 @@ describe("dashboard", () => {
   let db: Database
   let port: number
   let server: Awaited<ReturnType<typeof startDashboard>>
+  let client: PluginClient & { calls: Array<{ method: string; args: unknown[] }> }
 
   beforeEach(() => {
     db = setupDb()
     port = randomPort()
+    client = makeClient()
   })
 
   afterEach(() => {
@@ -42,7 +49,7 @@ describe("dashboard", () => {
 
   describe("GET /api/health", () => {
     test("returns correct shape with ensemble: true", async () => {
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/health`)
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toContain("application/json")
@@ -55,7 +62,7 @@ describe("dashboard", () => {
 
   describe("GET /api/state", () => {
     test("returns empty teams array when no teams exist", async () => {
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state`)
       expect(res.status).toBe(200)
       expect(res.headers.get("access-control-allow-origin")).toBe("*")
@@ -69,7 +76,7 @@ describe("dashboard", () => {
       insertTask(db, "t1", "task-1", "Fix auth", "in_progress", "high", "alice")
       insertMessage(db, "t1", "msg-1", "alice", "lead", "Done with auth fix")
 
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state`)
       const body = (await res.json()) as StateResponse
 
@@ -85,6 +92,7 @@ describe("dashboard", () => {
       expect(team.members[0]!.name).toBe("alice")
       expect(team.members[0]!.agent).toBe("build")
       expect(team.members[0]!.status).toBe("busy")
+      expect(team.members[0]!.sessionId).toBe("sess-a")
       expect(team.members[0]!.executionStatus).toBe("running")
 
       expect(team.tasks).toHaveLength(1)
@@ -101,10 +109,21 @@ describe("dashboard", () => {
       expect(team.messages[0]!.content).toBe("Done with auth fix")
     })
 
+      test("returns member sessionId in state", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+
+      server = await startDashboard(db, port, client)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+
+      expect(body.teams[0]!.members[0]!.sessionId).toBe("sess-a")
+    })
+
     test("returns archived teams", async () => {
       insertTeam(db, "t1", "old-team", "lead-sess", "archived")
 
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state`)
       const body = (await res.json()) as StateResponse
 
@@ -118,7 +137,7 @@ describe("dashboard", () => {
         insertMessage(db, "t1", `msg-${i}`, "alice", "lead", `Message ${i}`)
       }
 
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state`)
       const body = (await res.json()) as StateResponse
 
@@ -131,7 +150,7 @@ describe("dashboard", () => {
         insertMessage(db, "t1", `msg-${i}`, "alice", "lead", `Message ${i}`)
       }
 
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state?verbose=1`)
       const body = (await res.json()) as StateResponse
 
@@ -142,7 +161,7 @@ describe("dashboard", () => {
       insertTeam(db, "t1", "alpha", "lead-1")
       insertTeam(db, "t2", "beta", "lead-2")
 
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state`)
       const body = (await res.json()) as StateResponse
 
@@ -154,7 +173,7 @@ describe("dashboard", () => {
       insertTask(db, "t1", "task-1", "Prepare dashboard contracts", "completed", "high")
       insertTask(db, "t1", "task-2", "Run final verification", "blocked", "high", null, JSON.stringify(["task-1"]))
 
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/api/state`)
       const body = (await res.json()) as StateResponse
 
@@ -164,7 +183,7 @@ describe("dashboard", () => {
 
   describe("GET /", () => {
     test("returns HTML content-type", async () => {
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/`)
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toContain("text/html")
@@ -180,9 +199,36 @@ describe("dashboard", () => {
     })
   })
 
+  describe("GET /api/session/:sessionId/messages", () => {
+    test("returns empty messages from SDK", async () => {
+      server = await startDashboard(db, port, client)
+      const res = await fetch(`http://localhost:${port}/api/session/sess-1/messages`)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toEqual({ data: [] })
+    })
+
+    test("returns 500 when SDK call fails", async () => {
+      const failingClient = {
+        ...client,
+        session: {
+          ...client.session,
+          async messages() {
+            throw new Error("SDK error")
+          },
+        },
+      }
+      server = await startDashboard(db, port, failingClient as unknown as PluginClient)
+      const res = await fetch(`http://localhost:${port}/api/session/sess-1/messages`)
+      expect(res.status).toBe(500)
+      const body = await res.json()
+      expect(body.error).toBe("SDK error")
+    })
+  })
+
   describe("unknown routes", () => {
     test("returns 404", async () => {
-      server = await startDashboard(db, port)
+      server = await startDashboard(db, port, client)
       const res = await fetch(`http://localhost:${port}/nope`)
       expect(res.status).toBe(404)
     })

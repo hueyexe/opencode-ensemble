@@ -4,6 +4,7 @@ import { DASHBOARD_JS_PART1 } from "./dashboard-js-part1"
 import { DASHBOARD_JS_PART2 } from "./dashboard-js-part2"
 import { DASHBOARD_JS_PART3 } from "./dashboard-js-part3"
 import { log } from "./log"
+import type { PluginClient } from "./types"
 
 /** Assemble the full dashboard HTML from parts. */
 const DASHBOARD_HTML = DASHBOARD_HEAD + "\n<script>" + DASHBOARD_JS_PART1 + DASHBOARD_JS_PART2 + DASHBOARD_JS_PART3 + "<\/script>\n</body></html>"
@@ -20,6 +21,7 @@ interface TeamRow {
 interface MemberRow {
   name: string
   agent: string
+  session_id: string | null
   status: string
   execution_status: string
   worktree_branch: string | null
@@ -76,7 +78,7 @@ function parseDependsOn(value: string | null): string[] {
 function buildState(db: Database, verbose?: boolean): { teams: unknown[] } {
   const msgLimit = verbose ? 200 : 50
   const teams = db.query("SELECT id, name, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
-  const memberStmt = db.query("SELECT name, agent, status, execution_status, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
+  const memberStmt = db.query("SELECT name, agent, session_id, status, execution_status, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
   const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
   const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT ?")
 
@@ -91,6 +93,7 @@ function buildState(db: Database, verbose?: boolean): { teams: unknown[] } {
       members: (memberStmt.all(t.id) as MemberRow[]).map((m) => ({
         name: m.name,
         agent: m.agent,
+        sessionId: m.session_id,
         status: m.status,
         executionStatus: m.execution_status,
         worktreeBranch: m.worktree_branch,
@@ -129,7 +132,7 @@ function buildState(db: Database, verbose?: boolean): { teams: unknown[] } {
  * Singleton: if the port is already in use by another ensemble instance, skips silently.
  * Returns the server instance, or null if skipped.
  */
-export async function startDashboard(db: Database, port: number): Promise<ReturnType<typeof Bun.serve> | null> {
+export async function startDashboard(db: Database, port: number, client: PluginClient): Promise<ReturnType<typeof Bun.serve> | null> {
   try {
     const server = Bun.serve({
       port,
@@ -143,6 +146,16 @@ export async function startDashboard(db: Database, port: number): Promise<Return
         if (url.pathname === "/api/state") {
           const verbose = url.searchParams.get("verbose") === "1"
           return jsonResponse(buildState(db, verbose))
+        }
+
+        if (url.pathname.startsWith("/api/session/") && url.pathname.endsWith("/messages")) {
+          const sessionId = url.pathname.split("/")[3]
+          if (!sessionId) return new Response("Bad Request", { status: 400 })
+          return client.session.messages({ sessionID: sessionId }).then((result) => {
+            return jsonResponse(result)
+          }).catch((err) => {
+            return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500)
+          })
         }
 
         if (url.pathname === "/") {

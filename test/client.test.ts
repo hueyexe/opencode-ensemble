@@ -10,6 +10,7 @@ function fakeSDK(overrides: Record<string, unknown> = {}) {
       promptAsync: overrides["session.promptAsync"] ?? (async () => ({ data: {} })),
       abort: overrides["session.abort"] ?? (async () => ({ data: {} })),
       status: overrides["session.status"] ?? (async () => ({ data: {} })),
+      messages: overrides["session.messages"] ?? (async () => ({ data: [] })),
     },
     tui: {
       showToast: overrides["tui.showToast"] ?? (async () => ({ data: {} })),
@@ -58,6 +59,7 @@ describe("wrapThrowingClient", () => {
     expect(typeof client.session.promptAsync).toBe("function")
     expect(typeof client.session.abort).toBe("function")
     expect(typeof client.session.status).toBe("function")
+    expect(typeof client.session.messages).toBe("function")
   })
 
   test("wraps all worktree methods", async () => {

@@ -115,4 +115,15 @@ describe("dashboard UI contract", () => {
   test("agent cards do not dim operational text with whole-card opacity", () => {
     expect(DASHBOARD_JS_PART2).not.toContain("opacity-50")
   })
+
+  test("session conversation render helpers are defined", () => {
+    expect(DASHBOARD_JS_PART2).toContain("function renderSessionConvo")
+    expect(DASHBOARD_JS_PART2).toContain("function fetchSessionConvo")
+    expect(DASHBOARD_JS_PART2).toContain("Session Conversation")
+    expect(DASHBOARD_JS_PART2).toContain("full agent thinking, tool calls, reasoning")
+  })
+
+  test("sessionId field appears in member data rendering", () => {
+    expect(DASHBOARD_JS_PART2).toContain("m.sessionId")
+  })
 })

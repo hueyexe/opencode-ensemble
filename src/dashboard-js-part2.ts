@@ -168,6 +168,11 @@ function openDrawer(name){
     });
     h+='</div>';
   }
+  // Session conversation (verbose mode only)
+  if(verbose&&m.sessionId){
+    var scId='sc-'+E(m.name);
+    h+='<div class="mt-4 pt-4 border-t border-base-800/50"><div class="text-txt-400 text-[10px] uppercase tracking-wider mb-3">Session Conversation <span class="text-txt-500 normal-case">(full agent thinking, tool calls, reasoning)</span></div><div id="'+scId+'"><div class="text-txt-500 text-[12px]">Loading...</div></div></div>';
+  }
   var drawer=document.getElementById('drawer');
   drawer.innerHTML=h;
   drawer.classList.add('open');
@@ -176,6 +181,68 @@ function openDrawer(name){
   setBackgroundInert(true);
   drawer.focus();
   document.getElementById('drawer-bg').classList.add('open');
+  // Fetch session conversation after drawer is rendered
+  if(verbose&&m.sessionId){
+    fetchSessionConvo(m.sessionId,'sc-'+E(m.name));
+  }
+}
+
+function renderSessionConvo(msgs){
+  if(!msgs||!msgs.length) return '<div class="text-txt-500 text-[12px]">No conversation history available</div>';
+  return msgs.map(function(m){
+    var isUser=m.info.role==='user';
+    var align=isUser?'mr-6':'ml-6';
+    var bubbleBg=isUser?'bg-emerald-500/[0.06] border-emerald-500/15':'bg-violet-500/[0.06] border-violet-500/15';
+    var label=isUser?'Prompt':'Response';
+    if(m.info.agent) label+=' ('+E(m.info.agent)+')';
+    var partsHtml='';
+    if(m.parts&&m.parts.length){
+      partsHtml=m.parts.map(function(p){
+        if(p.type==='text') return '<div class="text-[12px] text-txt-300 md mt-1">'+(p.text?md(p.text):'')+'</div>';
+        if(p.type==='reasoning') return '<details class="mt-1"><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">Reasoning</summary><pre class="mt-1 text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto whitespace-pre-wrap">'+(p.text?E(p.text):'')+'</pre></details>';
+        if(p.type==='step-start') return '<div class="text-[11px] text-txt-500 mt-1 italic">Step: '+E(p.label||p.step||'')+'</div>';
+        if(p.type==='step-finish') return '<div class="text-[11px] text-txt-500 mt-1 italic">Completed: '+E(p.label||'')+'</div>';
+        if(p.type==='tool'){
+          var st=p.state||{};
+          var pn=p.tool||'tool';
+          var ps=st.status||'called';
+          var pi=st.input||'';
+          var pr=st.output||st.error||'';
+          var pd='';
+          if(pi) pd+='<div class="text-[10px] text-txt-500 mt-1">Input:</div><pre class="text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto whitespace-pre-wrap">'+E(typeof pi==='string'?pi:JSON.stringify(pi,null,2))+'</pre>';
+          if(pr) pd+='<div class="text-[10px] text-txt-500 mt-1">Result:</div><pre class="text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto whitespace-pre-wrap">'+E(typeof pr==='string'?pr:JSON.stringify(pr,null,2))+'</pre>';
+          return '<details class="mt-1"><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">Tool: '+E(pn)+' ('+ps+')</summary>'+pd+'</details>';
+        }
+        if(p.type==='file'){
+          var fp=p.path||p.name||'';
+          var fc=p.content||p.diff||'';
+          return '<details class="mt-1"><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">File: '+E(fp)+'</summary><pre class="mt-1 text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto whitespace-pre-wrap">'+E(fc)+'</pre></details>';
+        }
+        return '';
+      }).join('');
+    }
+    var meta='';
+    if(m.info.time) meta+=chip(T(m.info.time),'muted');
+    if(m.info.modelID) meta+=chip(E(m.info.modelID),'muted');
+    if(m.info.finish) meta+=chip(E(m.info.finish),m.info.finish==='stop'?'green':'muted');
+    if(m.info.tokens) meta+=chip('in:'+(m.info.tokens.input||0)+' out:'+(m.info.tokens.output||0),'muted');
+    return '<div class="mb-3 '+align+'"><div class="rounded-xl border '+bubbleBg+' p-3"><div class="flex items-center gap-1.5 mb-1.5 flex-wrap"><span class="text-[10px] font-medium '+(isUser?'text-emerald-400':'text-violet-400')+'">'+label+'</span>'+meta+'</div>'+partsHtml+'</div></div>';
+  }).join('');
+}
+
+async function fetchSessionConvo(sessionId,containerId){
+  var el=document.getElementById(containerId);
+  if(!el) return;
+  el.innerHTML='<div class="text-txt-500 text-[12px]">Loading session conversation...</div>';
+  try{
+    var res=await fetch('/api/session/'+encodeURIComponent(sessionId)+'/messages');
+    if(!res.ok){el.innerHTML='<div class="text-red-400 text-[12px]">Failed to load session conversation (HTTP '+res.status+')</div>';return}
+    var body=await res.json();
+    var msgs=body&&body.data?body.data:[];
+    el.innerHTML=renderSessionConvo(msgs);
+  }catch(e){
+    el.innerHTML='<div class="text-txt-500 text-[12px]">Could not load session conversation</div>';
+  }
 }
 
 function closeDrawer(){

@@ -22,7 +22,7 @@ function throwing(fn: SdkMethod): SdkMethod {
 
 /** Shape of the raw v2 SDK client — just the methods we wrap. */
 interface RawClient {
-  session: { create: SdkMethod; promptAsync: SdkMethod; abort: SdkMethod; status: SdkMethod }
+  session: { create: SdkMethod; promptAsync: SdkMethod; abort: SdkMethod; status: SdkMethod; messages: SdkMethod }
   tui: { showToast: SdkMethod; selectSession: SdkMethod }
   worktree: { create: SdkMethod; remove: SdkMethod; list: SdkMethod; reset: SdkMethod }
   experimental: { workspace: { create: SdkMethod; remove: SdkMethod; list: SdkMethod } }
@@ -40,6 +40,7 @@ export function wrapThrowingClient(raw: unknown): PluginClient {
       promptAsync: throwing(r.session.promptAsync.bind(r.session)),
       abort: throwing(r.session.abort.bind(r.session)),
       status: throwing(r.session.status.bind(r.session)),
+      messages: throwing(r.session.messages.bind(r.session)),
     },
     tui: {
       showToast: throwing(r.tui.showToast.bind(r.tui)),
