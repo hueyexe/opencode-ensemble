@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
 import { MemberRegistry, DescendantTracker } from "../src/state"
-import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember } from "../src/hooks"
+import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "../src/hooks"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
 import { sendMessage } from "../src/messaging"
@@ -602,5 +602,79 @@ describe("buildTeamCompactionContext — completion requirement", () => {
   test("lead compaction context does NOT include reporting requirement", () => {
     const ctx = buildTeamCompactionContext(db, "t1", "lead")
     expect(ctx).not.toContain("before stopping")
+  })
+})
+
+describe("handleSessionErrorEvent", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+    registry.register("t1", "scout", "scout-sess")
+  })
+
+  test("posts a system message to the lead when a known member errors", () => {
+    handleSessionErrorEvent(db, registry, "scout-sess", {
+      name: "UnknownError",
+      data: { message: "Tool team_message failed: This session is not in a team." },
+    })
+
+    const msgs = db.query(
+      "SELECT from_name, to_name, content FROM team_message WHERE team_id = ?"
+    ).all("t1") as Array<{ from_name: string; to_name: string; content: string }>
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]?.from_name).toBe("system")
+    expect(msgs[0]?.to_name).toBe("lead")
+    expect(msgs[0]?.content).toContain("scout")
+    expect(msgs[0]?.content).toContain("Tool team_message failed")
+  })
+
+  test("uses error.name as fallback when data.message is missing", () => {
+    handleSessionErrorEvent(db, registry, "scout-sess", { name: "ProviderAuthError" })
+
+    const msgs = db.query("SELECT content FROM team_message WHERE team_id = ?")
+      .all("t1") as Array<{ content: string }>
+    expect(msgs[0]?.content).toContain("ProviderAuthError")
+  })
+
+  test("uses 'unknown error' when error is undefined", () => {
+    handleSessionErrorEvent(db, registry, "scout-sess", undefined)
+
+    const msgs = db.query("SELECT content FROM team_message WHERE team_id = ?")
+      .all("t1") as Array<{ content: string }>
+    expect(msgs[0]?.content).toContain("unknown error")
+  })
+
+  test("ignores errors for unknown sessions (not in registry)", () => {
+    handleSessionErrorEvent(db, registry, "stranger-sess", {
+      name: "UnknownError",
+      data: { message: "boom" },
+    })
+
+    const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
+    expect(msgs).toHaveLength(0)
+  })
+
+  test("ignores undefined sessionID", () => {
+    handleSessionErrorEvent(db, registry, undefined, { name: "UnknownError", data: { message: "boom" } })
+
+    const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
+    expect(msgs).toHaveLength(0)
+  })
+
+  test("does not post a duplicate message for the lead — leads are not in registry", () => {
+    // The lead's session is NOT in the registry (leads are looked up via SQLite).
+    // A session.error for the lead's session should not produce a teammate-error message.
+    handleSessionErrorEvent(db, registry, "lead-sess", {
+      name: "UnknownError",
+      data: { message: "boom" },
+    })
+
+    const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
+    expect(msgs).toHaveLength(0)
   })
 })

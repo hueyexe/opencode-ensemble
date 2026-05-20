@@ -1,5 +1,6 @@
 import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker } from "./state"
+import { sendMessage } from "./messaging"
 
 const TEAM_TOOL_PREFIX = "team_"
 
@@ -126,4 +127,37 @@ export function shouldNudgeIdleMember(db: Database, teamId: string, memberName: 
   const msg = db.query("SELECT id FROM team_message WHERE team_id = ? AND from_name = ? AND (to_name = 'lead' OR to_name IS NULL) LIMIT 1")
     .get(teamId, memberName) as { id: string } | null
   return !msg
+}
+
+/** Shape of an error attached to a session.error event. Subset of the SDK's union. */
+export interface SessionErrorPayload {
+  name?: string
+  data?: { message?: string }
+}
+
+/**
+ * Handle a session.error event. Surfaces tool/model failures from a teammate
+ * as a system message to the lead, so otherwise-silent failures are visible.
+ *
+ * Ignored when:
+ * - sessionID is undefined
+ * - the session is not a registered teammate (leads are not in the registry)
+ */
+export function handleSessionErrorEvent(
+  db: Database,
+  registry: MemberRegistry,
+  sessionId: string | undefined,
+  error: SessionErrorPayload | undefined,
+): void {
+  if (!sessionId) return
+  const entry = registry.getBySession(sessionId)
+  if (!entry) return
+
+  const errMsg = error?.data?.message ?? error?.name ?? "unknown error"
+  sendMessage(db, {
+    teamId: entry.teamId,
+    from: "system",
+    to: "lead",
+    content: `Teammate "${entry.memberName}" had a session error: ${errMsg}. Check their session for details. They may be stuck and need investigation or shutdown.`,
+  })
 }

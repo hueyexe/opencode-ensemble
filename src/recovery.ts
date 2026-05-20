@@ -147,6 +147,30 @@ export async function recoverUndeliveredMessages(
 }
 
 /**
+ * Repopulate the in-memory MemberRegistry from SQLite for all active members.
+ * MUST be called on every plugin init — the registry is in-memory only,
+ * and without rehydration, every team_* tool call from an existing
+ * teammate fails with "This session is not in a team." after a plugin restart.
+ *
+ * Skips members in terminal states (shutdown, error) — they should not
+ * receive future messages.
+ *
+ * Returns the number of members rehydrated.
+ */
+export function rehydrateRegistry(db: Database, registry: MemberRegistry): number {
+  const members = db.query(
+    `SELECT tm.team_id, tm.name, tm.session_id
+     FROM team_member tm
+     JOIN team t ON tm.team_id = t.id
+     WHERE t.status = 'active' AND tm.status NOT IN ('shutdown', 'error')`
+  ).all() as Array<{ team_id: string; name: string; session_id: string }>
+  for (const m of members) {
+    registry.register(m.team_id, m.name, m.session_id)
+  }
+  return members.length
+}
+
+/**
  * Clean up orphaned ensemble/preserved/* branches that belong to archived teams
  * with no active members. Scoped carefully to avoid interfering with other
  * running OpenCode sessions that may have active teams.

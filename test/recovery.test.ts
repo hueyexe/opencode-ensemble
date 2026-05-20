@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { applyMigrations } from "../src/schema"
-import { recoverStaleMembers, recoverUndeliveredMessages } from "../src/recovery"
+import { recoverStaleMembers, recoverUndeliveredMessages, rehydrateRegistry } from "../src/recovery"
 import type { PluginClient } from "../src/types"
 import { MemberRegistry } from "../src/state"
 import { sendMessage, broadcastMessage } from "../src/messaging"
@@ -380,5 +380,97 @@ describe("recoverOrphanedWorktrees", () => {
     const { recoverOrphanedWorktrees } = await import("../src/recovery")
     const result = await recoverOrphanedWorktrees(db, client)
     expect(result.removed).toBe(1) // second one succeeded
+  })
+})
+
+describe("rehydrateRegistry", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("rehydrates an idle (ready) member from SQLite — the desktop bug", () => {
+    // This is the exact scenario from the production bug:
+    // a teammate exists in SQLite at status='ready' from a previous plugin
+    // lifetime, the plugin restarts, the registry is empty. Without
+    // rehydration, the teammate's team_* tool calls fail with "This
+    // session is not in a team."
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "ready", "idle")
+
+    const count = rehydrateRegistry(db, registry)
+
+    expect(count).toBe(1)
+    const entry = registry.getBySession("scout-sess")
+    expect(entry?.memberName).toBe("scout")
+    expect(entry?.teamId).toBe("t1")
+  })
+
+  test("rehydrates a busy member (not just ready ones)", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+
+    const count = rehydrateRegistry(db, registry)
+
+    expect(count).toBe(1)
+    expect(registry.getBySession("scout-sess")?.memberName).toBe("scout")
+  })
+
+  test("skips members in terminal states (shutdown, error)", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "shutdown", "completed")
+    insertMember(db, "t1", "bob", "bob-sess", "error", "failed")
+    insertMember(db, "t1", "carol", "carol-sess", "ready", "idle")
+
+    const count = rehydrateRegistry(db, registry)
+
+    expect(count).toBe(1)
+    expect(registry.getBySession("alice-sess")).toBeUndefined()
+    expect(registry.getBySession("bob-sess")).toBeUndefined()
+    expect(registry.getBySession("carol-sess")?.memberName).toBe("carol")
+  })
+
+  test("skips members in archived teams", () => {
+    db.run(
+      "INSERT INTO team (id, name, lead_session_id, status, delegate, time_created, time_updated) VALUES (?, ?, ?, 'archived', 0, ?, ?)",
+      ["t1", "old", "lead-sess", Date.now(), Date.now()]
+    )
+    insertMember(db, "t1", "scout", "scout-sess", "ready", "idle")
+
+    const count = rehydrateRegistry(db, registry)
+
+    expect(count).toBe(0)
+    expect(registry.getBySession("scout-sess")).toBeUndefined()
+  })
+
+  test("returns 0 when no active teams exist", () => {
+    expect(rehydrateRegistry(db, registry)).toBe(0)
+  })
+
+  test("rehydrates members from multiple active teams", () => {
+    insertTeam(db, "t1", "alpha", "lead-1")
+    insertTeam(db, "t2", "beta", "lead-2")
+    insertMember(db, "t1", "scout", "scout-sess", "ready", "idle")
+    insertMember(db, "t2", "ranger", "ranger-sess", "busy", "running")
+
+    const count = rehydrateRegistry(db, registry)
+
+    expect(count).toBe(2)
+    expect(registry.getBySession("scout-sess")?.teamId).toBe("t1")
+    expect(registry.getBySession("ranger-sess")?.teamId).toBe("t2")
+  })
+
+  test("is idempotent — running twice does not duplicate or error", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "ready", "idle")
+
+    rehydrateRegistry(db, registry)
+    const count = rehydrateRegistry(db, registry)
+
+    expect(count).toBe(1)
+    expect(registry.getBySession("scout-sess")?.memberName).toBe("scout")
   })
 })
