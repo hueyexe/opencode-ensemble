@@ -15,7 +15,7 @@ function conn(ok){
   document.getElementById('ct').textContent=ok?D(Date.now()-pollT)+' ago':'reconnecting to dashboard state';
 }
 
-async function poll(){try{S=await(await fetch('/api/state')).json();fails=0;pollT=Date.now();conn(true);render()}catch{if(++fails>=3)conn(false)}}
+async function poll(){try{var url='/api/state'+(verbose?'?verbose=1':'');S=await(await fetch(url)).json();fails=0;pollT=Date.now();conn(true);render()}catch{if(++fails>=3)conn(false)}}
 
 function setBackgroundInert(locked){
   document.querySelectorAll('header,main,#sum,#tl').forEach(function(el){
@@ -72,6 +72,7 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){closeDrawer();expMsgs.clear();selCard=-1;closeShortcuts();render();return}
   if(e.key==='j'&&mm.length){e.preventDefault();selCard=Math.min(selCard+1,mm.length-1);render();return}
   if(e.key==='k'&&mm.length){e.preventDefault();selCard=Math.max(selCard-1,0);render();return}
+  if(e.key==='v'&&!e.ctrlKey&&!e.metaKey){e.preventDefault();toggleVerbose();return}
   if(e.key==='Enter'&&selCard>=0&&selCard<mm.length){e.preventDefault();openDrawer(mm[selCard].name);return}
   if(e.key>='1'&&e.key<='9'){
     var teams=allTeams(),all=[...teams.active,...teams.archived];
@@ -82,6 +83,12 @@ document.addEventListener('keydown',function(e){
 
 // Select handler
 document.getElementById('sel').addEventListener('change',function(){selId=this.value;render()});
+
+// Verbose toggle
+document.getElementById('vl').addEventListener('click',function(e){e.preventDefault();toggleVerbose()});
+
+// Initialize toggle visual state
+(function(){var vt=document.getElementById('vt'),vtk=document.getElementById('vtk');if(vt&&vtk){vt.style.backgroundColor=verbose?'#3b82f6':'#2a3144';vtk.style.transform=verbose?'translateX(16px)':'translateX(0)';vtk.style.backgroundColor=verbose?'#fff':'#8a96aa'}})();
 
 // Initial poll
 poll();

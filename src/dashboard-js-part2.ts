@@ -69,9 +69,11 @@ function rAgents(t){
     const s=si(m.status),task=activeTaskFor(m.name,t.tasks||[]),msg=lastMessageFor(m.name,msgs),blocked=blockedTaskFor(m.name,t.tasks||[]);
     const d=D(n-m.timeUpdated),mi=msg?relT(msg.timeCreated):'\\u2014';
     const tt=task?.content,tr=tt&&tt.length>90?tt.slice(0,90)+'\\u2026':tt;
-    const mp=msg?(msg.content.length>90?msg.content.slice(0,90)+'\\u2026':msg.content):'';
+    const maxMsgLen=verbose?500:90;
+    const mp=msg?(msg.content.length>maxMsgLen?msg.content.slice(0,maxMsgLen)+'\\u2026':msg.content):'';
     const spark=deriveSparkline(m.name,msgs);
     const isSel=selCard===idx;
+    const verboseChips=verbose?chip('msgs '+(msgs.filter(function(x){return x.fromName===m.name}).length),'muted')+chip('updated '+d,'muted'):'';
     return '<button type="button" class="text-left rounded-lg border '+s.c+' p-3 transition-all duration-300 cursor-pointer hover:border-base-600 focus-visible:border-blue-400'+(isSel?' card-sel':'')+'" data-card="'+E(m.name)+'" onclick="openDrawer(this.dataset.card)" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();openDrawer(this.dataset.card)}">'+
       '<div class="flex items-center gap-2">'+
         '<span class="w-[8px] h-[8px] rounded-full '+s.d+(m.status==='busy'?' pulse':'')+' shrink-0"></span>'+
@@ -81,11 +83,11 @@ function rAgents(t){
         '<span class="text-[10px] text-txt-500 ml-auto shrink-0">'+E(m.agent)+'</span>'+
         (m.model?chip(E(m.model),'muted'):'')+
       '</div>'+
-      (tr?'<div class="mt-2 text-[13px] text-txt-200 leading-snug truncate">'+(blocked?'<span class="text-amber-400">Blocked: </span>':'Current task: ')+E(tr)+'</div>':'<div class="mt-2 text-[13px] text-txt-500 leading-snug">No active task</div>')+
-      (mp?'<div class="mt-1 text-[12px] text-txt-400 truncate">Latest: '+E(mp)+'</div>':'')+
+      (tr?'<div class="mt-2 text-[13px] text-txt-200 leading-snug '+(verbose?'':'truncate')+'">'+(blocked?'<span class="text-amber-400">Blocked: </span>':'Current task: ')+E(tr)+'</div>':'<div class="mt-2 text-[13px] text-txt-500 leading-snug">No active task</div>')+
+      (mp?'<div class="mt-1 text-[12px] text-txt-400 '+(verbose?'':'truncate')+'">Latest: '+E(mp)+'</div>':'')+
       '<div class="mt-2 flex items-center gap-1.5 flex-wrap">'+
         chip('status '+d,'muted')+chip('msg '+mi,'muted')+chip(E(m.executionStatus||m.status),m.status==='busy'?'blue':m.status==='error'?'red':'muted')+
-        (m.worktreeBranch?chip(E(m.worktreeBranch),'muted'):'')+
+        (m.worktreeBranch?chip(E(m.worktreeBranch),'muted'):'')+verboseChips+
       '</div></button>';
   }).join('');
   patch(el,html);
@@ -98,7 +100,7 @@ function openDrawer(name){
   var h='';
   // Header
   h+='<div class="flex items-center justify-between mb-4">';
-  h+='<div class="flex items-center gap-2"><span class="w-[10px] h-[10px] rounded-full '+s.d+(m.status==='busy'?' pulse':'')+'"></span><h2 id="drawer-title" class="font-mono font-semibold text-[16px]">'+E(m.name)+'</h2><span class="text-[11px] px-2 py-[2px] rounded '+s.t+' bg-base-800/80">'+s.l+'</span></div>';
+  h+='<div class="flex items-center gap-2"><span class="w-[10px] h-[10px] rounded-full '+s.d+(m.status==='busy'?' pulse':'')+'"></span><h2 id="drawer-title" class="font-mono font-semibold text-[16px]">'+E(m.name)+'</h2><span class="text-[11px] px-2 py-[2px] rounded '+s.t+' bg-base-800/80">'+s.l+'</span>'+(verbose?'<span class="text-[10px] px-1.5 py-[1px] rounded bg-blue-500/15 text-blue-400 border border-blue-500/20">verbose</span>':'')+'</div>';
   h+='<button id="drawer-close" aria-label="Close agent detail" onclick="closeDrawer()" class="text-txt-500 hover:text-txt-200 transition-colors p-1"><svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>';
   h+='</div>';
   // Meta chips
@@ -109,6 +111,7 @@ function openDrawer(name){
   if(m.planApproval&&m.planApproval!=='none')meta.push(chip(E(m.planApproval),m.planApproval==='approved'?'green':m.planApproval==='rejected'?'red':'amber'));
   meta.push(chip('spawned '+relT(m.timeCreated),'muted'));
   if(m.worktreeBranch)meta.push(chip(E(m.worktreeBranch),'muted'));
+  if(verbose){var vlogs=t.messages||[];meta.push(chip('total msgs: '+vlogs.length,'blue'));meta.push(chip('from agent: '+vlogs.filter(function(x){return x.fromName===name}).length,'blue'))}
   h+='<div class="flex flex-wrap gap-1.5 mb-4 pb-4 border-b border-base-800/50">'+meta.join('')+'</div>';
   // Prompt
   if(m.prompt){
@@ -140,11 +143,29 @@ function openDrawer(name){
       if(p){
         h+='<div class="mb-1">'+chip(E(p.status),p.status==='completed'?'green':'red')+' <span class="text-[13px] text-txt-200 font-medium">'+E(p.summary)+'</span></div>';
         if(p.details)h+='<div class="text-[12px] text-txt-300 md mt-2">'+md(p.details)+'</div>';
+        if(verbose&&p.details)h+='<details class="mt-2" open><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">Raw content</summary><pre class="mt-1 text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto">'+E(am.content)+'</pre></details>';
       }else{
-        h+='<div class="text-[12px] text-txt-300 md">'+md(am.content)+'</div>';
+        if(verbose){h+='<div class="text-[12px] text-txt-300 md">'+md(am.content)+'</div>';h+='<details class="mt-1" open><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">Raw</summary><pre class="mt-1 text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto">'+E(am.content)+'</pre></details>'}
+        else{h+='<div class="text-[12px] text-txt-300 md">'+md(am.content)+'</div>'}
       }
       h+='</div></div>';
     });
+  }
+  // Verbose interaction log
+  if(verbose){
+    h+='<div class="mt-4 pt-4 border-t border-base-800/50"><div class="text-txt-400 text-[10px] uppercase tracking-wider mb-3">Verbose Interaction Log <span class="text-txt-500 normal-case">(raw task results and tool calls)</span></div>';
+    var teamMsgs=(t.messages||[]).sort(function(a,b){return a.timeCreated-b.timeCreated});
+    teamMsgs.forEach(function(tm){
+      var tag='';
+      if(tm.fromName===name)tag='<span class="text-blue-400">sent</span>';
+      else if(tm.toName===name)tag='<span class="text-emerald-400">received</span>';
+      else tag='<span class="text-txt-500">other</span>';
+      h+='<div class="mb-3 bg-base-900/50 rounded-lg p-3 border border-base-800/30">';
+      h+='<div class="flex items-center gap-1.5 mb-1.5"><span class="text-[10px] font-medium text-txt-300">'+E(tm.fromName)+'</span>'+chip(relT(tm.timeCreated),'muted')+tag+'</div>';
+      h+='<pre class="text-[11px] text-txt-400 whitespace-pre-wrap break-words bg-base-950 rounded p-2 max-h-[200px] overflow-y-auto">'+E(tm.content)+'</pre>';
+      h+='</div>';
+    });
+    h+='</div>';
   }
   var drawer=document.getElementById('drawer');
   drawer.innerHTML=h;
@@ -208,11 +229,12 @@ function rActivity(t){
   if(!msgs.length){patch(el,'<div class="text-txt-500 text-sm py-6 text-center">Waiting for agent messages...</div>');return}
   const sp=saveSc(el);
   const newCount=msgs.length,hasNew=newCount>prevMC&&prevMC>0;
-  let html='<div class="flex items-center gap-2 mb-3"><span class="text-[11px] text-txt-300 font-semibold uppercase tracking-wider">Activity feed</span>'+chip(msgs.length+' msgs','muted')+'</div>';
+  const maxShow=verbose?msgs.length:30;
+  let html='<div class="flex items-center gap-2 mb-3"><span class="text-[11px] text-txt-300 font-semibold uppercase tracking-wider">Activity feed</span>'+chip(msgs.length+' msgs','muted')+(verbose?chip('verbose','blue'):'')+'</div>';
   html+='<div class="max-h-[50vh] overflow-y-auto scroll space-y-2">';
-  msgs.slice(0,30).forEach(function(m,mi){
+  msgs.slice(0,maxShow).forEach(function(m,mi){
     const isNew=hasNew&&mi<(newCount-prevMC);
-    const isExp=expMsgs.has(m.id);
+    const isExp=verbose||expMsgs.has(m.id);
     const p=parseR(m.content);
     const deliv=m.delivered?(m.read?'\\u2713\\u2713':'\\u2713'):'';
     const isFromAgent=m.fromName!=='lead'&&m.fromName!=='system';
@@ -221,7 +243,8 @@ function rActivity(t){
     const bubbleBg=isPeer?'bg-violet-500/[0.06] border-violet-500/15':isFromAgent?'bg-blue-500/[0.06] border-blue-500/15':'bg-base-800/40 border-base-700/30';
     const initial=m.fromName.charAt(0).toUpperCase();
     const avatarColor=m.fromName==='system'?'bg-amber-500/20 text-amber-400':isPeer?'bg-violet-500/20 text-violet-400':isFromAgent?'bg-blue-500/20 text-blue-400':'bg-emerald-500/20 text-emerald-400';
-    html+='<div class="'+align+(isNew?' hl':'')+' cursor-pointer" role="button" tabindex="0" aria-expanded="'+(isExp?'true':'false')+'" data-msg="'+E(m.id)+'" onclick="toggleMsg(this.dataset.msg)" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();toggleMsg(this.dataset.msg)}">';
+    const msgId=E(m.id);
+    html+='<div class="'+align+(isNew?' hl':'')+(verbose?'':' cursor-pointer')+'" role="button" tabindex="0" aria-expanded="'+(isExp?'true':'false')+'" data-msg="'+msgId+'" onclick="toggleMsg(this.dataset.msg)" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();toggleMsg(this.dataset.msg)}">';
     html+='<div class="flex items-start gap-2">';
     html+='<span class="w-5 h-5 rounded-full '+avatarColor+' flex items-center justify-center text-[9px] font-semibold shrink-0 mt-0.5">'+E(initial)+'</span>';
     html+='<div class="flex-1 min-w-0 rounded-xl border '+bubbleBg+' px-3 py-2">';
@@ -235,13 +258,15 @@ function rActivity(t){
       html+='<div>'+chip(E(p.status),p.status==='completed'?'green':'red')+' <span class="text-[13px] text-txt-200">'+E(p.summary)+'</span></div>';
       if(isExp&&p.details)html+='<div class="mt-2 text-[12px] text-txt-300 md">'+md(p.details)+'</div>';
       if(!isExp&&p.details)html+='<div class="mt-1 text-[10px] text-txt-500">Click to expand details</div>';
+      if(verbose&&p.details)html+='<details class="mt-2" open><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">Raw</summary><pre class="mt-1 text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto max-h-[120px]">'+E(m.content)+'</pre></details>';
     }else{
-      if(isExp){html+='<div class="text-[12px] text-txt-300 md">'+md(m.content)+'</div>'}
+      if(isExp||verbose){html+='<div class="text-[12px] text-txt-300 md">'+md(m.content)+'</div>'}
       else{const preview=m.content.length>120?m.content.slice(0,120)+'\\u2026':m.content;html+='<div class="text-[13px] text-txt-300 truncate">'+E(preview)+'</div>'}
+      if(verbose)html+='<details class="mt-1" open><summary class="text-[10px] text-txt-500 cursor-pointer select-none hover:text-txt-400">Raw</summary><pre class="mt-1 text-[11px] text-txt-400 bg-base-950 rounded p-2 overflow-x-auto max-h-[120px]">'+E(m.content)+'</pre></details>';
     }
     html+='</div></div></div>';
   });
-  if(msgs.length>30)html+='<div class="text-center text-[10px] text-txt-500 py-2">+'+(msgs.length-30)+' older messages</div>';
+  if(msgs.length>maxShow)html+='<div class="text-center text-[10px] text-txt-500 py-2">+'+(msgs.length-maxShow)+' older messages</div>';
   html+='</div>';
   prevMC=newCount;
   el.innerHTML=html;

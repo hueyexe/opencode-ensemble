@@ -73,11 +73,12 @@ function parseDependsOn(value: string | null): string[] {
   return []
 }
 
-function buildState(db: Database): { teams: unknown[] } {
+function buildState(db: Database, verbose?: boolean): { teams: unknown[] } {
+  const msgLimit = verbose ? 200 : 50
   const teams = db.query("SELECT id, name, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
   const memberStmt = db.query("SELECT name, agent, status, execution_status, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
   const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
-  const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT 50")
+  const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT ?")
 
   return {
     teams: teams.map((t) => ({
@@ -109,7 +110,7 @@ function buildState(db: Database): { teams: unknown[] } {
         timeCreated: tk.time_created,
         timeUpdated: tk.time_updated,
       })),
-      messages: (msgStmt.all(t.id) as MessageRow[]).map((msg) => ({
+      messages: (msgStmt.all(t.id, msgLimit) as MessageRow[]).map((msg) => ({
         id: msg.id,
         fromName: msg.from_name,
         toName: msg.to_name,
@@ -140,7 +141,8 @@ export async function startDashboard(db: Database, port: number): Promise<Return
         }
 
         if (url.pathname === "/api/state") {
-          return jsonResponse(buildState(db))
+          const verbose = url.searchParams.get("verbose") === "1"
+          return jsonResponse(buildState(db, verbose))
         }
 
         if (url.pathname === "/") {

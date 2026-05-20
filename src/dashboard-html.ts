@@ -50,7 +50,11 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 <span class="text-base-700">|</span>
 <select id="sel" class="bg-base-900 border border-base-700 rounded-md px-2 py-[3px] text-[11px] text-txt-200 font-mono outline-none cursor-pointer hover:border-base-600 transition-colors max-w-[180px] sm:max-w-[320px] min-w-0"></select>
 </div>
-<div class="flex items-center gap-2 sm:gap-4 shrink-0">
+    <div class="flex items-center gap-2 sm:gap-4 shrink-0">
+<label class="flex items-center gap-1.5 cursor-pointer select-none" id="vl" title="Toggle verbose mode — show full message content, auto-expand details, raw interaction logs">
+<span class="text-[10px] text-txt-400 uppercase tracking-wider hidden sm:inline">Verbose</span>
+<div class="w-8 h-4 rounded-full bg-base-700 relative transition-colors duration-200" id="vt"><div class="w-3.5 h-3.5 rounded-full bg-txt-400 absolute top-[1px] left-[1px] transition-all duration-200" id="vtk"></div></div>
+</label>
 <div id="hring" class="w-6 h-6 rounded-full" title="Team health"></div>
 <div class="flex items-center gap-2">
 <span id="clk" class="text-[11px] text-txt-400 font-mono"></span>
@@ -83,10 +87,11 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 <div class="bg-base-900 border border-base-800 rounded-lg p-6 max-w-sm" onclick="event.stopPropagation()">
 <div id="shortcuts-title" class="text-txt-200 font-semibold text-sm mb-4">Keyboard Shortcuts</div>
 <div class="grid grid-cols-2 gap-y-2 gap-x-6 text-[12px]">
-<div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">j</kbd> <span class="text-txt-400">Next agent</span></div>
+    <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">j</kbd> <span class="text-txt-400">Next agent</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">k</kbd> <span class="text-txt-400">Prev agent</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">Enter</kbd> <span class="text-txt-400">Expand agent</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">Esc</kbd> <span class="text-txt-400">Collapse all</span></div>
+<div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">v</kbd> <span class="text-txt-400">Toggle verbose</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">1-9</kbd> <span class="text-txt-400">Switch team</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">?</kbd> <span class="text-txt-400">This help</span></div>
 </div>

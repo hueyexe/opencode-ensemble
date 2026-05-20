@@ -55,6 +55,17 @@ describe("dashboard UI contract", () => {
     expect(DASHBOARD_JS_PART3).toContain("e.key==='Escape'")
   })
 
+  test("verbose toggle appears in header chrome", () => {
+    expect(DASHBOARD_HEAD).toContain('id="vl"')
+    expect(DASHBOARD_HEAD).toContain('id="vt"')
+    expect(DASHBOARD_HEAD).toContain('id="vtk"')
+    expect(DASHBOARD_HEAD).toContain("Toggle verbose mode")
+  })
+
+  test("verbose toggle keyboard shortcut in shortcuts overlay", () => {
+    expect(DASHBOARD_HEAD).toContain("Toggle verbose")
+  })
+
   test("shortcut overlay exposes dialog semantics", () => {
     expect(DASHBOARD_HEAD).toContain('id="sco" role="dialog"')
     expect(DASHBOARD_HEAD).toContain('aria-modal="true"')

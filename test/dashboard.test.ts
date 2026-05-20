@@ -112,7 +112,7 @@ describe("dashboard", () => {
       expect(body.teams[0]!.status).toBe("archived")
     })
 
-    test("messages limited to last 50", async () => {
+    test("messages limited to last 50 by default", async () => {
       insertTeam(db, "t1", "alpha", "lead-sess")
       for (let i = 0; i < 60; i++) {
         insertMessage(db, "t1", `msg-${i}`, "alice", "lead", `Message ${i}`)
@@ -123,6 +123,19 @@ describe("dashboard", () => {
       const body = (await res.json()) as StateResponse
 
       expect(body.teams[0]!.messages).toHaveLength(50)
+    })
+
+    test("verbose returns up to 200 messages", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      for (let i = 0; i < 100; i++) {
+        insertMessage(db, "t1", `msg-${i}`, "alice", "lead", `Message ${i}`)
+      }
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state?verbose=1`)
+      const body = (await res.json()) as StateResponse
+
+      expect(body.teams[0]!.messages).toHaveLength(100)
     })
 
     test("returns multiple teams", async () => {
