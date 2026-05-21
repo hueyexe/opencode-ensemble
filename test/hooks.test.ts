@@ -678,3 +678,201 @@ describe("handleSessionErrorEvent", () => {
     expect(msgs).toHaveLength(0)
   })
 })
+
+// --- Multi-instance state partition: registry empty, SQLite is source of truth ---
+// When opencode runs multiple Plugin instances in one process (Desktop's local
+// sidecar + a connected WSL serve sharing the same SQLite DB), each instance
+// has its own MemberRegistry. A team_* tool call from a teammate may be
+// dispatched to a Plugin instance whose registry never saw the spawn.
+// findTeamBySession and resolveRecipientSession MUST fall back to SQLite.
+
+describe("findTeamBySession — SQLite fallback when registry is empty", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("resolves a teammate session via SQLite when registry has no entry", () => {
+    // Simulate a teammate written to the DB by a different Plugin instance
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+    // Note: registry is intentionally empty — this Plugin instance never saw the spawn
+
+    const teamInfo = findTeamBySession(db, registry, "scout-sess")
+
+    expect(teamInfo).toBeTruthy()
+    expect(teamInfo!.role).toBe("member")
+    expect(teamInfo!.memberName).toBe("scout")
+    expect(teamInfo!.teamId).toBe("t1")
+    expect(teamInfo!.teamName).toBe("my-team")
+  })
+
+  test("populates the registry cache after a successful SQLite fallback", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+
+    findTeamBySession(db, registry, "scout-sess")
+
+    // Cache should now hold the entry so subsequent lookups don't re-query
+    const cached = registry.getBySession("scout-sess")
+    expect(cached).toBeTruthy()
+    expect(cached!.memberName).toBe("scout")
+    expect(cached!.teamId).toBe("t1")
+  })
+
+  test("does not return members of archived teams", () => {
+    db.run(
+      "INSERT INTO team (id, name, lead_session_id, status, delegate, time_created, time_updated) VALUES (?, ?, ?, 'archived', 0, ?, ?)",
+      ["t1", "old", "lead-sess", Date.now(), Date.now()]
+    )
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+
+    expect(findTeamBySession(db, registry, "scout-sess")).toBeUndefined()
+  })
+
+  test("does not return shutdown members from SQLite", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "shutdown", "completed")
+
+    expect(findTeamBySession(db, registry, "scout-sess")).toBeUndefined()
+  })
+
+  test("does not return error members from SQLite", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "error", "failed")
+
+    expect(findTeamBySession(db, registry, "scout-sess")).toBeUndefined()
+  })
+
+  test("registry-hit fast path still works without SQLite query", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+
+    expect(teamInfo).toBeTruthy()
+    expect(teamInfo!.role).toBe("member")
+    expect(teamInfo!.memberName).toBe("alice")
+  })
+
+  test("returns undefined when neither registry nor DB knows the session", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    expect(findTeamBySession(db, registry, "ghost-sess")).toBeUndefined()
+  })
+})
+
+describe("resolveRecipientSession — SQLite fallback when registry is empty", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("resolves a member by name via SQLite when registry has no entry", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+    // Note: registry intentionally empty
+
+    const { resolveRecipientSession } = await import("../src/types")
+    const sessionId = resolveRecipientSession(db, registry, "t1", "scout")
+
+    expect(sessionId).toBe("scout-sess")
+  })
+
+  test("populates the registry cache after a successful SQLite fallback", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+
+    const { resolveRecipientSession } = await import("../src/types")
+    resolveRecipientSession(db, registry, "t1", "scout")
+
+    expect(registry.getByName("t1", "scout")?.sessionId).toBe("scout-sess")
+  })
+
+  test("registry-hit fast path still works", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const { resolveRecipientSession } = await import("../src/types")
+    expect(resolveRecipientSession(db, registry, "t1", "alice")).toBe("alice-sess")
+  })
+
+  test("does not return shutdown members", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "shutdown", "completed")
+
+    const { resolveRecipientSession } = await import("../src/types")
+    expect(resolveRecipientSession(db, registry, "t1", "scout")).toBeUndefined()
+  })
+
+  test("does not return error members", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "error", "failed")
+
+    const { resolveRecipientSession } = await import("../src/types")
+    expect(resolveRecipientSession(db, registry, "t1", "scout")).toBeUndefined()
+  })
+
+  test("'lead' resolves to team.lead_session_id (unchanged behaviour)", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+
+    const { resolveRecipientSession } = await import("../src/types")
+    expect(resolveRecipientSession(db, registry, "t1", "lead")).toBe("lead-sess")
+  })
+})
+
+describe("checkToolIsolation — SQLite fallback for multi-instance scenarios", () => {
+  let db: Database
+  let registry: MemberRegistry
+  let tracker: DescendantTracker
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+    tracker = new DescendantTracker()
+  })
+
+  test("blocks sub-agent of teammate even when registry is empty (SQLite fallback)", () => {
+    // Multi-instance scenario: this Plugin instance's registry is empty, but
+    // SQLite has the teammate. A sub-agent of that teammate must still be
+    // blocked from calling team tools.
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+    tracker.track("sub-agent-sess", "scout-sess")
+
+    expect(() => checkToolIsolation(registry, tracker, "team_message", "sub-agent-sess", db))
+      .toThrow("Team tools are not available to sub-agents")
+  })
+
+  test("allows team tools for the teammate's own session via SQLite fallback", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+    // Registry empty — but scout IS a teammate per SQLite
+
+    expect(() => checkToolIsolation(registry, tracker, "team_message", "scout-sess", db)).not.toThrow()
+  })
+
+  test("ignores shutdown teammates in SQLite — their sub-agents are not blocked", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "shutdown", "completed")
+    tracker.track("sub-agent-sess", "scout-sess")
+
+    expect(() => checkToolIsolation(registry, tracker, "team_message", "sub-agent-sess", db)).not.toThrow()
+  })
+
+  test("works without db param (backward compatible — registry only)", () => {
+    // Legacy call sites that don't pass db keep their existing behaviour
+    registry.register("t1", "alice", "sess-1")
+    tracker.track("sub-agent-sess", "sess-1")
+
+    expect(() => checkToolIsolation(registry, tracker, "team_message", "sub-agent-sess"))
+      .toThrow("Team tools are not available to sub-agents")
+  })
+})

@@ -310,7 +310,7 @@ const plugin: Plugin = async (input) => {
 
     // Sub-agent isolation + rate limiting hook
     "tool.execute.before": async (input, _output) => {
-      checkToolIsolation(registry, tracker, input.tool, input.sessionID)
+      checkToolIsolation(registry, tracker, input.tool, input.sessionID, db)
       // Rate limit team tools that trigger LLM inference
       if (input.tool.startsWith("team_")) {
         if (!rateLimiter.tryConsume()) {

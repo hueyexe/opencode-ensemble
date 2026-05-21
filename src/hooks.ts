@@ -95,22 +95,36 @@ export function handleSessionCreatedEvent(
  * Check whether a tool call should be blocked for sub-agent isolation.
  * Throws if the tool is a team tool and the session is a descendant of a team member.
  * OQ-11: confirmed — throwing inside tool.execute.before fails the tool call gracefully (verified in live testing).
+ *
+ * The optional `db` parameter enables a SQLite fallback so the check works
+ * across multi-Plugin-instance scenarios where the in-memory registry may
+ * not have the parent teammate's session. SQLite is the canonical source.
  */
 export function checkToolIsolation(
   registry: MemberRegistry,
   tracker: DescendantTracker,
   toolName: string,
   sessionId: string,
+  db?: Database,
 ): void {
   if (!toolName.startsWith(TEAM_TOOL_PREFIX)) return
 
-  // If the session is a registered team member or lead, allow it
-  if (registry.isTeamSession(sessionId)) return
+  // Collect every session ID that is a teammate, from the registry first
+  // (fast path) and SQLite second (covers multi-instance / cross-plugin state).
+  const teammateSessionIds = new Set(registry.allSessionIds())
+  if (db) {
+    const dbRows = db.query(
+      `SELECT tm.session_id FROM team_member tm
+       JOIN team t ON tm.team_id = t.id
+       WHERE t.status = 'active' AND tm.status NOT IN ('shutdown', 'error')`
+    ).all() as Array<{ session_id: string }>
+    for (const row of dbRows) teammateSessionIds.add(row.session_id)
+  }
 
-  // Check if this session is a descendant of any team member
-  const allTeamSessions = registry.allSessionIds()
+  // If the session is itself a teammate, allow the call
+  if (teammateSessionIds.has(sessionId)) return
 
-  if (allTeamSessions.size > 0 && tracker.isDescendantOf(sessionId, allTeamSessions)) {
+  if (teammateSessionIds.size > 0 && tracker.isDescendantOf(sessionId, teammateSessionIds)) {
     throw new Error("Team tools are not available to sub-agents. Report findings to your parent teammate via your normal output.")
   }
 }
