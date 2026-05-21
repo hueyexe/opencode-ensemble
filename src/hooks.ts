@@ -1,6 +1,7 @@
 import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker } from "./state"
 import { sendMessage } from "./messaging"
+import { findTeamBySession } from "./types"
 
 const TEAM_TOOL_PREFIX = "team_"
 
@@ -99,6 +100,15 @@ export function handleSessionCreatedEvent(
  * The optional `db` parameter enables a SQLite fallback so the check works
  * across multi-Plugin-instance scenarios where the in-memory registry may
  * not have the parent teammate's session. SQLite is the canonical source.
+ *
+ * Order:
+ *   1. Registry fast-path: if the caller is itself a registered teammate, allow.
+ *   2. Otherwise enumerate active teammate session IDs from registry + SQLite.
+ *   3. If the caller is among them, allow.
+ *   4. If the caller is a descendant of any teammate, block.
+ *
+ * The fast-path skips the SQL query entirely when the registry already
+ * has the caller — every tool call from a registered teammate stays cheap.
  */
 export function checkToolIsolation(
   registry: MemberRegistry,
@@ -108,6 +118,9 @@ export function checkToolIsolation(
   db?: Database,
 ): void {
   if (!toolName.startsWith(TEAM_TOOL_PREFIX)) return
+
+  // Fast path: registry hit on the caller — skip SQL altogether.
+  if (registry.isTeamSession(sessionId)) return
 
   // Collect every session ID that is a teammate, from the registry first
   // (fast path) and SQLite second (covers multi-instance / cross-plugin state).
@@ -121,7 +134,7 @@ export function checkToolIsolation(
     for (const row of dbRows) teammateSessionIds.add(row.session_id)
   }
 
-  // If the session is itself a teammate, allow the call
+  // The caller may be a teammate registered in another Plugin instance — allow.
   if (teammateSessionIds.has(sessionId)) return
 
   if (teammateSessionIds.size > 0 && tracker.isDescendantOf(sessionId, teammateSessionIds)) {
@@ -164,14 +177,17 @@ export function handleSessionErrorEvent(
   error: SessionErrorPayload | undefined,
 ): void {
   if (!sessionId) return
-  const entry = registry.getBySession(sessionId)
-  if (!entry) return
+  // Use findTeamBySession so the SQLite fallback fires when this Plugin
+  // instance's in-memory registry doesn't have the teammate (multi-instance
+  // scenario — see findTeamBySession in src/types.ts).
+  const teamInfo = findTeamBySession(db, registry, sessionId)
+  if (!teamInfo || teamInfo.role !== "member" || !teamInfo.memberName) return
 
   const errMsg = error?.data?.message ?? error?.name ?? "unknown error"
   sendMessage(db, {
-    teamId: entry.teamId,
+    teamId: teamInfo.teamId,
     from: "system",
     to: "lead",
-    content: `Teammate "${entry.memberName}" had a session error: ${errMsg}. Check their session for details. They may be stuck and need investigation or shutdown.`,
+    content: `Teammate "${teamInfo.memberName}" had a session error: ${errMsg}. Check their session for details. They may be stuck and need investigation or shutdown.`,
   })
 }

@@ -155,8 +155,16 @@ function handleDashboardRequest(db: Database, port: number, req: IncomingMessage
 
 function toDashboardServer(server: Server): DashboardServer {
   return {
-    stop() {
+    stop(force?: boolean) {
       server.close()
+      // server.close() only stops accepting new connections — under Node's
+      // node:http, idle keep-alive sockets keep the listener busy until the
+      // keep-alive timeout. closeAllConnections() (Node ≥ 18.2) terminates
+      // them promptly, matching the behaviour Bun.serve().stop(true) had.
+      if (force) {
+        const closeAll = (server as unknown as { closeAllConnections?: () => void }).closeAllConnections
+        if (typeof closeAll === "function") closeAll.call(server)
+      }
     },
   }
 }

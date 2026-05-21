@@ -174,4 +174,47 @@ describe("dashboard", () => {
       expect(res.status).toBe(404)
     })
   })
+
+  describe("stop(force)", () => {
+    test("stop(true) closes in-flight sockets so the port frees up promptly", async () => {
+      server = await startDashboard(db, port)
+      expect(server).toBeTruthy()
+
+      // Open a raw TCP socket to the dashboard and leave it dangling.
+      // node:http with keep-alive will keep the listener busy until the
+      // keep-alive timeout if we only call server.close() — server.stop(true)
+      // must call closeAllConnections() to terminate this socket promptly.
+      const net = await import("node:net")
+      const dangling = await new Promise<import("node:net").Socket>((resolve, reject) => {
+        const sock = net.createConnection({ port, host: "127.0.0.1" }, () => {
+          sock.write("GET /api/health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+        })
+        sock.on("error", reject)
+        sock.once("data", () => resolve(sock))
+      })
+
+      // Forcefully stop within a short window. server.close() alone would
+      // wait for the keep-alive socket to drain (default 5s in node:http).
+      const stopStart = Date.now()
+      server!.stop(true)
+      server = null
+      const stopElapsed = Date.now() - stopStart
+
+      // Cleanup the dangling socket
+      dangling.destroy()
+
+      // The synchronous stop() call returns immediately — the assertion
+      // is that a new server can bind to the same port without waiting.
+      expect(stopElapsed).toBeLessThan(500)
+
+      // Bind a new server on the same port immediately. Without
+      // closeAllConnections, the OS may still consider the port held.
+      const replacement = await Promise.race([
+        startDashboard(setupDb(), port),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error("port still held")), 1000)),
+      ])
+      expect(replacement).toBeTruthy()
+      ;(replacement as unknown as { stop: (force?: boolean) => void } | null)?.stop(true)
+    })
+  })
 })

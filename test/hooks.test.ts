@@ -876,3 +876,111 @@ describe("checkToolIsolation — SQLite fallback for multi-instance scenarios", 
       .toThrow("Team tools are not available to sub-agents")
   })
 })
+
+describe("handleSessionErrorEvent — SQLite fallback when registry is empty", () => {
+  let db: Database
+  let registry: MemberRegistry
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+  })
+
+  test("posts a system message via SQLite fallback when registry is empty", () => {
+    // Multi-Plugin-instance: SQLite has the teammate but this Plugin
+    // instance's in-memory registry never saw the spawn.
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+
+    handleSessionErrorEvent(db, registry, "scout-sess", {
+      name: "UnknownError",
+      data: { message: "Tool team_message failed" },
+    })
+
+    const msgs = db.query(
+      "SELECT from_name, to_name, content FROM team_message WHERE team_id = ?"
+    ).all("t1") as Array<{ from_name: string; to_name: string; content: string }>
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]?.from_name).toBe("system")
+    expect(msgs[0]?.to_name).toBe("lead")
+    expect(msgs[0]?.content).toContain("scout")
+  })
+
+  test("populates the registry cache after SQLite fallback", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+
+    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+
+    expect(registry.getBySession("scout-sess")?.memberName).toBe("scout")
+  })
+
+  test("ignores shutdown teammates even if SQLite has the row", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "shutdown", "completed")
+
+    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+
+    const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
+    expect(msgs).toHaveLength(0)
+  })
+
+  test("ignores error-state teammates even if SQLite has the row", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "error", "failed")
+
+    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+
+    const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
+    expect(msgs).toHaveLength(0)
+  })
+})
+
+describe("checkToolIsolation — registry fast-path performance", () => {
+  let db: Database
+  let registry: MemberRegistry
+  let tracker: DescendantTracker
+
+  beforeEach(() => {
+    db = setupDb()
+    registry = new MemberRegistry()
+    tracker = new DescendantTracker()
+  })
+
+  function instrumentedDb(real: Database): { db: typeof real; queryCount: () => number } {
+    let count = 0
+    const wrapper = {
+      query: (sql: string) => {
+        count++
+        return real.query(sql)
+      },
+      exec: real.exec.bind(real),
+      run: real.run.bind(real),
+      close: real.close.bind(real),
+      transaction: real.transaction.bind(real),
+    } as unknown as typeof real
+    return { db: wrapper, queryCount: () => count }
+  }
+
+  test("skips SQLite query when caller is in registry (fast path)", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    registry.register("t1", "alice", "alice-sess")
+
+    const { db: spyDb, queryCount } = instrumentedDb(db as unknown as Parameters<typeof instrumentedDb>[0])
+
+    expect(() => checkToolIsolation(registry, tracker, "team_message", "alice-sess", spyDb as unknown as Database)).not.toThrow()
+    expect(queryCount()).toBe(0)
+  })
+
+  test("falls through to SQLite when caller is NOT in registry", () => {
+    insertTeam(db, "t1", "smoke", "lead-sess")
+    insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
+    // Registry is empty for scout
+
+    const { db: spyDb, queryCount } = instrumentedDb(db as unknown as Parameters<typeof instrumentedDb>[0])
+
+    expect(() => checkToolIsolation(registry, tracker, "team_message", "scout-sess", spyDb as unknown as Database)).not.toThrow()
+    expect(queryCount()).toBeGreaterThan(0)
+  })
+})
