@@ -54,7 +54,7 @@ export async function mergeBranchRaw(branch: string, cwd: string): Promise<Merge
 
   if (result.exitCode !== 0) {
     const stderr = result.stderr.trim()
-    log(`merge-helper:merge:conflict branch=${branch} err=${stderr.trim()}`)
+    log(`merge-helper:merge:conflict branch=${branch} err=${stderr}`)
     await runCommand(["git", "merge", "--abort"], { cwd })
     return { ok: false, error: stderr || `merge exited with code ${result.exitCode}` }
   }

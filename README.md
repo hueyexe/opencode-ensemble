@@ -167,6 +167,13 @@ Set to `0` to disable. The dashboard starts automatically when OpenCode loads th
 
 Two steps: add the plugin, then allowlist worktree paths.
 
+### Runtime requirements
+
+The plugin uses SQLite via the host's runtime adapter:
+
+- **Bun**: any version with `bun:sqlite` (Bun ≥ 1.0).
+- **Node / Electron** (e.g. opencode Desktop): **Node ≥ 24** for stable `node:sqlite`. Older Node (20.x) lacks the module entirely; Node 22.5–23 has it behind `--experimental-sqlite`. If you load the plugin under an older Node and see `Cannot find module 'node:sqlite'` at startup, your runtime is too old.
+
 ### 1. Add the plugin
 
 Add to your OpenCode config with a pinned version. Project-level or global.

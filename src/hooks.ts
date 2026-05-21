@@ -108,7 +108,10 @@ export function handleSessionCreatedEvent(
  *   4. If the caller is a descendant of any teammate, block.
  *
  * The fast-path skips the SQL query entirely when the registry already
- * has the caller — every tool call from a registered teammate stays cheap.
+ * has the caller. Lead sessions are NOT in the MemberRegistry by design
+ * (only teammates are), so a lead's team_* call always misses the
+ * fast-path and does the SQLite enumeration. That's acceptable — the
+ * scan is bounded by total active members and runs once per tool call.
  */
 export function checkToolIsolation(
   registry: MemberRegistry,

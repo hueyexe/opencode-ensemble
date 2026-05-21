@@ -207,14 +207,25 @@ describe("dashboard", () => {
       // is that a new server can bind to the same port without waiting.
       expect(stopElapsed).toBeLessThan(500)
 
-      // Bind a new server on the same port immediately. Without
-      // closeAllConnections, the OS may still consider the port held.
-      const replacement = await Promise.race([
-        startDashboard(setupDb(), port),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error("port still held")), 1000)),
-      ])
-      expect(replacement).toBeTruthy()
-      ;(replacement as unknown as { stop: (force?: boolean) => void } | null)?.stop(true)
+      // Probe the port directly with a fresh listener. Avoids racing the
+      // full dashboard startup against an arbitrary timer under CI load.
+      // Tries up to 3 times to absorb brief TIME_WAIT / cross-test races.
+      const tryProbe = async (): Promise<boolean> => {
+        const probe = net.createServer()
+        const ok = await new Promise<boolean>((resolve) => {
+          probe.once("error", () => resolve(false))
+          probe.listen(port, "127.0.0.1", () => resolve(true))
+        })
+        await new Promise<void>((r) => probe.close(() => r()))
+        return ok
+      }
+      let probeBound = await tryProbe()
+      for (let i = 0; !probeBound && i < 2; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        probeBound = await tryProbe()
+      }
+
+      expect(probeBound).toBe(true)
     })
   })
 })

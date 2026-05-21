@@ -33,6 +33,10 @@
     "build": "bun build src/index.ts --outdir dist --target node",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
+  "engines": {
+    "node": ">=24",
+    "bun": ">=1.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
     "@types/bun": "latest"

@@ -113,7 +113,11 @@ export function findTeamBySession(
          AND tm.status NOT IN ('shutdown', 'error')`
     ).get(sessionId) as { team_id: string; member_name: string; team_name: string } | null
     if (memberRow) {
-      // Populate the cache so subsequent lookups skip the SQL query
+      // Populate the cache so subsequent lookups skip the SQL query.
+      // Safe without TTL: session IDs are server-generated UUIDs and are
+      // never reused across team_spawn invocations, so a session ID maps
+      // to at most one (teamId, memberName) for the life of the process.
+      // team_cleanup explicitly invalidates via registry.unregisterTeam.
       registry.register(memberRow.team_id, memberRow.member_name, sessionId)
       return { teamId: memberRow.team_id, teamName: memberRow.team_name, role: "member", memberName: memberRow.member_name }
     }
