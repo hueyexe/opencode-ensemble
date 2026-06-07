@@ -43,7 +43,7 @@ class NodeSqliteAdapter implements Database {
   private readonly db: NodeSqliteDatabase
 
   constructor(filename: string) {
-    const sqlite = requireRuntimeModule("node:sqlite") as NodeSqliteModule
+    const sqlite = requireRuntimeModule(["node", "sqlite"].join(":")) as NodeSqliteModule
     this.db = new sqlite.DatabaseSync(filename)
   }
 
