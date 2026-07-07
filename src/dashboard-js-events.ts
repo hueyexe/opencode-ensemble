@@ -32,7 +32,7 @@ function conn(ok){
   document.getElementById('ct').textContent=ok?D(Date.now()-pollT)+' ago':'reconnecting to dashboard state';
 }
 
-async function poll(){try{S=await(await fetch('/api/state')).json();fails=0;pollT=Date.now();conn(true);render()}catch{if(++fails>=3)conn(false)}}
+async function poll(){try{S=await(await fetch('api/state')).json();fails=0;pollT=Date.now();conn(true);render()}catch{if(++fails>=3)conn(false)}}
 
 function setBackgroundInert(locked){
   document.querySelectorAll('header,main,#sum,#tl').forEach(function(el){

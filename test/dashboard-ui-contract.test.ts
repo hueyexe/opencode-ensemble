@@ -74,6 +74,11 @@ describe("dashboard UI contract", () => {
     expect(DASHBOARD_JS_EVENTS).toContain("aria-hidden")
   })
 
+  test("dashboard polls state relative to the served page", () => {
+    expect(DASHBOARD_JS_EVENTS).toContain("fetch('api/state')")
+    expect(DASHBOARD_JS_EVENTS).not.toContain("fetch('/api/state')")
+  })
+
   test("agent prioritization helpers are defined", () => {
     expect(DASHBOARD_JS_CORE).toContain("function rankAgent")
     expect(DASHBOARD_JS_CORE).toContain("function deriveAttention")
