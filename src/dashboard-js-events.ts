@@ -2,6 +2,18 @@
 export const DASHBOARD_JS_EVENTS = `
 function toggleMsg(id){if(expMsgs.has(id))expMsgs.delete(id);else expMsgs.add(id);render()}
 
+function toggleVerbose(){verbose=!verbose;rDrawerActivityUpdate()}
+
+async function fetchActivity(sessionId){
+  try{
+    var res=await fetch('api/session/'+encodeURIComponent(sessionId)+'/activity');
+    var data=await res.json();
+    drawerActivity=data.activity||[];
+    drawerSession=data.session||null;
+    rDrawerActivityUpdate();
+  }catch{drawerActivity=[];drawerSession=null;rDrawerActivityUpdate()}
+}
+
 function applyNavCollapse(){
   const content=document.getElementById('content'),projects=document.getElementById('projects'),rail=document.getElementById('project-rail'),toggle=document.getElementById('nav-toggle'),expand=document.getElementById('nav-expand');
   content.classList.toggle('nav-collapsed',navCollapsed);

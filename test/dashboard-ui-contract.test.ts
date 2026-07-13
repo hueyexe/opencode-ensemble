@@ -144,4 +144,22 @@ describe("dashboard UI contract", () => {
   test("agent cards do not dim operational text with whole-card opacity", () => {
     expect(DASHBOARD_JS_RENDER).not.toContain("opacity-50")
   })
+
+  test("drawer includes activity timeline section", () => {
+    expect(DASHBOARD_JS_RENDER).toContain("drawer-activity-list")
+    expect(DASHBOARD_JS_RENDER).toContain("rDrawerActivityUpdate")
+    expect(DASHBOARD_JS_RENDER).toContain("fetchActivity")
+  })
+
+  test("drawer has verbose toggle control", () => {
+    expect(DASHBOARD_JS_EVENTS).toContain("function toggleVerbose")
+    expect(DASHBOARD_JS_RENDER).toContain("toggleVerbose()")
+    expect(DASHBOARD_JS_RENDER).toContain("aria-pressed")
+    expect(DASHBOARD_JS_RENDER).toContain("verbose:")
+  })
+
+  test("activity fetch uses relative path", () => {
+    expect(DASHBOARD_JS_EVENTS).toContain("fetch('api/session/'")
+    expect(DASHBOARD_JS_EVENTS).not.toContain("fetch('/api/session/'")
+  })
 })

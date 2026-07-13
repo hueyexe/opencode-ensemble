@@ -6,6 +6,8 @@ import { DASHBOARD_JS_CORE } from "./dashboard-js-core"
 import { DASHBOARD_JS_EVENTS } from "./dashboard-js-events"
 import { DASHBOARD_JS_RENDER } from "./dashboard-js-render"
 import { log } from "./log"
+import type { ActivityBuffer, ActivityEntry } from "./activity"
+import type { PluginClient } from "./types"
 
 /** Assemble the full dashboard HTML from parts. */
 const DASHBOARD_HTML = DASHBOARD_HEAD + "\n<script>" + DASHBOARD_JS_CORE + DASHBOARD_JS_RENDER + DASHBOARD_JS_EVENTS + "<\/script>\n</body></html>"
@@ -34,6 +36,7 @@ interface MemberRow {
   agent: string
   status: string
   execution_status: string
+  session_id: string
   worktree_branch: string | null
   prompt: string | null
   model: string | null
@@ -81,7 +84,7 @@ function parseDependsOn(value: string | null): string[] {
 function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
   const projects = db.query("SELECT id, name, path, status, time_created, time_updated FROM project ORDER BY time_updated DESC").all() as ProjectRow[]
   const teams = db.query("SELECT id, name, project_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
-  const memberStmt = db.query("SELECT name, agent, status, execution_status, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
+  const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
   const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
   const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT 50")
 
@@ -91,6 +94,7 @@ function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
       agent: m.agent,
       status: m.status,
       executionStatus: m.execution_status,
+      sessionId: m.session_id,
       worktreeBranch: m.worktree_branch,
       prompt: m.prompt,
       model: m.model,
@@ -163,6 +167,14 @@ export interface DashboardServer {
   stop(force?: boolean): void
 }
 
+/** Optional dependencies for the dashboard server. */
+export interface DashboardOptions {
+  /** In-memory activity buffer for real-time per-session events. */
+  activityBuffer?: ActivityBuffer
+  /** SDK client for on-demand session message retrieval. */
+  client?: PluginClient
+}
+
 function sendJson(res: ServerResponse, data: unknown): void {
   res.writeHead(200, {
     "Content-Type": "application/json",
@@ -171,7 +183,69 @@ function sendJson(res: ServerResponse, data: unknown): void {
   res.end(JSON.stringify(data))
 }
 
-function handleDashboardRequest(db: Database, port: number, req: IncomingMessage, res: ServerResponse): void {
+/** Parse SDK message parts into ActivityEntry format for the fallback path. */
+function parseMessageParts(parts: unknown[]): ActivityEntry[] {
+  const entries: ActivityEntry[] = []
+  for (const part of parts) {
+    if (typeof part !== "object" || part === null) continue
+    const p = part as { type?: string; tool?: string; state?: { status?: string; input?: string; output?: string; title?: string; error?: string }; text?: string }
+    if (p.type === "tool" && p.tool) {
+      const state = p.state ?? {}
+      entries.push({
+        type: state.status === "completed" ? "tool_result" : "tool_call",
+        tool: p.tool,
+        title: state.title,
+        input: state.input,
+        output: state.output,
+        error: state.error,
+        timestamp: Date.now(),
+      })
+    }
+  }
+  return entries
+}
+
+/** Handle the /api/session/:sessionId/activity endpoint. */
+async function handleActivityRoute(
+  sessionId: string,
+  options: DashboardOptions | undefined,
+  res: ServerResponse,
+): Promise<void> {
+  const buffer = options?.activityBuffer
+  const client = options?.client
+
+  const buffered = buffer?.getActivity(sessionId) ?? []
+
+  let sessionData: unknown = null
+  let fallbackActivity: ActivityEntry[] = []
+
+  if (client) {
+    try {
+      const [msgResult, getResult] = await Promise.all([
+        client.session.messages({ sessionID: sessionId, limit: 50 }),
+        client.session.get({ sessionID: sessionId }),
+      ])
+      const messages = msgResult.data ?? []
+      for (const msg of messages) {
+        const parts = msg.parts ?? []
+        fallbackActivity.push(...parseMessageParts(parts))
+      }
+      sessionData = getResult.data ?? null
+    } catch { /* best effort — return what we have */ }
+  }
+
+  const combined = [...buffered, ...fallbackActivity]
+
+  sendJson(res, { activity: combined, session: sessionData })
+}
+
+function handleDashboardRequest(
+  db: Database,
+  port: number,
+  req: IncomingMessage,
+  res: ServerResponse,
+  options?: DashboardOptions,
+): void {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `localhost:${port}`}`)
 
   if (url.pathname === "/api/health") {
@@ -181,6 +255,12 @@ function handleDashboardRequest(db: Database, port: number, req: IncomingMessage
 
   if (url.pathname === "/api/state") {
     sendJson(res, buildState(db))
+    return
+  }
+
+  const activityMatch = url.pathname.match(/^\/api\/session\/([^/]+)\/activity$/)
+  if (activityMatch) {
+    handleActivityRoute(activityMatch[1]!, options, res)
     return
   }
 
@@ -212,13 +292,13 @@ function toDashboardServer(server: Server): DashboardServer {
 
 /**
  * Start the dashboard HTTP server.
- * Serves a JSON API for team state and the dashboard HTML.
+ * Serves a JSON API for team state, session activity, and the dashboard HTML.
  * Singleton: if the port is already in use by another ensemble instance, skips silently.
  * Returns the server instance, or null if skipped.
  */
-export async function startDashboard(db: Database, port: number): Promise<DashboardServer | null> {
+export async function startDashboard(db: Database, port: number, options?: DashboardOptions): Promise<DashboardServer | null> {
   return new Promise((resolve) => {
-    const server = createServer((req, res) => handleDashboardRequest(db, port, req, res))
+    const server = createServer((req, res) => handleDashboardRequest(db, port, req, res, options))
 
     server.once("error", async (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {

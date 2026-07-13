@@ -13,6 +13,8 @@ describe("v2 SDK client shape matches PluginClient", () => {
     expect(typeof client.session.promptAsync).toBe("function")
     expect(typeof client.session.abort).toBe("function")
     expect(typeof client.session.status).toBe("function")
+    expect(typeof client.session.messages).toBe("function")
+    expect(typeof client.session.get).toBe("function")
   })
 
   test("tui methods exist", () => {

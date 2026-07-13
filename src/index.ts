@@ -16,6 +16,7 @@ import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
 import { loadConfig } from "./config"
 import { ProgressTracker } from "./progress"
+import { ActivityBuffer } from "./activity"
 import { startDashboard } from "./dashboard"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
@@ -59,6 +60,7 @@ const plugin: Plugin = async (input) => {
   const purgeApprovals = new PendingPurgeApprovals()
   const nudgedMembers = new Set<string>()
   const progressTracker = new ProgressTracker()
+  const activityBuffer = new ActivityBuffer()
   const wakeLeadTimestamps = new Map<string, number>()
   const WAKE_LEAD_COOLDOWN_MS = 5000
 
@@ -103,8 +105,8 @@ const plugin: Plugin = async (input) => {
     log("init:recovery:done")
 
     // Start dashboard server (main instance only, not worktree instances)
-    if (config.dashboardPort !== 0) {
-      startDashboard(db, config.dashboardPort).catch((err) => {
+      if (config.dashboardPort !== 0) {
+        startDashboard(db, config.dashboardPort, { activityBuffer, client }).catch((err) => {
         log(`init:dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
       })
     }
@@ -304,6 +306,52 @@ const plugin: Plugin = async (input) => {
           }
         }
       }
+
+      // Capture activity for dashboard verbose view (best-effort, v2 event types)
+      // v2 event types are not in the v1 Event union — cast to permissive type for string check
+      const v2ev = event as unknown as { type: string; properties: { sessionID?: string; tool?: string; input?: string; content?: string; title?: string; error?: string; command?: string; exitCode?: number; cost?: number; tokens?: { input?: number; output?: number } } }
+
+      if (v2ev.type === "session.next.tool.called") {
+        const props = v2ev.properties
+        if (props.sessionID && registry.getBySession(props.sessionID)) {
+          activityBuffer.record(props.sessionID, { type: "tool_call", tool: props.tool, input: typeof props.input === "string" ? props.input : undefined, timestamp: Date.now() })
+        }
+      }
+
+      if (v2ev.type === "session.next.tool.success") {
+        const props = v2ev.properties
+        if (props.sessionID && registry.getBySession(props.sessionID)) {
+          activityBuffer.record(props.sessionID, { type: "tool_result", output: props.content, title: props.title, timestamp: Date.now() })
+        }
+      }
+
+      if (v2ev.type === "session.next.tool.failed") {
+        const props = v2ev.properties
+        if (props.sessionID && registry.getBySession(props.sessionID)) {
+          activityBuffer.record(props.sessionID, { type: "tool_result", error: props.error, timestamp: Date.now() })
+        }
+      }
+
+      if (v2ev.type === "session.next.shell.started") {
+        const props = v2ev.properties
+        if (props.sessionID && registry.getBySession(props.sessionID)) {
+          activityBuffer.record(props.sessionID, { type: "shell_command", command: props.command, timestamp: Date.now() })
+        }
+      }
+
+      if (v2ev.type === "session.next.shell.ended") {
+        const props = v2ev.properties
+        if (props.sessionID && registry.getBySession(props.sessionID)) {
+          activityBuffer.record(props.sessionID, { type: "shell_command", exitCode: props.exitCode, timestamp: Date.now() })
+        }
+      }
+
+      if (v2ev.type === "session.next.step.ended") {
+        const props = v2ev.properties
+        if (props.sessionID && registry.getBySession(props.sessionID)) {
+          activityBuffer.record(props.sessionID, { type: "step", cost: props.cost, tokensIn: props.tokens?.input, tokensOut: props.tokens?.output, timestamp: Date.now() })
+        }
+      }
     },
 
     // Sub-agent isolation + rate limiting hook
@@ -315,11 +363,19 @@ const plugin: Plugin = async (input) => {
           await rateLimiter.waitForToken()
         }
       }
+      // Record tool call activity for team member sessions
+      if (registry.getBySession(input.sessionID)) {
+        activityBuffer.record(input.sessionID, { type: "tool_call", tool: input.tool, timestamp: Date.now() })
+      }
     },
 
     "tool.execute.after": async (input, output) => {
       if (input.tool === "question") {
         purgeApprovals.recordQuestionAnswer(input.sessionID, output.output, input.args)
+      }
+      // Record tool result activity for team member sessions
+      if (registry.getBySession(input.sessionID)) {
+        activityBuffer.record(input.sessionID, { type: "tool_result", tool: input.tool, title: output.title, output: output.output, timestamp: Date.now() })
       }
     },
 
@@ -508,7 +564,10 @@ const plugin: Plugin = async (input) => {
           const result = await executeTeamShutdown(deps, args, ctx.sessionID)
           // Clean up progress tracking for the shut-down member
           const member = deps.db.query("SELECT session_id FROM team_member WHERE name = ? AND status IN ('shutdown', 'shutdown_requested')").get(args.member) as { session_id: string } | null
-          if (member) progressTracker.remove(member.session_id)
+          if (member) {
+            progressTracker.remove(member.session_id)
+            activityBuffer.remove(member.session_id)
+          }
           const hasWarning = result.includes("uncommitted")
           ctx.metadata({ title: hasWarning ? `${args.member} shut down — uncommitted changes` : `${args.member} shut down` })
           return result

@@ -50,6 +50,8 @@ export interface PluginClient {
     }): Promise<unknown>
     abort(options: { sessionID: string }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>
+    messages(options: { sessionID: string; limit?: number }): Promise<{ data?: Array<{ info: unknown; parts: unknown[] }> }>
+    get(options: { sessionID: string }): Promise<{ data?: unknown }>
   }
   tui: {
     showToast(options: {

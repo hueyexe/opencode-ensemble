@@ -1,7 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import type { Database } from "../src/db"
-import { setupDb, insertTeam, insertMember } from "./helpers"
+import { setupDb, insertTeam, insertMember, mockClient } from "./helpers"
 import { startDashboard } from "../src/dashboard"
+import { ActivityBuffer } from "../src/activity"
+import type { PluginClient } from "../src/types"
 
 function randomPort(): number {
   return 19000 + Math.floor(Math.random() * 10000)
@@ -23,7 +25,7 @@ function insertMessage(db: Database, teamId: string, id: string, fromName: strin
 
 // biome-lint: use Record for JSON response shape
 interface HealthResponse { ensemble: boolean; pid: number }
-interface DashboardTeam { id: string; name: string; projectId: string; status: string; timeCreated: number; timeUpdated: number; members: Array<Record<string, unknown>>; tasks: Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> }
+interface DashboardTeam { id: string; name: string; projectId: string; status: string; timeCreated: number; timeUpdated: number; members: Array<{ sessionId?: string } & Record<string, unknown>>; tasks: Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> }
 interface StateResponse { projects: Array<{ id: string; name: string; path: string; activeTeams: number; workingAgents: number; teams: DashboardTeam[] }>; teams: DashboardTeam[] }
 
 describe("dashboard", () => {
@@ -257,6 +259,101 @@ describe("dashboard", () => {
       }
 
       expect(probeBound).toBe(true)
+    })
+  })
+
+  describe("GET /api/session/:sessionId/activity", () => {
+    test("returns buffered activity entries", async () => {
+      const buf = new ActivityBuffer()
+      buf.record("sess-a", { type: "tool_call", tool: "bash", title: "Run tests", timestamp: Date.now() })
+      buf.record("sess-a", { type: "tool_result", tool: "bash", output: "all pass", timestamp: Date.now() + 100 })
+
+      server = await startDashboard(db, port, { activityBuffer: buf })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-a/activity`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      expect(body.activity).toHaveLength(2)
+      expect(body.activity[0]!.type).toBe("tool_call")
+      expect(body.activity[1]!.type).toBe("tool_result")
+    })
+
+    test("returns empty array when buffer has no entries and no client", async () => {
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/session/unknown/activity`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { activity: Array<unknown> }
+      expect(body.activity).toEqual([])
+    })
+
+    test("falls back to session.messages when buffer is empty", async () => {
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(opts: { sessionID: string }) {
+            return {
+              data: [
+                {
+                  info: { role: "assistant", id: "msg-1" },
+                  parts: [
+                    { type: "tool", tool: "bash", state: { status: "completed", output: "done", title: "Run build", input: "bun run build" } },
+                    { type: "text", text: "Build complete" },
+                  ],
+                },
+              ],
+            }
+          },
+          async get(_opts: { sessionID: string }) {
+            return { data: { cost: 0.05, tokens: { input: 100, output: 200 } } }
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-x/activity`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { activity: Array<Record<string, unknown>>; session: Record<string, unknown> | null }
+      expect(body.activity.length).toBeGreaterThan(0)
+      expect(body.session).toBeTruthy()
+      expect(body.session!.cost).toBe(0.05)
+    })
+
+    test("combines buffer entries with session.messages fallback", async () => {
+      const buf = new ActivityBuffer()
+      buf.record("sess-c", { type: "shell_command", command: "ls -la", timestamp: Date.now() })
+
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(_opts: { sessionID: string }) {
+            return { data: [] }
+          },
+          async get(_opts: { sessionID: string }) {
+            return { data: null }
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { activityBuffer: buf, client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-c/activity`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      expect(body.activity).toHaveLength(1)
+      expect(body.activity[0]!.type).toBe("shell_command")
+    })
+  })
+
+  describe("state includes sessionId", () => {
+    test("member objects include sessionId", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+
+      expect(body.teams[0]!.members[0]!.sessionId).toBe("sess-a")
     })
   })
 })
