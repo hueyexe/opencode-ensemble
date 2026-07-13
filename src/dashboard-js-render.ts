@@ -155,7 +155,7 @@ function openDrawer(name){
   h+='<div class="mt-4 pt-4 border-t border-base-800/50">';
   h+='<div class="flex items-center justify-between mb-3">';
   h+='<span class="text-txt-400 text-[10px] uppercase tracking-wider">Activity</span>';
-  h+='<button type="button" onclick="toggleVerbose()" aria-pressed="'+(verbose?'true':'false')+'" class="text-[10px] text-txt-500 hover:text-txt-200 border border-base-800 rounded px-1.5 py-[2px] transition-colors">verbose: '+(verbose?'on':'off')+'</button>';
+  h+='<button type="button" id="verbose-toggle" onclick="toggleVerbose()" aria-pressed="'+(verbose?'true':'false')+'" class="text-[10px] text-txt-500 hover:text-txt-200 border border-base-800 rounded px-1.5 py-[2px] transition-colors">verbose: '+(verbose?'on':'off')+'</button>';
   h+='</div>';
   h+='<div id="drawer-activity-list"><div class="text-txt-500 text-[12px]">Loading activity...</div></div>';
   h+='</div>';

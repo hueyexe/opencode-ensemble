@@ -2,7 +2,12 @@
 export const DASHBOARD_JS_EVENTS = `
 function toggleMsg(id){if(expMsgs.has(id))expMsgs.delete(id);else expMsgs.add(id);render()}
 
-function toggleVerbose(){verbose=!verbose;rDrawerActivityUpdate()}
+function toggleVerbose(){
+  verbose=!verbose;
+  var btn=document.getElementById('verbose-toggle');
+  if(btn){btn.textContent='verbose: '+(verbose?'on':'off');btn.setAttribute('aria-pressed',verbose?'true':'false')}
+  rDrawerActivityUpdate();
+}
 
 async function fetchActivity(sessionId){
   try{

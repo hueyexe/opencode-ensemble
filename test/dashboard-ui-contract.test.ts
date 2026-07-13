@@ -154,6 +154,7 @@ describe("dashboard UI contract", () => {
   test("drawer has verbose toggle control", () => {
     expect(DASHBOARD_JS_EVENTS).toContain("function toggleVerbose")
     expect(DASHBOARD_JS_RENDER).toContain("toggleVerbose()")
+    expect(DASHBOARD_JS_RENDER).toContain("id=\"verbose-toggle\"")
     expect(DASHBOARD_JS_RENDER).toContain("aria-pressed")
     expect(DASHBOARD_JS_RENDER).toContain("verbose:")
   })
