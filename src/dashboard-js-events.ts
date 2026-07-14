@@ -5,7 +5,11 @@ function toggleMsg(id){if(expMsgs.has(id))expMsgs.delete(id);else expMsgs.add(id
 function toggleVerbose(){
   verbose=!verbose;
   var btn=document.getElementById('verbose-toggle');
-  if(btn){btn.textContent='verbose: '+(verbose?'on':'off');btn.setAttribute('aria-pressed',verbose?'true':'false')}
+  if(btn){
+    btn.textContent='verbose: '+(verbose?'on':'off');
+    btn.setAttribute('aria-pressed',verbose?'true':'false');
+    btn.className='text-[10px] '+(verbose?'text-blue-400 border-blue-500/40 bg-blue-500/10':'text-txt-500 hover:text-txt-200 border-base-800')+' rounded px-1.5 py-[2px] transition-colors';
+  }
   rDrawerActivityUpdate();
 }
 

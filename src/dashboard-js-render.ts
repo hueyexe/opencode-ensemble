@@ -155,7 +155,7 @@ function openDrawer(name){
   h+='<div class="mt-4 pt-4 border-t border-base-800/50">';
   h+='<div class="flex items-center justify-between mb-3">';
   h+='<span class="text-txt-400 text-[10px] uppercase tracking-wider">Activity</span>';
-  h+='<button type="button" id="verbose-toggle" onclick="toggleVerbose()" aria-pressed="'+(verbose?'true':'false')+'" class="text-[10px] text-txt-500 hover:text-txt-200 border border-base-800 rounded px-1.5 py-[2px] transition-colors">verbose: '+(verbose?'on':'off')+'</button>';
+  h+='<button type="button" id="verbose-toggle" onclick="toggleVerbose()" aria-pressed="'+(verbose?'true':'false')+'" class="text-[10px] '+(verbose?'text-blue-400 border-blue-500/40 bg-blue-500/10':'text-txt-500 hover:text-txt-200 border-base-800')+' rounded px-1.5 py-[2px] transition-colors">verbose: '+(verbose?'on':'off')+'</button>';
   h+='</div>';
   h+='<div id="drawer-activity-list"><div class="text-txt-500 text-[12px]">Loading activity...</div></div>';
   h+='</div>';
@@ -184,26 +184,36 @@ function rDrawerActivityUpdate(){
     var icon='\\u25CF',color='text-txt-500',label=a.type;
     if(a.type==='tool_call'){icon='\\u25B8';color='text-blue-400';label=a.tool||'tool'}
     if(a.type==='tool_result'){icon='\\u25B8';color=a.error?'text-red-400':'text-emerald-400';label=a.tool||'tool'}
-    if(a.type==='shell_command'){icon='$';color='text-amber-400';label=a.command?'cmd':'shell'}
+    if(a.type==='shell_command'){icon='$';color='text-amber-400';label='shell'}
     if(a.type==='step'){icon='\\u2261';color='text-violet-400';label='step'}
-    var title=a.title||a.tool||a.command||label;
     var ts=relT(a.timestamp);
-    var row='<div class="flex items-start gap-2 py-1.5 border-b border-base-800/30">';
+    if(!verbose){
+      return '<div class="flex items-center gap-2 py-1 border-b border-base-800/30">'+
+        '<span class="'+color+' text-[11px] shrink-0 font-mono">'+icon+'</span>'+
+        '<span class="text-[12px] text-txt-400 truncate flex-1">'+E(label)+'</span>'+
+        '<span class="text-[10px] text-txt-500 shrink-0">'+ts+'</span>'+
+        '</div>';
+    }
+    var title=a.title||a.tool||a.command||label;
+    var row='<div class="py-2 border-b border-base-800/30">';
+    row+='<div class="flex items-start gap-2">';
     row+='<span class="'+color+' text-[11px] mt-[1px] shrink-0 font-mono">'+icon+'</span>';
     row+='<div class="flex-1 min-w-0">';
-    row+='<div class="text-[12px] text-txt-200 truncate">'+E(title)+'</div>';
-    if(verbose){
-      if(a.input){row+='<div class="text-[11px] text-txt-400 mt-1 md bg-base-800/20 rounded p-2 overflow-x-auto">'+E(a.input)+'</div>'}
-      if(a.output){row+='<div class="text-[11px] text-txt-400 mt-1 md bg-base-800/20 rounded p-2 overflow-x-auto">'+E(a.output)+'</div>'}
-      if(a.error){row+='<div class="text-[11px] text-red-400 mt-1">'+E(a.error)+'</div>'}
-      if(a.command){row+='<div class="text-[11px] text-amber-400 font-mono mt-1 truncate">'+E(a.command)+'</div>'}
-      if(a.exitCode!==undefined){row+='<div class="text-[10px] text-txt-500 mt-0.5">exit: '+a.exitCode+'</div>'}
-      if(a.cost){row+='<div class="text-[10px] text-txt-500 mt-0.5">$'+a.cost.toFixed(4)+'</div>'}
-      if(a.tokensIn||a.tokensOut){row+='<div class="text-[10px] text-txt-500 mt-0.5">'+(a.tokensIn||0)+' in / '+(a.tokensOut||0)+' out</div>'}
+    row+='<div class="text-[12px] text-txt-200 font-medium">'+E(title)+'</div>';
+    if(a.input){row+='<div class="text-[11px] text-txt-300 mt-1.5 bg-base-900/60 rounded-md p-2 border border-base-700/40 overflow-x-auto font-mono whitespace-pre">'+E(a.input)+'</div>'}
+    if(a.output){row+='<div class="text-[11px] text-emerald-300/80 mt-1.5 bg-emerald-950/20 rounded-md p-2 border border-emerald-800/30 overflow-x-auto whitespace-pre">'+E(a.output)+'</div>'}
+    if(a.error){row+='<div class="text-[11px] text-red-400 mt-1.5 bg-red-950/20 rounded-md p-2 border border-red-800/30 overflow-x-auto">'+E(a.error)+'</div>'}
+    if(a.command){row+='<div class="text-[11px] text-amber-300 mt-1.5 bg-amber-950/20 rounded-md p-2 border border-amber-800/30 overflow-x-auto font-mono whitespace-pre">'+E(a.command)+'</div>'}
+    if(a.exitCode!==undefined||a.cost||a.tokensIn||a.tokensOut){
+      row+='<div class="flex flex-wrap gap-1.5 mt-1.5">';
+      if(a.exitCode!==undefined){row+=chip('exit: '+a.exitCode,'muted')}
+      if(a.cost){row+=chip('$'+a.cost.toFixed(4),'gray')}
+      if(a.tokensIn||a.tokensOut){row+=chip((a.tokensIn||0)+' in / '+(a.tokensOut||0)+' out','muted')}
+      row+='</div>';
     }
     row+='</div>';
     row+='<span class="text-[10px] text-txt-500 shrink-0">'+ts+'</span>';
-    row+='</div>';
+    row+='</div></div>';
     return row;
   }).join('');
   el.innerHTML=html;
