@@ -95,6 +95,7 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">k</kbd> <span class="text-txt-400">Prev agent</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">Enter</kbd> <span class="text-txt-400">Expand agent</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">Esc</kbd> <span class="text-txt-400">Collapse all</span></div>
+<div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">v</kbd> <span class="text-txt-400">Toggle verbose</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">1-9</kbd> <span class="text-txt-400">Switch team</span></div>
 <div><kbd class="px-1.5 py-0.5 bg-base-800 rounded font-mono text-txt-300 text-[11px]">?</kbd> <span class="text-txt-400">This help</span></div>
 </div>

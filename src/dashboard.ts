@@ -184,22 +184,52 @@ function sendJson(res: ServerResponse, data: unknown): void {
 }
 
 /** Parse SDK message parts into ActivityEntry format for the fallback path. */
-function parseMessageParts(parts: unknown[]): ActivityEntry[] {
+function parseMessageParts(parts: unknown[], msgInfo: unknown): ActivityEntry[] {
   const entries: ActivityEntry[] = []
+  const info = (msgInfo ?? {}) as { time?: string; role?: string; tokens?: { input?: number; output?: number } }
+  const timestamp = info.time ? new Date(info.time).getTime() : Date.now()
+
   for (const part of parts) {
     if (typeof part !== "object" || part === null) continue
-    const p = part as { type?: string; tool?: string; state?: { status?: string; input?: string; output?: string; title?: string; error?: string }; text?: string }
+    const p = part as {
+      type?: string
+      tool?: string
+      state?: { status?: string; input?: unknown; output?: unknown; error?: string; title?: string }
+      text?: string
+      path?: string
+      content?: string
+      diff?: string
+      label?: string
+      step?: string
+    }
+
     if (p.type === "tool" && p.tool) {
       const state = p.state ?? {}
+      const inputStr = typeof state.input === "string" ? state.input : state.input != null ? JSON.stringify(state.input, null, 2) : undefined
+      const outputStr = typeof state.output === "string" ? state.output : state.output != null ? JSON.stringify(state.output, null, 2) : undefined
       entries.push({
         type: state.status === "completed" ? "tool_result" : "tool_call",
         tool: p.tool,
         title: state.title,
-        input: state.input,
-        output: state.output,
+        input: inputStr,
+        output: outputStr,
         error: state.error,
-        timestamp: Date.now(),
+        timestamp,
       })
+    } else if (p.type === "reasoning" && p.text) {
+      entries.push({ type: "reasoning", reasoning: p.text, timestamp })
+    } else if (p.type === "file" && (p.path || p.content || p.diff)) {
+      entries.push({
+        type: "file",
+        filePath: p.path,
+        fileContent: p.content,
+        fileDiff: p.diff,
+        timestamp,
+      })
+    } else if (p.type === "text" && p.text) {
+      entries.push({ type: "text", text: p.text, role: info.role, timestamp })
+    } else if (p.type === "step-start") {
+      entries.push({ type: "step", title: p.label ?? p.step ?? "step", timestamp })
     }
   }
   return entries
@@ -222,13 +252,13 @@ async function handleActivityRoute(
   if (client) {
     try {
       const [msgResult, getResult] = await Promise.all([
-        client.session.messages({ sessionID: sessionId, limit: 50 }),
+        client.session.messages({ sessionID: sessionId, limit: 100 }),
         client.session.get({ sessionID: sessionId }),
       ])
       const messages = msgResult.data ?? []
       for (const msg of messages) {
         const parts = msg.parts ?? []
-        fallbackActivity.push(...parseMessageParts(parts))
+        fallbackActivity.push(...parseMessageParts(parts, msg.info))
       }
       sessionData = getResult.data ?? null
     } catch { /* best effort — return what we have */ }

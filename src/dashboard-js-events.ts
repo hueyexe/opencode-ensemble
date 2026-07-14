@@ -4,6 +4,7 @@ function toggleMsg(id){if(expMsgs.has(id))expMsgs.delete(id);else expMsgs.add(id
 
 function toggleVerbose(){
   verbose=!verbose;
+  try{localStorage.setItem('ensemble-verbose',verbose?'1':'0')}catch(e){}
   var btn=document.getElementById('verbose-toggle');
   if(btn){
     btn.textContent='verbose: '+(verbose?'on':'off');
@@ -117,6 +118,7 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){closeDrawer();expMsgs.clear();selCard=-1;closeShortcuts();render();return}
   if(e.key==='j'&&mm.length){e.preventDefault();selCard=Math.min(selCard+1,mm.length-1);render();return}
   if(e.key==='k'&&mm.length){e.preventDefault();selCard=Math.max(selCard-1,0);render();return}
+  if(e.key==='v'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();toggleVerbose();return}
   if(e.key==='Enter'&&selCard>=0&&selCard<mm.length){e.preventDefault();openDrawer(mm[selCard].name);return}
   if(e.key>='1'&&e.key<='9'){
     var teams=allTeams(),all=[...teams.active,...teams.archived];

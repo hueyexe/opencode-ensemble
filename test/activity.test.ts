@@ -117,4 +117,40 @@ describe("ActivityBuffer", () => {
     expect(buf.has("s2")).toBe(true)
     expect(buf.getActivity("s2")).toHaveLength(2)
   })
+
+  test("stores reasoning entries", () => {
+    const buf = new ActivityBuffer()
+    const entry = makeEntry({ type: "reasoning", reasoning: "I need to check the file first.", timestamp: 1000 })
+    buf.record("s1", entry)
+    const result = buf.getActivity("s1")
+    expect(result).toHaveLength(1)
+    expect(result[0]!.type).toBe("reasoning")
+    expect(result[0]!.reasoning).toBe("I need to check the file first.")
+  })
+
+  test("stores file entries", () => {
+    const buf = new ActivityBuffer()
+    const entry = makeEntry({
+      type: "file",
+      filePath: "src/handler.ts",
+      fileContent: "export function handle() {}",
+      timestamp: 1000,
+    })
+    buf.record("s1", entry)
+    const result = buf.getActivity("s1")
+    expect(result).toHaveLength(1)
+    expect(result[0]!.type).toBe("file")
+    expect(result[0]!.filePath).toBe("src/handler.ts")
+    expect(result[0]!.fileContent).toBe("export function handle() {}")
+  })
+
+  test("stores text entries with role", () => {
+    const buf = new ActivityBuffer()
+    buf.record("s1", makeEntry({ type: "text", text: "Fix the bug", role: "user", timestamp: 1000 }))
+    buf.record("s1", makeEntry({ type: "text", text: "I'll start by reading the file.", role: "assistant", timestamp: 2000 }))
+    const result = buf.getActivity("s1")
+    expect(result).toHaveLength(2)
+    expect(result[0]!.role).toBe("user")
+    expect(result[1]!.role).toBe("assistant")
+  })
 })

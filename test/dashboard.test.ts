@@ -342,6 +342,101 @@ describe("dashboard", () => {
       expect(body.activity).toHaveLength(1)
       expect(body.activity[0]!.type).toBe("shell_command")
     })
+
+    test("parses reasoning parts from session messages", async () => {
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(_opts: { sessionID: string }) {
+            return {
+              data: [{
+                info: { role: "assistant", time: new Date().toISOString() },
+                parts: [
+                  { type: "reasoning", text: "I should check the file first." },
+                  { type: "text", text: "Let me look at the handler." },
+                ],
+              }],
+            }
+          },
+          async get(_opts: { sessionID: string }) {
+            return { data: null }
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-r/activity`)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      const reasoning = body.activity.find(a => a.type === "reasoning")
+      expect(reasoning).toBeTruthy()
+      expect(reasoning!.reasoning).toBe("I should check the file first.")
+      const text = body.activity.find(a => a.type === "text")
+      expect(text).toBeTruthy()
+      expect(text!.text).toBe("Let me look at the handler.")
+      expect(text!.role).toBe("assistant")
+    })
+
+    test("parses file parts from session messages", async () => {
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(_opts: { sessionID: string }) {
+            return {
+              data: [{
+                info: { role: "assistant", time: new Date().toISOString() },
+                parts: [
+                  { type: "file", path: "src/handler.ts", content: "export function handle() {}" },
+                ],
+              }],
+            }
+          },
+          async get(_opts: { sessionID: string }) {
+            return { data: null }
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-f/activity`)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      const file = body.activity.find(a => a.type === "file")
+      expect(file).toBeTruthy()
+      expect(file!.filePath).toBe("src/handler.ts")
+      expect(file!.fileContent).toBe("export function handle() {}")
+    })
+
+    test("parses structured tool input/output from session messages", async () => {
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(_opts: { sessionID: string }) {
+            return {
+              data: [{
+                info: { role: "assistant", time: new Date().toISOString() },
+                parts: [
+                  { type: "tool", tool: "bash", state: { status: "completed", input: { command: "ls" }, output: { stdout: "file.ts" } } },
+                ],
+              }],
+            }
+          },
+          async get(_opts: { sessionID: string }) {
+            return { data: null }
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-t/activity`)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      const tool = body.activity.find(a => a.type === "tool_result")
+      expect(tool).toBeTruthy()
+      expect(tool!.tool).toBe("bash")
+      expect(tool!.input).toBe(JSON.stringify({ command: "ls" }, null, 2))
+      expect(tool!.output).toBe(JSON.stringify({ stdout: "file.ts" }, null, 2))
+    })
   })
 
   describe("state includes sessionId", () => {

@@ -3,14 +3,14 @@
  */
 export interface ActivityEntry {
   /** The kind of activity being recorded. */
-  type: "tool_call" | "tool_result" | "shell_command" | "step"
+  type: "tool_call" | "tool_result" | "shell_command" | "step" | "reasoning" | "file" | "text"
   /** Tool name (for tool_call / tool_result types). */
   tool?: string
   /** Human-readable title for the activity. */
   title?: string
-  /** Input text for a tool call. */
+  /** Structured input for a tool call (JSON-formatted string if object). */
   input?: string
-  /** Output text for a tool result. */
+  /** Structured output for a tool result (JSON-formatted string if object). */
   output?: string
   /** Error message if the activity failed. */
   error?: string
@@ -26,6 +26,18 @@ export interface ActivityEntry {
   cost?: number
   /** Unix millisecond timestamp of the event. */
   timestamp: number
+  /** Reasoning text (for reasoning type — model's chain of thought). */
+  reasoning?: string
+  /** File path (for file type). */
+  filePath?: string
+  /** File content (for file type). */
+  fileContent?: string
+  /** File diff (for file type). */
+  fileDiff?: string
+  /** Text content (for text type — prompts and responses). */
+  text?: string
+  /** Role for text entries: "user" or "assistant". */
+  role?: string
 }
 
 /** Options for constructing an {@link ActivityBuffer}. */

@@ -163,4 +163,35 @@ describe("dashboard UI contract", () => {
     expect(DASHBOARD_JS_EVENTS).toContain("fetch('api/session/'")
     expect(DASHBOARD_JS_EVENTS).not.toContain("fetch('/api/session/'")
   })
+
+  test("verbose preference persists to localStorage", () => {
+    expect(DASHBOARD_JS_CORE).toContain("localStorage.getItem('ensemble-verbose')")
+    expect(DASHBOARD_JS_EVENTS).toContain("localStorage.setItem('ensemble-verbose'")
+  })
+
+  test("v keyboard shortcut toggles verbose", () => {
+    expect(DASHBOARD_JS_EVENTS).toContain("e.key==='v'")
+    expect(DASHBOARD_JS_EVENTS).toContain("toggleVerbose()")
+  })
+
+  test("v shortcut appears in shortcuts overlay", () => {
+    expect(DASHBOARD_HEAD).toContain(">v</kbd>")
+    expect(DASHBOARD_HEAD).toContain("Toggle verbose")
+  })
+
+  test("activity timeline renders reasoning blocks", () => {
+    expect(DASHBOARD_JS_RENDER).toContain("reasoning")
+    expect(DASHBOARD_JS_RENDER).toContain("Reasoning")
+  })
+
+  test("activity timeline renders file parts", () => {
+    expect(DASHBOARD_JS_RENDER).toContain("file")
+    expect(DASHBOARD_JS_RENDER).toContain("filePath")
+  })
+
+  test("activity timeline renders text prompts and responses", () => {
+    expect(DASHBOARD_JS_RENDER).toContain("text")
+    expect(DASHBOARD_JS_RENDER).toContain("prompt")
+    expect(DASHBOARD_JS_RENDER).toContain("response")
+  })
 })
