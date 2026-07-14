@@ -1,3 +1,5 @@
+import type { MemberRegistry } from "./state"
+
 /**
  * A single activity event captured per session for the dashboard verbose view.
  */
@@ -109,4 +111,105 @@ export class ActivityBuffer {
     const entries = this.buffers.get(sessionID)
     return entries !== undefined && entries.length > 0
   }
+}
+
+/** V2 event shape for activity recording (permissive — SDK types not available in plugin). */
+interface V2Event {
+  type: string
+  properties: {
+    sessionID?: string
+    tool?: string
+    input?: string
+    content?: string
+    title?: string
+    error?: string
+    command?: string
+    exitCode?: number
+    cost?: number
+    tokens?: { input?: number; output?: number }
+  }
+}
+
+/**
+ * Record activity from a v2 session event (shell commands and step transitions only).
+ * Tool call/result recording is handled by {@link recordFromToolBefore} and {@link recordFromToolAfter}
+ * to avoid duplicate entries from both the event hook and the tool.execute hook.
+ * Only records for sessions registered as team members.
+ * @param event The v2 event from the plugin event hook.
+ * @param registry The member registry for session lookup.
+ * @param buffer The activity buffer to record into.
+ */
+export function recordFromV2Event(
+  event: V2Event,
+  registry: MemberRegistry,
+  buffer: ActivityBuffer,
+): void {
+  const props = event.properties
+  if (!props?.sessionID || !registry.getBySession(props.sessionID)) return
+
+  if (event.type === "session.next.shell.started") {
+    buffer.record(props.sessionID, { type: "shell_command", command: props.command, timestamp: Date.now() })
+  } else if (event.type === "session.next.shell.ended") {
+    buffer.record(props.sessionID, { type: "shell_command", exitCode: props.exitCode, timestamp: Date.now() })
+  } else if (event.type === "session.next.step.ended") {
+    buffer.record(props.sessionID, {
+      type: "step",
+      cost: props.cost,
+      tokensIn: props.tokens?.input,
+      tokensOut: props.tokens?.output,
+      timestamp: Date.now(),
+    })
+  }
+}
+
+/** Input shape for the tool.execute.before hook. */
+interface ToolBeforeInput {
+  sessionID: string
+  tool: string
+}
+
+/** Output shape for the tool.execute.after hook. */
+interface ToolAfterOutput {
+  title?: string
+  output?: string
+}
+
+/**
+ * Record a tool call from the tool.execute.before hook.
+ * Only records for sessions registered as team members.
+ * @param input The tool.execute.before input.
+ * @param registry The member registry for session lookup.
+ * @param buffer The activity buffer to record into.
+ */
+export function recordFromToolBefore(
+  input: ToolBeforeInput,
+  registry: MemberRegistry,
+  buffer: ActivityBuffer,
+): void {
+  if (!registry.getBySession(input.sessionID)) return
+  buffer.record(input.sessionID, { type: "tool_call", tool: input.tool, timestamp: Date.now() })
+}
+
+/**
+ * Record a tool result from the tool.execute.after hook.
+ * Only records for sessions registered as team members.
+ * @param input The tool.execute.before input (for session ID and tool name).
+ * @param output The tool.execute.after output.
+ * @param registry The member registry for session lookup.
+ * @param buffer The activity buffer to record into.
+ */
+export function recordFromToolAfter(
+  input: ToolBeforeInput,
+  output: ToolAfterOutput,
+  registry: MemberRegistry,
+  buffer: ActivityBuffer,
+): void {
+  if (!registry.getBySession(input.sessionID)) return
+  buffer.record(input.sessionID, {
+    type: "tool_result",
+    tool: input.tool,
+    title: output.title,
+    output: output.output,
+    timestamp: Date.now(),
+  })
 }

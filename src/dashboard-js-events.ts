@@ -14,14 +14,17 @@ function toggleVerbose(){
   rDrawerActivityUpdate();
 }
 
+var fetchActivityGen=0;
 async function fetchActivity(sessionId){
+  var gen=++fetchActivityGen;
   try{
     var res=await fetch('api/session/'+encodeURIComponent(sessionId)+'/activity');
     var data=await res.json();
+    if(gen!==fetchActivityGen)return;
     drawerActivity=data.activity||[];
     drawerSession=data.session||null;
     rDrawerActivityUpdate();
-  }catch{drawerActivity=[];drawerSession=null;rDrawerActivityUpdate()}
+  }catch{if(gen!==fetchActivityGen)return;drawerActivity=[];drawerSession=null;rDrawerActivityUpdate()}
 }
 
 function applyNavCollapse(){

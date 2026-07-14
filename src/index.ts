@@ -16,7 +16,7 @@ import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
 import { loadConfig } from "./config"
 import { ProgressTracker } from "./progress"
-import { ActivityBuffer } from "./activity"
+import { ActivityBuffer, recordFromV2Event, recordFromToolBefore, recordFromToolAfter } from "./activity"
 import { startDashboard } from "./dashboard"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
@@ -105,8 +105,8 @@ const plugin: Plugin = async (input) => {
     log("init:recovery:done")
 
     // Start dashboard server (main instance only, not worktree instances)
-      if (config.dashboardPort !== 0) {
-        startDashboard(db, config.dashboardPort, { activityBuffer, client }).catch((err) => {
+    if (config.dashboardPort !== 0) {
+      startDashboard(db, config.dashboardPort, { activityBuffer, client }).catch((err) => {
         log(`init:dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
       })
     }
@@ -308,50 +308,13 @@ const plugin: Plugin = async (input) => {
       }
 
       // Capture activity for dashboard verbose view (best-effort, v2 event types)
-      // v2 event types are not in the v1 Event union — cast to permissive type for string check
-      const v2ev = event as unknown as { type: string; properties: { sessionID?: string; tool?: string; input?: string; content?: string; title?: string; error?: string; command?: string; exitCode?: number; cost?: number; tokens?: { input?: number; output?: number } } }
-
-      if (v2ev.type === "session.next.tool.called") {
-        const props = v2ev.properties
-        if (props.sessionID && registry.getBySession(props.sessionID)) {
-          activityBuffer.record(props.sessionID, { type: "tool_call", tool: props.tool, input: typeof props.input === "string" ? props.input : undefined, timestamp: Date.now() })
-        }
-      }
-
-      if (v2ev.type === "session.next.tool.success") {
-        const props = v2ev.properties
-        if (props.sessionID && registry.getBySession(props.sessionID)) {
-          activityBuffer.record(props.sessionID, { type: "tool_result", output: props.content, title: props.title, timestamp: Date.now() })
-        }
-      }
-
-      if (v2ev.type === "session.next.tool.failed") {
-        const props = v2ev.properties
-        if (props.sessionID && registry.getBySession(props.sessionID)) {
-          activityBuffer.record(props.sessionID, { type: "tool_result", error: props.error, timestamp: Date.now() })
-        }
-      }
-
-      if (v2ev.type === "session.next.shell.started") {
-        const props = v2ev.properties
-        if (props.sessionID && registry.getBySession(props.sessionID)) {
-          activityBuffer.record(props.sessionID, { type: "shell_command", command: props.command, timestamp: Date.now() })
-        }
-      }
-
-      if (v2ev.type === "session.next.shell.ended") {
-        const props = v2ev.properties
-        if (props.sessionID && registry.getBySession(props.sessionID)) {
-          activityBuffer.record(props.sessionID, { type: "shell_command", exitCode: props.exitCode, timestamp: Date.now() })
-        }
-      }
-
-      if (v2ev.type === "session.next.step.ended") {
-        const props = v2ev.properties
-        if (props.sessionID && registry.getBySession(props.sessionID)) {
-          activityBuffer.record(props.sessionID, { type: "step", cost: props.cost, tokensIn: props.tokens?.input, tokensOut: props.tokens?.output, timestamp: Date.now() })
-        }
-      }
+      // Only shell and step events are recorded here — tool calls/results are
+      // recorded via tool.execute.before/after to avoid duplicate entries.
+      recordFromV2Event(
+        event as unknown as { type: string; properties: { sessionID?: string; tool?: string; input?: string; content?: string; title?: string; error?: string; command?: string; exitCode?: number; cost?: number; tokens?: { input?: number; output?: number } } },
+        registry,
+        activityBuffer,
+      )
     },
 
     // Sub-agent isolation + rate limiting hook
@@ -364,9 +327,7 @@ const plugin: Plugin = async (input) => {
         }
       }
       // Record tool call activity for team member sessions
-      if (registry.getBySession(input.sessionID)) {
-        activityBuffer.record(input.sessionID, { type: "tool_call", tool: input.tool, timestamp: Date.now() })
-      }
+      recordFromToolBefore(input, registry, activityBuffer)
     },
 
     "tool.execute.after": async (input, output) => {
@@ -374,9 +335,7 @@ const plugin: Plugin = async (input) => {
         purgeApprovals.recordQuestionAnswer(input.sessionID, output.output, input.args)
       }
       // Record tool result activity for team member sessions
-      if (registry.getBySession(input.sessionID)) {
-        activityBuffer.record(input.sessionID, { type: "tool_result", tool: input.tool, title: output.title, output: output.output, timestamp: Date.now() })
-      }
+      recordFromToolAfter(input, output, registry, activityBuffer)
     },
 
     // System prompt injection — keeps lead aware of team state, reminds teammates of role
@@ -601,7 +560,16 @@ const plugin: Plugin = async (input) => {
               })
             }
             : undefined
+          // Collect member session IDs before cleanup so we can clean up activity buffers after
+          const teamInfoForCleanup = findTeamBySession(db, registry, ctx.sessionID)
+          const memberSessions = teamInfoForCleanup
+            ? (db.query("SELECT session_id FROM team_member WHERE team_id = ?").all(teamInfoForCleanup.teamId) as Array<{ session_id: string }>).map(m => m.session_id)
+            : []
           const result = await executeTeamCleanup(deps, args, ctx.sessionID, undefined, undefined, undefined, config.mergeOnCleanup, undefined, approvePurge)
+          // Clean up activity buffers for team members after successful cleanup
+          if (!result.includes("uncommitted") && !args.purge) {
+            for (const sid of memberSessions) activityBuffer.remove(sid)
+          }
           const blocked = result.includes("uncommitted")
           const title = args.purge
             ? result.startsWith("No archived teams") ? "No archived teams to purge" : result.startsWith("Purge preview") ? "Purge confirmation required" : "Archived teams purged"

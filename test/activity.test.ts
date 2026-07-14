@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test"
-import { ActivityBuffer, type ActivityEntry } from "../src/activity"
+import { ActivityBuffer, recordFromV2Event, recordFromToolBefore, recordFromToolAfter, type ActivityEntry } from "../src/activity"
+import { MemberRegistry } from "../src/state"
 
 function makeEntry(
   partial: Partial<ActivityEntry> & { timestamp: number },
@@ -152,5 +153,153 @@ describe("ActivityBuffer", () => {
     expect(result).toHaveLength(2)
     expect(result[0]!.role).toBe("user")
     expect(result[1]!.role).toBe("assistant")
+  })
+})
+
+describe("recordFromV2Event", () => {
+  test("records shell.started event for registered member", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "alice", "sess-1")
+    const buf = new ActivityBuffer()
+    recordFromV2Event(
+      { type: "session.next.shell.started", properties: { sessionID: "sess-1", command: "ls -la" } },
+      registry,
+      buf,
+    )
+    const entries = buf.getActivity("sess-1")
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.type).toBe("shell_command")
+    expect(entries[0]!.command).toBe("ls -la")
+  })
+
+  test("records shell.ended event with exitCode for registered member", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "alice", "sess-1")
+    const buf = new ActivityBuffer()
+    recordFromV2Event(
+      { type: "session.next.shell.ended", properties: { sessionID: "sess-1", exitCode: 0 } },
+      registry,
+      buf,
+    )
+    const entries = buf.getActivity("sess-1")
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.type).toBe("shell_command")
+    expect(entries[0]!.exitCode).toBe(0)
+  })
+
+  test("records step.ended event with cost and tokens for registered member", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "alice", "sess-1")
+    const buf = new ActivityBuffer()
+    recordFromV2Event(
+      { type: "session.next.step.ended", properties: { sessionID: "sess-1", cost: 0.05, tokens: { input: 100, output: 50 } } },
+      registry,
+      buf,
+    )
+    const entries = buf.getActivity("sess-1")
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.type).toBe("step")
+    expect(entries[0]!.cost).toBe(0.05)
+    expect(entries[0]!.tokensIn).toBe(100)
+    expect(entries[0]!.tokensOut).toBe(50)
+  })
+
+  test("ignores tool.called/success/failed events (handled by tool.execute hooks)", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "alice", "sess-1")
+    const buf = new ActivityBuffer()
+    recordFromV2Event(
+      { type: "session.next.tool.called", properties: { sessionID: "sess-1", tool: "edit" } },
+      registry,
+      buf,
+    )
+    recordFromV2Event(
+      { type: "session.next.tool.success", properties: { sessionID: "sess-1", content: "ok" } },
+      registry,
+      buf,
+    )
+    recordFromV2Event(
+      { type: "session.next.tool.failed", properties: { sessionID: "sess-1", error: "oops" } },
+      registry,
+      buf,
+    )
+    expect(buf.getActivity("sess-1")).toHaveLength(0)
+  })
+
+  test("does not record for non-member sessions", () => {
+    const registry = new MemberRegistry()
+    const buf = new ActivityBuffer()
+    recordFromV2Event(
+      { type: "session.next.shell.started", properties: { sessionID: "unknown", command: "ls" } },
+      registry,
+      buf,
+    )
+    expect(buf.getActivity("unknown")).toHaveLength(0)
+  })
+
+  test("does not record when sessionID is missing", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "alice", "sess-1")
+    const buf = new ActivityBuffer()
+    recordFromV2Event(
+      { type: "session.next.shell.started", properties: {} },
+      registry,
+      buf,
+    )
+    expect(buf.has("sess-1")).toBe(false)
+  })
+})
+
+describe("recordFromToolBefore", () => {
+  test("records tool_call for registered member", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "bob", "sess-2")
+    const buf = new ActivityBuffer()
+    recordFromToolBefore({ sessionID: "sess-2", tool: "edit" }, registry, buf)
+    const entries = buf.getActivity("sess-2")
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.type).toBe("tool_call")
+    expect(entries[0]!.tool).toBe("edit")
+  })
+
+  test("does not record for non-member sessions", () => {
+    const registry = new MemberRegistry()
+    const buf = new ActivityBuffer()
+    recordFromToolBefore({ sessionID: "sess-unknown", tool: "edit" }, registry, buf)
+    expect(buf.getActivity("sess-unknown")).toHaveLength(0)
+  })
+})
+
+describe("recordFromToolAfter", () => {
+  test("records tool_result with title and output for registered member", () => {
+    const registry = new MemberRegistry()
+    registry.register("team-1", "bob", "sess-2")
+    const buf = new ActivityBuffer()
+    recordFromToolBefore({ sessionID: "sess-2", tool: "read" }, registry, buf)
+    recordFromToolAfter(
+      { sessionID: "sess-2", tool: "read" },
+      { title: "src/index.ts", output: "file contents here" },
+      registry,
+      buf,
+    )
+    const entries = buf.getActivity("sess-2")
+    expect(entries).toHaveLength(2)
+    expect(entries[0]!.type).toBe("tool_call")
+    expect(entries[1]!.type).toBe("tool_result")
+    expect(entries[1]!.tool).toBe("read")
+    expect(entries[1]!.title).toBe("src/index.ts")
+    expect(entries[1]!.output).toBe("file contents here")
+  })
+
+  test("does not record for non-member sessions", () => {
+    const registry = new MemberRegistry()
+    const buf = new ActivityBuffer()
+    recordFromToolAfter(
+      { sessionID: "sess-unknown", tool: "edit" },
+      { title: "foo.ts", output: "bar" },
+      registry,
+      buf,
+    )
+    expect(buf.getActivity("sess-unknown")).toHaveLength(0)
   })
 })

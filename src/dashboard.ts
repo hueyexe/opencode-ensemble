@@ -184,7 +184,7 @@ function sendJson(res: ServerResponse, data: unknown): void {
 }
 
 /** Parse SDK message parts into ActivityEntry format for the fallback path. */
-function parseMessageParts(parts: unknown[], msgInfo: unknown): ActivityEntry[] {
+export function parseMessageParts(parts: unknown[], msgInfo: unknown): ActivityEntry[] {
   const entries: ActivityEntry[] = []
   const info = (msgInfo ?? {}) as { time?: string; role?: string; tokens?: { input?: number; output?: number } }
   const timestamp = info.time ? new Date(info.time).getTime() : Date.now()
@@ -230,6 +230,8 @@ function parseMessageParts(parts: unknown[], msgInfo: unknown): ActivityEntry[] 
       entries.push({ type: "text", text: p.text, role: info.role, timestamp })
     } else if (p.type === "step-start") {
       entries.push({ type: "step", title: p.label ?? p.step ?? "step", timestamp })
+    } else if (p.type === "step-finish") {
+      entries.push({ type: "step", title: p.label ?? p.step ?? "step complete", timestamp })
     }
   }
   return entries
@@ -264,7 +266,7 @@ async function handleActivityRoute(
     } catch { /* best effort — return what we have */ }
   }
 
-  const combined = [...buffered, ...fallbackActivity]
+  const combined = [...buffered, ...fallbackActivity].sort((a, b) => a.timestamp - b.timestamp)
 
   sendJson(res, { activity: combined, session: sessionData })
 }
@@ -290,7 +292,13 @@ function handleDashboardRequest(
 
   const activityMatch = url.pathname.match(/^\/api\/session\/([^/]+)\/activity$/)
   if (activityMatch) {
-    handleActivityRoute(activityMatch[1]!, options, res)
+    const sessionId = decodeURIComponent(activityMatch[1]!)
+    handleActivityRoute(sessionId, options, res).catch(() => {
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ error: "Failed to fetch activity" }))
+      }
+    })
     return
   }
 

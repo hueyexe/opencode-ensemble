@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import type { Database } from "../src/db"
 import { setupDb, insertTeam, insertMember, mockClient } from "./helpers"
-import { startDashboard } from "../src/dashboard"
+import { startDashboard, parseMessageParts } from "../src/dashboard"
 import { ActivityBuffer } from "../src/activity"
 import type { PluginClient } from "../src/types"
 
@@ -449,6 +449,115 @@ describe("dashboard", () => {
       const body = (await res.json()) as StateResponse
 
       expect(body.teams[0]!.members[0]!.sessionId).toBe("sess-a")
+    })
+  })
+
+  describe("parseMessageParts", () => {
+    test("parses step-start parts", () => {
+      const entries = parseMessageParts(
+        [{ type: "step-start", label: "Plan", step: "1" }],
+        { time: new Date().toISOString() },
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.type).toBe("step")
+      expect(entries[0]!.title).toBe("Plan")
+    })
+
+    test("parses step-finish parts", () => {
+      const entries = parseMessageParts(
+        [{ type: "step-finish", label: "Plan", step: "1" }],
+        { time: new Date().toISOString() },
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.type).toBe("step")
+      expect(entries[0]!.title).toBe("Plan")
+    })
+
+    test("parses file parts with diff", () => {
+      const entries = parseMessageParts(
+        [{ type: "file", path: "src/handler.ts", diff: "@@ -1 +1 @@" }],
+        { time: new Date().toISOString() },
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.type).toBe("file")
+      expect(entries[0]!.filePath).toBe("src/handler.ts")
+      expect(entries[0]!.fileDiff).toBe("@@ -1 +1 @@")
+    })
+
+    test("handles malformed parts gracefully", () => {
+      const entries = parseMessageParts(
+        [null, undefined, "string", 42, { type: "unknown" }, { type: "tool" }],
+        { time: new Date().toISOString() },
+      )
+      expect(entries).toHaveLength(0)
+    })
+  })
+
+  describe("GET /api/session/:sessionId/activity — edge cases", () => {
+    test("sorts combined entries by timestamp", async () => {
+      const buf = new ActivityBuffer()
+      // Buffer entry with later timestamp
+      buf.record("sess-sort", { type: "shell_command", command: "ls", timestamp: 3000 })
+      // Session message with earlier timestamp
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(_opts: { sessionID: string }) {
+            return {
+              data: [{
+                info: { role: "assistant", time: new Date(1000).toISOString() },
+                parts: [{ type: "text", text: "hello" }],
+              }],
+            }
+          },
+          async get(_opts: { sessionID: string }) {
+            return { data: null }
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { activityBuffer: buf, client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-sort/activity`)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      expect(body.activity).toHaveLength(2)
+      // Earlier timestamp (1000) should come first
+      expect(body.activity[0]!.timestamp).toBe(1000)
+      expect(body.activity[1]!.timestamp).toBe(3000)
+    })
+
+    test("decodes URL-encoded session IDs", async () => {
+      const buf = new ActivityBuffer()
+      buf.record("sess/with/slash", { type: "shell_command", command: "ls", timestamp: 1000 })
+
+      server = await startDashboard(db, port, { activityBuffer: buf })
+      const res = await fetch(`http://localhost:${port}/api/session/sess%2Fwith%2Fslash/activity`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { activity: Array<Record<string, unknown>> }
+      expect(body.activity).toHaveLength(1)
+    })
+
+    test("returns 500 when activity route throws", async () => {
+      const mockPluginClient: PluginClient = {
+        ...mockClient(),
+        session: {
+          ...mockClient().session,
+          async messages(_opts: { sessionID: string }) {
+            throw new Error("network failure")
+          },
+          async get(_opts: { sessionID: string }) {
+            throw new Error("network failure")
+          },
+        },
+      }
+
+      server = await startDashboard(db, port, { client: mockPluginClient })
+      const res = await fetch(`http://localhost:${port}/api/session/sess-err/activity`)
+      // The error is caught — returns what we have (empty activity)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { activity: unknown[]; session: unknown }
+      expect(body.activity).toEqual([])
+      expect(body.session).toBeNull()
     })
   })
 })
