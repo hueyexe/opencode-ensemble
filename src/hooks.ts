@@ -1,6 +1,7 @@
 import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker } from "./state"
 import { sendMessage } from "./messaging"
+import { releaseMemberTasks } from "./tasks"
 import { findTeamBySession } from "./types"
 
 const TEAM_TOOL_PREFIX = "team_"
@@ -43,6 +44,11 @@ export function handleSessionStatusEvent(
       "UPDATE team_member SET status = ?, execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
       [newStatus, Date.now(), entry.teamId, entry.memberName]
     )
+    // A gracefully shut-down member has actually stopped now — release any
+    // tasks they left in_progress back to the pool so nothing is stranded (issue #27).
+    if (newStatus === "shutdown") {
+      releaseMemberTasks(db, entry.teamId, entry.memberName)
+    }
     // Mark teammate as having reported if they sent at least one message to lead (issue #3).
     // Set on busy→ready transition so Q&A messages during work don't prematurely block delivery.
     if (member.status === "busy" && newStatus === "ready") {

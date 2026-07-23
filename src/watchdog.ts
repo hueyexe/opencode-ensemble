@@ -3,6 +3,7 @@ import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
+import { releaseMemberTasks } from "./tasks"
 import { sendMessage } from "./messaging"
 import { log } from "./log"
 
@@ -211,6 +212,10 @@ export class Watchdog {
         "UPDATE team_member SET status = 'error', execution_status = 'timed_out', time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), member.team_id, member.name]
       )
+
+      // Release the timed-out member's in_progress tasks back to the pool (issue #27)
+      const released = releaseMemberTasks(this.db, member.team_id, member.name)
+      if (released > 0) log(`watchdog:tasks:released name=${member.name} count=${released}`)
 
       // Abort session (best effort)
       try {
