@@ -2,20 +2,55 @@ import type { ToolDeps } from "../types"
 import { resolveRecipientSession } from "../types"
 import { requireTeamMember } from "./shared"
 import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
+import { parseModelId, getMemberModel } from "../member-model"
 import { log } from "../log"
 
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
  * Optionally approves or rejects a teammate's plan (lead only).
+ * Optionally updates a teammate's model in-place (lead only) via the `model`
+ * param — see #26. When `model` is set, `text` is optional: if omitted, the
+ * model is updated without delivering a message.
  */
 export async function executeTeamMessage(
   deps: ToolDeps,
-  args: { to: string; text: string; approve?: boolean; reject?: string },
+  args: { to: string; text?: string; approve?: boolean; reject?: string; model?: string },
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
 
   const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
+
+  // In-place model update (lead only). Handled before recipient session
+  // resolution so it works even when the member is idle/not in the registry,
+  // and rejects terminal members explicitly. See #26.
+  if (args.model !== undefined) {
+    if (teamInfo.role !== "lead") throw new Error("Only the lead can update a teammate's model.")
+    const parsed = parseModelId(args.model)
+    if (!parsed) throw new Error(`Invalid model "${args.model}" — expected "provider/model" format (e.g. "anthropic/claude-sonnet").`)
+    const member = deps.db.query("SELECT status FROM team_member WHERE team_id = ? AND name = ?")
+      .get(teamInfo.teamId, args.to) as { status: string } | null
+    if (!member) throw new Error(`Teammate "${args.to}" not found in team "${teamInfo.teamName}".`)
+    if (member.status === "shutdown" || member.status === "error") {
+      throw new Error(`Teammate "${args.to}" is shut down — spawn a new teammate instead of updating the model.`)
+    }
+    deps.db.run(
+      "UPDATE team_member SET model = ?, time_updated = ? WHERE team_id = ? AND name = ?",
+      [args.model, Date.now(), teamInfo.teamId, args.to],
+    )
+    log(`team_message:model-update to=${args.to} model=${args.model}`)
+
+    // If there's no accompanying message, we're done — the new model applies
+    // on the teammate's next natural delivery.
+    if (!args.text) {
+      return `Updated ${args.to}'s model to ${args.model}. It applies on their next turn.`
+    }
+  }
+
+  if (args.text === undefined) {
+    throw new Error("team_message requires either 'text' or 'model'.")
+  }
+  const text = args.text
 
   const recipientSessionId = resolveRecipientSession(deps.db, deps.registry, teamInfo.teamId, args.to)
 
@@ -29,7 +64,7 @@ export async function executeTeamMessage(
       teamId: teamInfo.teamId,
       from: senderName,
       to: args.to,
-      content: args.text,
+      content: text,
     })
     log(`team_message:queued from=${senderName} to=${args.to} (recipient not yet spawned)`)
     return `Message queued for ${args.to} — they haven't been spawned yet. It will be delivered when they join the team.`
@@ -37,7 +72,7 @@ export async function executeTeamMessage(
   if (!recipientSessionId) throw new Error(`Recipient "${args.to}" not found in team "${teamInfo.teamName}"`)
 
   // Handle plan approval/rejection
-  let messageText = args.text
+  let messageText = text
   if (args.approve || args.reject) {
     if (args.approve && args.reject) {
       throw new Error("Cannot both approve and reject a plan.")
@@ -96,10 +131,13 @@ export async function executeTeamMessage(
   }
 
   // For member-to-member messages, fire-and-forget delivery is safe.
+  // Deliver on the recipient's configured model, if any (#26).
   const deliveryText = `[Team message from ${senderName}]: ${messageText}`
+  const recipientModel = getMemberModel(deps.db, teamInfo.teamId, args.to)
   deps.client.session.promptAsync({
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],
+    ...(recipientModel ? { model: recipientModel } : {}),
   }).then(() => {
     markDelivered(deps.db, msgId)
   }).catch((err) => {

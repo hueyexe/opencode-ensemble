@@ -280,6 +280,27 @@ describe("recoverUndeliveredMessages", () => {
     expect(promptCalls).toHaveLength(0)
   })
 
+  test("redelivers on the recipient's configured model when set", async () => {
+    db.run("UPDATE team_member SET model = 'anthropic/claude-sonnet' WHERE team_id = 't1' AND name = 'bob'")
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
+
+    await recoverUndeliveredMessages(db, client, registry)
+
+    const promptCall = client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { model?: { providerID: string; modelID: string } }
+    expect(opts.model).toEqual({ providerID: "anthropic", modelID: "claude-sonnet" })
+  })
+
+  test("redelivers without a model when the recipient has none set", async () => {
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
+
+    await recoverUndeliveredMessages(db, client, registry)
+
+    const promptCall = client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { model?: unknown }
+    expect(opts.model).toBeUndefined()
+  })
+
   test("skips already-delivered messages", async () => {
     const id = sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
     db.run("UPDATE team_message SET delivered = 1 WHERE id = ?", [id])

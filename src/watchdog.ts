@@ -4,6 +4,7 @@ import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
 import { releaseMemberTasks } from "./tasks"
+import { getMemberModel } from "./member-model"
 import { sendMessage } from "./messaging"
 import { log } from "./log"
 
@@ -117,9 +118,11 @@ export class Watchdog {
       const reason = tokenStalled ? "low output tokens" : "no communication"
 
       // Nudge the teammate directly
+      const stallModel = getMemberModel(this.db, member.team_id, member.name)
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You appear stalled — no progress detected. Report your current status to the lead via team_message, or wrap up your work." }],
+        ...(stallModel ? { model: stallModel } : {}),
       }).catch(() => { /* best effort */ })
 
       // Notify the lead
@@ -160,9 +163,11 @@ export class Watchdog {
       this.progressTracker.markChattyReported(member.session_id)
 
       // Nudge the agent
+      const chattyModel = getMemberModel(this.db, member.team_id, member.name)
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You've sent several messages to teammates. Focus on completing your task and send your results to the lead via team_message." }],
+        ...(chattyModel ? { model: chattyModel } : {}),
       }).catch(() => { /* best effort */ })
 
       // Notify the lead
