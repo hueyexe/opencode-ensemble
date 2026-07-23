@@ -2,6 +2,7 @@ import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
+import { releaseMemberTasks } from "./tasks"
 import { preserveBranch, preservedBranchName, teamResourceSegment } from "./tools/merge-helper"
 import { log } from "./log"
 import { runCommand } from "./process"
@@ -114,6 +115,13 @@ export async function recoverStaleMembers(db: Database, client?: PluginClient, c
         AND team_id IN (SELECT id FROM team WHERE status = 'active' AND (? IS NULL OR project_id = ? OR project_id = 'default'))`,
     [Date.now(), cwd ?? null, cwd ?? null]
   )
+
+  // Release each stale member's in_progress tasks back to the pool so their
+  // unfinished work is reclaimable after a crash (issue #27).
+  for (const member of stale) {
+    const released = releaseMemberTasks(db, member.team_id, member.name)
+    if (released > 0) log(`recovery:tasks:released name=${member.name} count=${released}`)
+  }
 
   // Preserve branches then abort orphaned sessions
   if (client) {

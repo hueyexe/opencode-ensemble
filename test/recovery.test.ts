@@ -223,6 +223,21 @@ describe("recoverStaleMembers", () => {
     expect(abortCalls).toHaveLength(2)
   })
 
+  test("releases in_progress tasks of stale members back to the pool", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()]
+    )
+
+    await recoverStaleMembers(db, client)
+
+    const row = db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
+  })
+
   test("continues recovery even if abort fails", async () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "busy", "running")

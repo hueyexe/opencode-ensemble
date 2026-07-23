@@ -40,6 +40,26 @@ describe("Watchdog", () => {
     expect(msg).toContain("timed out")
   })
 
+  test("releases the member's in_progress tasks on timeout", async () => {
+    const pastTime = Date.now() - 60_000
+    deps.db.run(
+      "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, time_created, time_updated) VALUES (?, ?, ?, 'build', 'busy', 'running', ?, ?)",
+      ["t1", "alice", "sess-a", pastTime, pastTime]
+    )
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()]
+    )
+    deps.registry.register("t1", "alice", "sess-a")
+
+    const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+    await watchdog.check()
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
+  })
+
   test("does not time out a member within TTL", async () => {
     // Insert member with recent time_updated
     const now = Date.now()
