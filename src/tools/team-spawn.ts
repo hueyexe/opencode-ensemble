@@ -4,19 +4,13 @@ import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
 import { sendMessage } from "../messaging"
 import { releaseMemberTasks } from "../tasks"
+import { parseModelId } from "../member-model"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
-
-/** Parse "provider/model" string into { providerID, modelID } for the SDK. */
-function parseModelId(model: string): { providerID: string; modelID: string } | undefined {
-  const slash = model.indexOf("/")
-  if (slash <= 0 || slash === model.length - 1) return undefined
-  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
-}
 
 /**
  * Resolve which model to use for a spawned agent.

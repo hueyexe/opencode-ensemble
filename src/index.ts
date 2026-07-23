@@ -11,6 +11,7 @@ import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
 import { sendMessage, hasReportedCompletion } from "./messaging"
+import { getMemberModel } from "./member-model"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -214,9 +215,11 @@ const plugin: Plugin = async (input) => {
             if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
               nudgedMembers.add(nudgeKey)
               log(`nudge:idle-without-report name=${transition.memberName}`)
+              const nudgeModel = getMemberModel(db, transition.teamId, transition.memberName)
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now." }],
+                ...(nudgeModel ? { model: nudgeModel } : {}),
               }).catch((err) => {
                 log(`nudge:idle-without-report:failed name=${transition.memberName} team=${transition.teamId} err=${err instanceof Error ? err.message : String(err)}`)
               })
@@ -303,9 +306,11 @@ const plugin: Plugin = async (input) => {
             ).get(member.team_id, member.name, staleThreshold) as { c: number }
             if (peerMsgs.c > 0) {
               log(`wake-peer: ${member.name} has ${peerMsgs.c} pending peer messages`)
+              const peerModel = getMemberModel(db, member.team_id, member.name)
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: `[System: ${peerMsgs.c} new message(s) from teammates]` }],
+                ...(peerModel ? { model: peerModel } : {}),
               }).catch((err) => {
                 log(`wake-peer:failed err=${err instanceof Error ? err.message : String(err)}`)
               })
@@ -448,13 +453,16 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_message: tool({
-        description: "Send a message to a specific teammate or to the lead. Use 'lead' to message the team lead.",
+        description: "Send a message to a specific teammate or to the lead. Use 'lead' to message the team lead. " +
+          "Lead only: pass 'model' (provider/model) to update a teammate's model in-place — it applies on their next turn. " +
+          "When updating a model, 'text' is optional; omit it to change the model without sending a message.",
         args: {
           to: tool.schema.string().describe("Recipient name ('lead' or teammate name)"),
-          text: tool.schema.string().describe("Message content (max 10KB)"),
+          text: tool.schema.string().optional().describe("Message content (max 10KB). Optional only when 'model' is provided."),
           approve: tool.schema.boolean().optional().describe("Approve a teammate's plan (only when recipient has plan_approval='pending')"),
           reject: tool.schema.string().optional().describe("Reject a teammate's plan with reason (only when recipient has plan_approval='pending')"),
           force: tool.schema.boolean().optional().describe("Lead only. Re-activate a teammate who already reported task completion (normally their session won't be woken again). Use for legitimate follow-on work — e.g. the next round of a multi-round debate — not for courtesy replies."),
+          model: tool.schema.string().optional().describe("Lead only: update the recipient teammate's model in-place, in 'provider/model' format (e.g. 'anthropic/claude-sonnet')."),
         },
         async execute(args, ctx) {
           const result = await executeTeamMessage(deps, args, ctx.sessionID)
@@ -462,7 +470,7 @@ const plugin: Plugin = async (input) => {
           progressTracker.recordMessage(ctx.sessionID)
           // Track peer messages for chatty detection
           if (args.to !== "lead") progressTracker.recordPeerMessage(ctx.sessionID)
-          ctx.metadata({ title: `Message → ${args.to}` })
+          ctx.metadata({ title: args.model ? `Set ${args.to} model → ${args.model}` : `Message → ${args.to}` })
           return result
         },
       }),

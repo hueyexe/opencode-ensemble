@@ -4,7 +4,12 @@ import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
 import { releaseMemberTasks } from "./tasks"
+<<<<<<< HEAD
 import { sendMessage, hasReportedCompletion } from "./messaging"
+=======
+import { getMemberModel } from "./member-model"
+import { sendMessage } from "./messaging"
+>>>>>>> e32f6fd (feat: update a teammate's model in-place via team_message (#26))
 import { log } from "./log"
 
 interface WatchdogOpts {
@@ -136,9 +141,11 @@ export class Watchdog {
       // confirmed — marking it before delivery is known would permanently and silently
       // orphan the stall state if promptAsync throws (aborted session, invalid ID),
       // since ProgressTracker.reported is in-memory and only cleared by new activity.
+      const stallModel = getMemberModel(this.db, member.team_id, member.name)
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You appear stalled — no progress detected. Report your current status to the lead via team_message, or wrap up your work." }],
+        ...(stallModel ? { model: stallModel } : {}),
       }).then(() => {
         this.progressTracker!.markReported(member.session_id)
       }).catch((err) => {
@@ -189,9 +196,11 @@ export class Watchdog {
       this.progressTracker.markChattyReported(member.session_id)
 
       // Nudge the agent
+      const chattyModel = getMemberModel(this.db, member.team_id, member.name)
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You've sent several messages to teammates. Focus on completing your task and send your results to the lead via team_message." }],
+        ...(chattyModel ? { model: chattyModel } : {}),
       }).catch((err) => {
         log(`watchdog:chatty:nudge-failed member=${member.name} team=${member.team_id} session=${member.session_id} err=${err instanceof Error ? err.message : String(err)}`)
       })

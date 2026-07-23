@@ -3,6 +3,7 @@ import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
 import { releaseMemberTasks } from "./tasks"
+import { getMemberModel } from "./member-model"
 import { preserveBranch, preservedBranchName, teamResourceSegment } from "./tools/merge-helper"
 import { log } from "./log"
 import { runCommand } from "./process"
@@ -233,9 +234,11 @@ export async function recoverUndeliveredMessages(
       }
 
       try {
+        const recipientModel = getMemberModel(db, team.id, msg.to_name)
         await client.session.promptAsync({
           sessionID: recipientSessionId,
           parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }],
+          ...(recipientModel ? { model: recipientModel } : {}),
         })
         markDelivered(db, msg.id)
         redelivered++

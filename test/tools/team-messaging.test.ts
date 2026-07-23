@@ -106,6 +106,78 @@ describe("team_message", () => {
   })
 })
 
+describe("team_message — in-place model update (#26)", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    deps.registry.register("t1", "alice", "sess-alice")
+  })
+
+  test("lead updates a teammate's model in the DB", async () => {
+    const result = await executeTeamMessage(deps, { to: "alice", model: "anthropic/claude-sonnet" }, "lead-sess")
+
+    const row = deps.db.query("SELECT model FROM team_member WHERE team_id = 't1' AND name = 'alice'").get() as { model: string | null }
+    expect(row.model).toBe("anthropic/claude-sonnet")
+    expect(result).toContain("alice")
+    expect(result).toContain("anthropic/claude-sonnet")
+  })
+
+  test("model without text persists but does not deliver a message", async () => {
+    await executeTeamMessage(deps, { to: "alice", model: "anthropic/claude-sonnet" }, "lead-sess")
+
+    const rows = deps.db.query("SELECT * FROM team_message WHERE team_id = 't1'").all("t1") as unknown[]
+    expect(rows).toHaveLength(0)
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+  })
+
+  test("model with text updates the model AND delivers the message on the new model", async () => {
+    await executeTeamMessage(deps, { to: "alice", model: "anthropic/claude-sonnet", text: "switch and continue" }, "lead-sess")
+
+    const row = deps.db.query("SELECT model FROM team_member WHERE team_id = 't1' AND name = 'alice'").get() as { model: string | null }
+    expect(row.model).toBe("anthropic/claude-sonnet")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    expect(promptCall).toBeTruthy()
+    const opts = promptCall!.args[0] as { model?: { providerID: string; modelID: string } }
+    expect(opts.model).toEqual({ providerID: "anthropic", modelID: "claude-sonnet" })
+  })
+
+  test("rejects when caller is not the lead", async () => {
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "bob", "sess-bob")
+
+    await expect(executeTeamMessage(deps, { to: "alice", model: "anthropic/claude-sonnet" }, "sess-bob"))
+      .rejects.toThrow("lead")
+
+    const row = deps.db.query("SELECT model FROM team_member WHERE team_id = 't1' AND name = 'alice'").get() as { model: string | null }
+    expect(row.model).toBeNull()
+  })
+
+  test("rejects a malformed model string without writing to the DB", async () => {
+    await expect(executeTeamMessage(deps, { to: "alice", model: "garbage" }, "lead-sess"))
+      .rejects.toThrow(/provider\/model/)
+
+    const row = deps.db.query("SELECT model FROM team_member WHERE team_id = 't1' AND name = 'alice'").get() as { model: string | null }
+    expect(row.model).toBeNull()
+  })
+
+  test("rejects updating the model of an unknown member", async () => {
+    await expect(executeTeamMessage(deps, { to: "ghost", model: "anthropic/claude-sonnet" }, "lead-sess"))
+      .rejects.toThrow(/not found|not/)
+  })
+
+  test("rejects updating the model of a shut-down member", async () => {
+    deps.db.run("UPDATE team_member SET status = 'shutdown' WHERE team_id = 't1' AND name = 'alice'")
+
+    await expect(executeTeamMessage(deps, { to: "alice", model: "anthropic/claude-sonnet" }, "lead-sess"))
+      .rejects.toThrow(/shut down|shutdown/)
+  })
+})
+
 describe("team_broadcast", () => {
   let deps: ReturnType<typeof setupDeps>
 
