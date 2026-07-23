@@ -106,6 +106,24 @@ describe("handleSessionStatusEvent", () => {
     expect(row.execution_status).toBe("running")
   })
 
+  test("advances a freshly-spawned member (busy/starting) to running on its first busy event", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    // Spawn inserts members as busy/starting before the session's first busy event
+    insertMember(db, "t1", "alice", "sess-1", "busy", "starting")
+    registry.register("t1", "alice", "sess-1")
+    const spawnTime = (db.query("SELECT time_updated FROM team_member WHERE session_id = ?").get("sess-1") as { time_updated: number }).time_updated
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
+
+    const row = db.query("SELECT status, execution_status, time_updated FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, number | string>
+    expect(row.status).toBe("busy")
+    expect(row.execution_status).toBe("running")
+    expect(row.time_updated as number).toBeGreaterThanOrEqual(spawnTime)
+    // A transition should be reported so the dashboard/toasts update
+    expect(result).toBeTruthy()
+    expect(result!.to).toBe("busy")
+  })
+
   test("ignores events for unknown sessions", () => {
     handleSessionStatusEvent(db, registry, "unknown-sess", "idle")
     // No error thrown — just a no-op

@@ -221,11 +221,30 @@ function sendJson(res: ServerResponse, data: unknown): void {
   res.end(JSON.stringify(data))
 }
 
+/**
+ * Resolve a message's creation timestamp (Unix ms) from an SDK message's
+ * `info.time`. The SDK shape is an object `{ created: number }`; older/other
+ * shapes (a numeric epoch or an ISO string) are tolerated. Falls back to
+ * `Date.now()` when the value is missing or unparseable — never returns NaN.
+ */
+export function parseMessageTime(time: unknown): number {
+  if (typeof time === "object" && time !== null) {
+    const created = (time as { created?: unknown }).created
+    if (typeof created === "number" && Number.isFinite(created)) return created
+  }
+  if (typeof time === "number" && Number.isFinite(time)) return time
+  if (typeof time === "string") {
+    const ms = new Date(time).getTime()
+    if (!Number.isNaN(ms)) return ms
+  }
+  return Date.now()
+}
+
 /** Parse SDK message parts into ActivityEntry format for the fallback path. */
 export function parseMessageParts(parts: unknown[], msgInfo: unknown): ActivityEntry[] {
   const entries: ActivityEntry[] = []
-  const info = (msgInfo ?? {}) as { time?: string; role?: string; tokens?: { input?: number; output?: number } }
-  const timestamp = info.time ? new Date(info.time).getTime() : Date.now()
+  const info = (msgInfo ?? {}) as { time?: unknown; role?: string; tokens?: { input?: number; output?: number } }
+  const timestamp = parseMessageTime(info.time)
 
   for (const part of parts) {
     if (typeof part !== "object" || part === null) continue
