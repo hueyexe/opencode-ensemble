@@ -491,6 +491,31 @@ describe("dashboard", () => {
       )
       expect(entries).toHaveLength(0)
     })
+
+    test("uses info.time.created (SDK object shape) for the timestamp", () => {
+      const created = 1_700_000_000_000
+      const entries = parseMessageParts(
+        [{ type: "text", text: "hello" }],
+        { role: "assistant", time: { created } },
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.timestamp).toBe(created)
+    })
+
+    test("does not produce a NaN/epoch timestamp for the SDK object shape", () => {
+      const entries = parseMessageParts(
+        [{ type: "text", text: "hi" }],
+        { role: "assistant", time: { created: 1_700_000_000_000 } },
+      )
+      expect(Number.isNaN(entries[0]!.timestamp)).toBe(false)
+      expect(entries[0]!.timestamp).toBeGreaterThan(0)
+    })
+
+    test("falls back to a sane timestamp when time is missing", () => {
+      const before = Date.now()
+      const entries = parseMessageParts([{ type: "text", text: "hi" }], { role: "assistant" })
+      expect(entries[0]!.timestamp).toBeGreaterThanOrEqual(before)
+    })
   })
 
   describe("GET /api/session/:sessionId/activity — edge cases", () => {

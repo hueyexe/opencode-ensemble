@@ -73,6 +73,18 @@ export function handleSessionStatusEvent(
       )
       return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "busy" }
     }
+    // Freshly-spawned member: inserted as busy/starting before the session's
+    // first busy event. Advance execution_status to running and refresh
+    // time_updated so the dashboard shows accurate progress instead of a
+    // frozen "starting" state (do NOT reset reported_to_lead — status is
+    // already busy, so this is not a re-activation).
+    if (member.status === "busy" && member.execution_status === "starting") {
+      db.run(
+        "UPDATE team_member SET execution_status = 'running', time_updated = ? WHERE team_id = ? AND name = ?",
+        [Date.now(), entry.teamId, entry.memberName]
+      )
+      return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "busy" }
+    }
     // Session went busy while shutdown was requested — signal for re-abort
     if (member.status === "shutdown_requested") {
       return { memberName: entry.memberName, teamId: entry.teamId, from: "shutdown_requested", to: "busy_while_shutdown" }
