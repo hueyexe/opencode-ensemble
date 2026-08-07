@@ -73,6 +73,10 @@ export async function executeTeamSpawn(
   const nameError = validateMemberName(args.name)
   if (nameError) throw new Error(nameError)
 
+  // Normalize the agent type.
+  const agent = args.agent ?? "build"
+  args = { ...args, agent }
+
   const teamInfo = requireLead(deps, sessionId)
 
   // Circuit breaker — stop retrying after 3 consecutive failures

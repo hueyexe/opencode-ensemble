@@ -38,6 +38,20 @@ describe("team_spawn", () => {
     expect(promptCalls).toHaveLength(1)
   })
 
+  test("defaults agent to \"build\" when agent is null/undefined", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "defaulted",
+      agent: undefined,
+      prompt: "Fix the tests",
+    } as unknown as Parameters<typeof executeTeamSpawn>[1], "lead-sess")
+
+    expect(result).toContain("defaulted")
+    expect(result).toContain("spawned")
+
+    const row = deps.db.query("SELECT agent FROM team_member WHERE name = ?").get("defaulted") as { agent: string }
+    expect(row.agent).toBe("build")
+  })
+
   test("rejects if caller is not the lead", async () => {
     insertMember(deps.db, "t1", "bob", "bob-sess")
     deps.registry.register("t1", "bob", "bob-sess")

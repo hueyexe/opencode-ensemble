@@ -400,7 +400,7 @@ const plugin: Plugin = async (input) => {
           "Teammates work asynchronously and will message you when done. Do not poll for their status.",
         args: {
           name: tool.schema.string().describe("Teammate name (lowercase alphanumeric with hyphens)"),
-          agent: tool.schema.string().default("build").describe("Agent type (e.g. 'build', 'plan', 'explore')"),
+          agent: tool.schema.string().nullish().transform((v) => v ?? "build").describe("Agent type (e.g. 'build', 'plan', 'explore')"),
           prompt: tool.schema.string().describe("Task instructions for the teammate"),
           model: tool.schema.string().optional().describe("Model in provider/model format (optional, uses default)"),
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
