@@ -1,6 +1,7 @@
 import type { ToolDeps, PermissionRule } from "../types"
 import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
+import { claimTask } from "./team-claim"
 import { sendMessage } from "../messaging"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
@@ -67,9 +68,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  */
 export async function executeTeamSpawn(
   deps: ToolDeps,
-  args: { name: string; agent: string; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean },
+  args: { name: string; agent?: string | null; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean },
   sessionId: string,
 ): Promise<string> {
+  // Normalize agent: the tool schema defaults to "build", but Zod's .default()
+  // only fires on undefined — an explicit null slips through and would violate
+  // the team_member.agent NOT NULL constraint (issue #28).
+  const agent = args.agent ?? "build"
+
   const nameError = validateMemberName(args.name)
   if (nameError) throw new Error(nameError)
 
@@ -86,11 +92,11 @@ export async function executeTeamSpawn(
     .get(teamInfo.teamId, args.name)
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
-  const isReadOnly = args.agent === "plan" || args.agent === "explore"
+  const isReadOnly = agent === "plan" || agent === "explore"
   const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
   const usePlanApproval = args.plan_approval === true
 
-  log(`spawn:start name=${args.name} agent=${args.agent} worktree=${useWorktree}`)
+  log(`spawn:start name=${args.name} agent=${agent} worktree=${useWorktree}`)
 
   // Create worktree if enabled
   let worktreeDir: string | null = null
@@ -177,7 +183,7 @@ export async function executeTeamSpawn(
     const createResult = await withTimeout(
       deps.client.session.create({
         parentID: sessionId,
-        title: `${args.name} (@${args.agent} teammate)`,
+        title: `${args.name} (@${agent} teammate)`,
         permission,
         ...(workspaceId ? { workspaceID: workspaceId } : {}),
       }),
@@ -216,22 +222,37 @@ export async function executeTeamSpawn(
   const now = Date.now()
   // Resolve model before DB insert so the stored value matches what promptAsync uses
   const memberCount = (deps.db.query("SELECT COUNT(*) as c FROM team_member WHERE team_id = ?").get(teamInfo.teamId) as { c: number }).c
-  const resolvedModel = resolveModel(args.model, args.agent, memberCount, deps.config)
+  const resolvedModel = resolveModel(args.model, agent, memberCount, deps.config)
   if (resolvedModel) log(`spawn:model name=${args.name} model=${resolvedModel}`)
 
   deps.db.run(
     `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, workspace_id, plan_approval, time_created, time_updated)
      VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [teamInfo.teamId, args.name, childSessionId, args.agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
+    [teamInfo.teamId, args.name, childSessionId, agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
   )
 
   // Register in memory
   deps.registry.register(teamInfo.teamId, args.name, childSessionId)
 
+  // Auto-claim a task for this teammate when claim_task is provided (issue #27).
+  // Claims atomically so a task is never double-assigned when the lead hands out
+  // more tasks than there are teammates. Read-only agents cannot claim tasks.
+  let claimedTaskContent: string | null = null
+  let claimWarning: string | null = null
+  if (args.claim_task && !isReadOnly) {
+    try {
+      claimedTaskContent = claimTask(deps.db, teamInfo.teamId, args.claim_task, args.name)
+      log(`spawn:claim:ok name=${args.name} task=${args.claim_task}`)
+    } catch (err) {
+      claimWarning = err instanceof Error ? err.message : String(err)
+      log(`spawn:claim:failed name=${args.name} task=${args.claim_task} err=${claimWarning}`)
+    }
+  }
+
   // Build teammate context message
   const context = [
     `You are "${args.name}", a teammate in team "${teamInfo.teamName}".`,
-    `Your agent type is "${args.agent}".`,
+    `Your agent type is "${agent}".`,
   ]
 
   // Show other teammates so this agent knows who to message
@@ -347,7 +368,7 @@ export async function executeTeamSpawn(
     args.prompt,
   )
 
-  if (args.claim_task) {
+  if (claimedTaskContent) {
     context.push("", `You have been assigned task ${args.claim_task}. Mark it complete when done.`)
   }
 
@@ -364,7 +385,7 @@ export async function executeTeamSpawn(
   deps.client.session.promptAsync({
     sessionID: childSessionId,
     parts: [{ type: "text", text: contextStr }],
-    agent: args.agent,
+    agent,
     ...(modelParam ? { model: modelParam } : {}),
   }).catch((err) => {
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -372,6 +393,13 @@ export async function executeTeamSpawn(
     try {
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
       deps.registry.unregister(childSessionId)
+      // Release any task auto-claimed for this teammate so it returns to the pool.
+      if (claimedTaskContent) {
+        deps.db.run(
+          "UPDATE team_task SET status = 'pending', assignee = NULL, time_updated = ? WHERE id = ? AND assignee = ?",
+          [Date.now(), args.claim_task, args.name]
+        )
+      }
       deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
       if (workspaceId) {
         deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
@@ -397,8 +425,11 @@ export async function executeTeamSpawn(
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
+  const claimInfo = claimedTaskContent
+    ? ` (claimed task: ${args.claim_task})`
+    : claimWarning ? ` (could not claim task: ${claimWarning})` : ""
   // Reset circuit breaker on success
   spawnFailures.delete(teamInfo.teamId)
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
-  return `Teammate "${args.name}" spawned (agent: ${args.agent})${branchInfo}${planInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
+  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }

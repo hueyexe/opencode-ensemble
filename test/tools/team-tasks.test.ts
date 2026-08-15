@@ -241,4 +241,126 @@ describe("team_claim", () => {
     expect(fulfilled).toHaveLength(1)
     expect(rejected).toHaveLength(1)
   })
+
+  test("multiple members claim from a pool larger than member count — no double claims", async () => {
+    const addResult = await executeTeamTasksAdd(deps, { tasks: [
+      { content: "Task 1", priority: "high" },
+      { content: "Task 2", priority: "high" },
+      { content: "Task 3", priority: "high" },
+      { content: "Task 4", priority: "high" },
+    ] }, "sess-alice")
+    const ids = [...addResult.matchAll(/task_[a-z0-9_]+/g)].map(m => m[0]!)
+
+    // Two members race for four tasks, one task is contested by both.
+    const results = await Promise.allSettled([
+      executeTeamClaim(deps, { task_id: ids[0]! }, "sess-alice"),
+      executeTeamClaim(deps, { task_id: ids[0]! }, "sess-bob"),
+      executeTeamClaim(deps, { task_id: ids[1]! }, "sess-bob"),
+      executeTeamClaim(deps, { task_id: ids[2]! }, "sess-alice"),
+      executeTeamClaim(deps, { task_id: ids[3]! }, "sess-bob"),
+    ])
+
+    const fulfilled = results.filter(r => r.status === "fulfilled")
+    const rejected = results.filter(r => r.status === "rejected")
+    expect(fulfilled).toHaveLength(4)
+    expect(rejected).toHaveLength(1)
+
+    // Every task ends up claimed exactly once with a concrete assignee.
+    const rows = deps.db.query("SELECT status, assignee FROM team_task WHERE team_id = ?").all("t1") as Array<{ status: string; assignee: string | null }>
+    expect(rows).toHaveLength(4)
+    for (const t of rows) {
+      expect(t.status).toBe("in_progress")
+      expect(t.assignee).not.toBeNull()
+    }
+  })
+})
+
+describe("team_tasks_complete — ownership and state validation (issue #27)", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    insertMember(deps.db, "t1", "bob", "sess-bob")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.registry.register("t1", "bob", "sess-bob")
+  })
+
+  test("a member cannot complete a task claimed by another member", async () => {
+    const r = await executeTeamTasksAdd(deps, { tasks: [{ content: "Shared task", priority: "high" }] }, "sess-alice")
+    const taskId = r.match(/task_\S+/)![0]!
+    await executeTeamClaim(deps, { task_id: taskId }, "sess-alice")
+
+    await expect(executeTeamTasksComplete(deps, { task_id: taskId }, "sess-bob"))
+      .rejects.toThrow("claimed by alice")
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get(taskId) as Record<string, string>
+    expect(row.status).toBe("in_progress")
+    expect(row.assignee).toBe("alice")
+  })
+
+  test("completing an unclaimed pending task attributes it to the caller", async () => {
+    const r = await executeTeamTasksAdd(deps, { tasks: [{ content: "Unclaimed work", priority: "medium" }] }, "sess-alice")
+    const taskId = r.match(/task_\S+/)![0]!
+
+    const result = await executeTeamTasksComplete(deps, { task_id: taskId }, "sess-bob")
+    expect(result).toContain("Completed")
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get(taskId) as Record<string, string>
+    expect(row.status).toBe("completed")
+    expect(row.assignee).toBe("bob")
+  })
+
+  test("completing an already-completed task is rejected", async () => {
+    const r = await executeTeamTasksAdd(deps, { tasks: [{ content: "Done task", priority: "high" }] }, "sess-alice")
+    const taskId = r.match(/task_\S+/)![0]!
+    await executeTeamClaim(deps, { task_id: taskId }, "sess-alice")
+    await executeTeamTasksComplete(deps, { task_id: taskId }, "sess-alice")
+
+    await expect(executeTeamTasksComplete(deps, { task_id: taskId }, "sess-alice"))
+      .rejects.toThrow("already completed")
+  })
+
+  test("completing a blocked task is rejected", async () => {
+    const rA = await executeTeamTasksAdd(deps, { tasks: [{ content: "Task A", priority: "high" }] }, "sess-alice")
+    const idA = rA.match(/task_\S+/)![0]!
+    const rB = await executeTeamTasksAdd(deps, { tasks: [{ content: "Task B", priority: "medium", depends_on: [idA] }] }, "sess-alice")
+    const idB = rB.match(/task_\S+/)![0]!
+
+    await expect(executeTeamTasksComplete(deps, { task_id: idB }, "sess-alice"))
+      .rejects.toThrow("blocked")
+  })
+
+  test("the lead can complete a task claimed by a member", async () => {
+    const r = await executeTeamTasksAdd(deps, { tasks: [{ content: "Lead-completed task", priority: "high" }] }, "sess-alice")
+    const taskId = r.match(/task_\S+/)![0]!
+    await executeTeamClaim(deps, { task_id: taskId }, "sess-alice")
+
+    const result = await executeTeamTasksComplete(deps, { task_id: taskId }, "lead-sess")
+    expect(result).toContain("Completed")
+    const row = deps.db.query("SELECT status FROM team_task WHERE id = ?").get(taskId) as Record<string, string>
+    expect(row.status).toBe("completed")
+  })
+
+  test("a multi-dependency task unblocks only after all dependencies complete", async () => {
+    const rA = await executeTeamTasksAdd(deps, { tasks: [{ content: "Task A", priority: "high" }] }, "sess-alice")
+    const idA = rA.match(/task_\S+/)![0]!
+    const rB = await executeTeamTasksAdd(deps, { tasks: [{ content: "Task B", priority: "high" }] }, "sess-alice")
+    const idB = rB.match(/task_\S+/)![0]!
+    const rC = await executeTeamTasksAdd(deps, { tasks: [{ content: "Task C", priority: "medium", depends_on: [idA, idB] }] }, "sess-alice")
+    const idC = rC.match(/task_\S+/)![0]!
+
+    // Complete A only — C must remain blocked while B is still pending.
+    await executeTeamClaim(deps, { task_id: idA }, "sess-alice")
+    await executeTeamTasksComplete(deps, { task_id: idA }, "sess-alice")
+    const cAfterA = deps.db.query("SELECT status FROM team_task WHERE id = ?").get(idC) as Record<string, string>
+    expect(cAfterA.status).toBe("blocked")
+
+    // Complete B — C must now unblock to pending.
+    await executeTeamClaim(deps, { task_id: idB }, "sess-bob")
+    await executeTeamTasksComplete(deps, { task_id: idB }, "sess-bob")
+    const cAfterB = deps.db.query("SELECT status FROM team_task WHERE id = ?").get(idC) as Record<string, string>
+    expect(cAfterB.status).toBe("pending")
+  })
 })

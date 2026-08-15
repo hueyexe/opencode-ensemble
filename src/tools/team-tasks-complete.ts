@@ -5,6 +5,12 @@ import { log } from "../log"
 /**
  * Execute the team_tasks_complete tool. Marks a task as completed
  * and unblocks any dependent tasks.
+ *
+ * Enforces task-board accuracy (issue #27):
+ * - Rejects completing an already-completed or cancelled task.
+ * - Rejects completing a blocked task (dependencies must resolve first).
+ * - Only the assignee (or the lead) may complete a claimed task.
+ * - Completing an unclaimed task attributes it to the caller atomically.
  */
 export async function executeTeamTasksComplete(
   deps: ToolDeps,
@@ -12,13 +18,31 @@ export async function executeTeamTasksComplete(
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+  const caller = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
-  const task = deps.db.query("SELECT * FROM team_task WHERE id = ? AND team_id = ?")
-    .get(args.task_id, teamInfo.teamId) as Record<string, unknown> | null
+  const task = deps.db.query("SELECT id, content, status, assignee FROM team_task WHERE id = ? AND team_id = ?")
+    .get(args.task_id, teamInfo.teamId) as { id: string; content: string; status: string; assignee: string | null } | null
   if (!task) throw new Error(`Task "${args.task_id}" not found`)
+  if (task.status === "completed") throw new Error(`Task "${args.task_id}" is already completed`)
+  if (task.status === "cancelled") throw new Error(`Task "${args.task_id}" was cancelled`)
+  if (task.status === "blocked") throw new Error(`Task "${args.task_id}" is blocked by unresolved dependencies`)
+  if (task.status === "in_progress" && task.assignee && teamInfo.role !== "lead" && caller !== task.assignee) {
+    throw new Error(`Task "${args.task_id}" is claimed by ${task.assignee}`)
+  }
 
   const now = Date.now()
-  deps.db.run("UPDATE team_task SET status = 'completed', time_updated = ? WHERE id = ?", [now, args.task_id])
+  if (task.assignee) {
+    deps.db.run("UPDATE team_task SET status = 'completed', time_updated = ? WHERE id = ?", [now, args.task_id])
+  } else {
+    // Attribute an unclaimed task to the caller so the board reflects who did it.
+    const result = deps.db.run(
+      "UPDATE team_task SET status = 'completed', assignee = ?, time_updated = ? WHERE id = ? AND assignee IS NULL",
+      [caller, now, args.task_id]
+    )
+    if (result.changes === 0) {
+      throw new Error(`Task "${args.task_id}" was just completed by another teammate`)
+    }
+  }
 
   // Unblock dependent tasks
   const allTasks = deps.db.query("SELECT id, depends_on, status FROM team_task WHERE team_id = ?")
