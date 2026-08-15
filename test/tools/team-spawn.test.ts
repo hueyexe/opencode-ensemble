@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamSpawn } from "../../src/tools/team-spawn"
+import { executeTeamTasksAdd } from "../../src/tools/team-tasks-add"
 import type { ToolDeps } from "../../src/types"
 
 describe("team_spawn", () => {
@@ -36,6 +37,37 @@ describe("team_spawn", () => {
     expect(createCalls).toHaveLength(1)
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
+  })
+
+  test("agent: null defaults to 'build' instead of hitting the NOT NULL constraint (issue #28)", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: null,
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+
+    const row = deps.db.query("SELECT agent FROM team_member WHERE name = ?").get("alice") as { agent: string }
+    expect(row.agent).toBe("build")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { agent?: string }
+    expect(opts.agent).toBe("build")
+  })
+
+  test("agent: undefined defaults to 'build'", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: undefined,
+      prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+
+    const row = deps.db.query("SELECT agent FROM team_member WHERE name = ?").get("alice") as { agent: string }
+    expect(row.agent).toBe("build")
   })
 
   test("rejects if caller is not the lead", async () => {
@@ -88,20 +120,45 @@ describe("team_spawn", () => {
     expect(text).toMatch(/mark.*complete.*team_message/s)
   })
 
-  test("context message includes assigned task when claim_task is provided", async () => {
+  test("claim_task atomically claims the task on the board and includes it in context", async () => {
+    const addResult = await executeTeamTasksAdd(deps, { tasks: [
+      { content: "Fix the login bug", priority: "high" },
+    ] }, "lead-sess")
+    const taskId = addResult.match(/task_\S+/)![0]!
+
     await executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-      claim_task: "task-123",
+      claim_task: taskId,
     }, "lead-sess")
 
-    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    expect(promptCall).toBeTruthy()
-    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+    // The task must be claimed (in_progress + assignee), not left pending.
+    const task = deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get(taskId) as Record<string, string>
+    expect(task.status).toBe("in_progress")
+    expect(task.assignee).toBe("alice")
 
-    expect(text).toContain("task-123")
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+    expect(text).toContain(taskId)
     expect(text).toContain("Mark it complete when done")
+  })
+
+  test("claim_task that cannot be claimed still spawns but does not inject assignment and warns", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      claim_task: "task-does-not-exist",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+    expect(result).toContain("could not claim task")
+
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+    expect(text).not.toContain("You have been assigned task")
   })
 
   test("context message does NOT include assigned task line when claim_task is absent", async () => {
