@@ -7,13 +7,19 @@ import { log } from "../log"
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
  * Optionally approves or rejects a teammate's plan (lead only).
+ * Optionally forces delivery to a teammate who already reported completion (lead only) —
+ * see the `force` guard below.
  */
 export async function executeTeamMessage(
   deps: ToolDeps,
-  args: { to: string; text: string; approve?: boolean; reject?: string },
+  args: { to: string; text: string; approve?: boolean; reject?: string; force?: boolean },
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+
+  if (args.force && teamInfo.role !== "lead") {
+    throw new Error("Only the lead can force-deliver a message to a completed teammate.")
+  }
 
   const senderName = teamInfo.role === "lead" ? "lead" : (teamInfo.memberName ?? "unknown")
 
@@ -90,9 +96,13 @@ export async function executeTeamMessage(
     return `Message sent to ${args.to}.`
   }
 
-  // Guard: skip promptAsync delivery to teammates who have already reported completion (issue #3)
-  if (hasReportedCompletion(deps.db, teamInfo.teamId, args.to)) {
-    return `Message stored for ${args.to} (teammate has completed their task — message will not wake them).`
+  // Guard: skip promptAsync delivery to teammates who have already reported completion (issue #3),
+  // unless the lead explicitly forces it. Forcing wakes the session; the natural busy transition
+  // (handleSessionStatusEvent) resets the completion flag when the teammate next goes idle, the
+  // same reset that already happens for a normal re-activation — this just gives the lead a way
+  // to trigger it deliberately instead of it being unreachable once the guard is set.
+  if (hasReportedCompletion(deps.db, teamInfo.teamId, args.to) && !args.force) {
+    return `Message stored for ${args.to} (teammate has completed their task — message will not wake them). Pass force:true to re-activate them.`
   }
 
   // For member-to-member messages, fire-and-forget delivery is safe.

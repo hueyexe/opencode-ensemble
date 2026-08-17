@@ -4,6 +4,7 @@ import { applyMigrations } from "../src/schema"
 import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "../src/state"
 import type { ToolDeps, PluginClient } from "../src/types"
 import { DEFAULT_CONFIG } from "../src/config"
+import { ProgressTracker } from "../src/progress"
 
 /** Create a fresh in-memory DB with migrations applied. */
 export function setupDb(): EnsembleDatabase {
@@ -102,6 +103,7 @@ export function setupDeps(db?: EnsembleDatabase): ToolDeps & { client: ReturnTyp
     client: mockClient(),
     directory: "/tmp/test-project",
     config: { ...DEFAULT_CONFIG },
+    progressTracker: new ProgressTracker(),
   }
 }
 

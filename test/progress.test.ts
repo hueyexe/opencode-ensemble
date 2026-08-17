@@ -66,6 +66,41 @@ describe("ProgressTracker", () => {
     expect(pt.isTimeStalled("s1", 0)).toBe(true)
   })
 
+  // --- Busy-transition baseline (regression: first-action stall detection gap) ---
+  // isTimeStalled previously bailed out with `false` whenever a session had zero
+  // recorded steps, regardless of how long it had been busy. A teammate whose
+  // entire task is one long-running tool call (e.g. a slow build, sleep, or test
+  // run as its FIRST action) never accumulates a step record until that call
+  // returns — meaning the "sane" nudge+notify stall path never fired for exactly
+  // this pattern, even well past stallThresholdMs. recordBusyStart() gives
+  // isTimeStalled a baseline independent of step records.
+
+  test("isTimeStalled returns true for a busy member with zero step records", () => {
+    const pt = new ProgressTracker()
+    pt.recordBusyStart("s1")
+    expect(pt.isTimeStalled("s1", 0)).toBe(true)
+  })
+
+  test("isTimeStalled still returns false with no busy signal and no steps", () => {
+    const pt = new ProgressTracker()
+    expect(pt.isTimeStalled("s1", 0)).toBe(false)
+  })
+
+  test("isTimeStalled prefers a later step timestamp over an earlier busy-start", () => {
+    const pt = new ProgressTracker()
+    pt.recordBusyStart("s1")
+    pt.recordStep("s1", 100) // more recent activity signal than busy-start
+    pt.recordMessage("s1") // clears nothing relevant; just the most recent signal
+    expect(pt.isTimeStalled("s1", 180_000)).toBe(false)
+  })
+
+  test("remove cleans up busySince state", () => {
+    const pt = new ProgressTracker()
+    pt.recordBusyStart("s1")
+    pt.remove("s1")
+    expect(pt.isTimeStalled("s1", 0)).toBe(false)
+  })
+
   test("recordMessage clears stall report", () => {
     const pt = new ProgressTracker()
     pt.markReported("s1")

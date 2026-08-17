@@ -1,6 +1,7 @@
 import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import type { EnsembleConfig } from "./config"
+import type { ProgressTracker } from "./progress"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -17,6 +18,8 @@ export interface ToolDeps {
   directory: string
   /** Plugin configuration. */
   config: Required<EnsembleConfig>
+  /** Stall/activity tracker — shared with the Watchdog. */
+  progressTracker: ProgressTracker
 }
 
 /** A single permission rule for session-level enforcement. */

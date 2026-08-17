@@ -12,6 +12,7 @@ export class ProgressTracker {
   private steps = new Map<string, StepRecord[]>()
   private lastMessageAt = new Map<string, number>()
   private lastTaskAt = new Map<string, number>()
+  private busySince = new Map<string, number>()
   private peerMessages = new Map<string, number[]>()
   private reported = new Set<string>()
   private chattyReported = new Set<string>()
@@ -83,15 +84,26 @@ export class ProgressTracker {
     return recent.every(r => r.outputTokens < threshold)
   }
 
-  /** Time-based stall: no message or task completion within `thresholdMs` of now. */
+  /**
+   * Record that this member transitioned to busy. Gives isTimeStalled a baseline
+   * independent of step records, so a member whose first (or only) action is one
+   * long-running tool call is still subject to time-based stall detection before
+   * any step-finish event has landed.
+   */
+  recordBusyStart(sessionId: string): void {
+    this.busySince.set(sessionId, Date.now())
+  }
+
+  /** Time-based stall: no message, task completion, step, or busy-transition within `thresholdMs` of now. */
   isTimeStalled(sessionId: string, thresholdMs: number): boolean {
     const records = this.steps.get(sessionId)
-    if (!records || records.length === 0) return false
-
     const msgAt = this.lastMessageAt.get(sessionId) ?? 0
     const taskAt = this.lastTaskAt.get(sessionId) ?? 0
-    const lastStep = records[records.length - 1]?.timestamp ?? 0
-    const baseline = Math.max(msgAt, taskAt, lastStep)
+    const lastStepAt = records && records.length > 0 ? records[records.length - 1]!.timestamp : 0
+    const busySince = this.busySince.get(sessionId) ?? 0
+
+    const baseline = Math.max(msgAt, taskAt, lastStepAt, busySince)
+    if (baseline === 0) return false // no activity or busy signal recorded at all yet
 
     return Date.now() - baseline >= thresholdMs
   }
@@ -116,6 +128,7 @@ export class ProgressTracker {
     this.steps.delete(sessionId)
     this.lastMessageAt.delete(sessionId)
     this.lastTaskAt.delete(sessionId)
+    this.busySince.delete(sessionId)
     this.peerMessages.delete(sessionId)
     this.reported.delete(sessionId)
     this.chattyReported.delete(sessionId)

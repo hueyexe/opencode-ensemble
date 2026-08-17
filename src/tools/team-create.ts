@@ -1,6 +1,7 @@
 import type { ToolDeps } from "../types"
 import { generateId, generateProjectName, validateProjectName, validateTeamName } from "../util"
 import { findTeamBySession } from "../types"
+import { isSessionAlive } from "../recovery"
 
 /**
  * Execute the team_create tool. Creates a new team with the caller as lead.
@@ -19,8 +20,20 @@ export async function executeTeamCreate(
 
   // Check if team name already exists
   const projectId = deps.directory
-  const existing = deps.db.query("SELECT id FROM team WHERE name = ? AND project_id = ? AND status = 'active'").get(args.name, projectId)
-  if (existing) throw new Error(`Team "${args.name}" already exists`)
+  const existing = deps.db.query("SELECT id, lead_session_id FROM team WHERE name = ? AND project_id = ? AND status = 'active'")
+    .get(args.name, projectId) as { id: string; lead_session_id: string } | undefined
+  if (existing) {
+    // The existing team's lead session may have been deleted externally (via
+    // OpenCode's own session UI/API, not team_cleanup) rather than genuinely
+    // still being in use. Reconcile on demand rather than block this call on a
+    // team nobody can ever be lead of again -- don't wait for the next plugin
+    // restart's periodic recoverOrphanedTeams pass to notice.
+    if (await isSessionAlive(deps.client, existing.lead_session_id)) {
+      throw new Error(`Team "${args.name}" already exists`)
+    }
+    deps.db.run("UPDATE team SET status = 'archived', time_updated = ? WHERE id = ?", [Date.now(), existing.id])
+    deps.registry.unregisterTeam(existing.id)
+  }
 
   // Check if session already leads a team
   const lead = findTeamBySession(deps.db, deps.registry, sessionId)

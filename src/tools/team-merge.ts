@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
-import { requireLead } from "./shared"
+import { requireLead, checkWorktreeDirty, countBranchCommits } from "./shared"
+import type { IsDirtyFn, CommitCountFn } from "./shared"
 import { mergeBranch, deleteBranch, getOverlappingFiles } from "./merge-helper"
 import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
 import { log } from "../log"
@@ -15,11 +16,13 @@ export async function executeTeamMerge(
   merge: MergeBranchFn = mergeBranch,
   delBranch: DeleteBranchFn = deleteBranch,
   overlapCheck: OverlapCheckFn = getOverlappingFiles,
+  commitCount: CommitCountFn = countBranchCommits,
+  isDirty: IsDirtyFn = checkWorktreeDirty,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT status, worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null } | null
+  const member = deps.db.query("SELECT status, worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null; worktree_dir: string | null } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
 
   if (member.status !== "shutdown" && member.status !== "error") {
@@ -32,6 +35,30 @@ export async function executeTeamMerge(
 
   const branch = member.worktree_branch
   log(`merge:start member=${args.member} branch=${branch}`)
+
+  // A branch with zero new commits produces a trivially "successful" no-op squash merge --
+  // there is genuinely nothing to apply. Reporting that as "Merged ... changes" is
+  // misleading: if the teammate's worktree still has uncommitted work, that work was never
+  // captured on the branch at all and is about to be permanently lost the moment the
+  // worktree is removed (e.g. by team_cleanup). Say so plainly instead of a false success,
+  // and don't tear down the branch/worktree while it may be the only copy of the work.
+  // A commit-count check failure returns -1 (unknown) -- never treat that as "nothing to
+  // merge"; fall through to the real merge attempt so a check failure can't silently skip
+  // real work.
+  const commits = await commitCount(branch, deps.directory)
+  if (commits === 0) {
+    const dirty = member.worktree_dir ? await isDirty(member.worktree_dir).catch(() => false) : false
+    if (dirty) {
+      return [
+        `Nothing to merge for "${args.member}" — their branch (${branch}) has no commits.`,
+        `Their worktree still has uncommitted changes that were never captured on the branch.`,
+        `This work will be permanently lost if the worktree is removed (e.g. via team_cleanup).`,
+        member.worktree_dir ? `Worktree: ${member.worktree_dir}` : ``,
+        `Recover manually (copy files out of the worktree) before shutting down/cleaning up, or re-spawn and instruct them to commit their changes before reporting done.`,
+      ].filter(Boolean).join("\n")
+    }
+    return `Nothing to merge for "${args.member}" — their branch (${branch}) has no commits and no uncommitted changes. They made no changes.`
+  }
 
   // Block merge if lead has local changes to files the agent also modified
   try {
