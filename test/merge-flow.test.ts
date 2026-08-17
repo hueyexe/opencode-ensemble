@@ -312,6 +312,114 @@ describe("team_merge", () => {
   })
 })
 
+// ─── Regression: honest reporting when there's nothing to merge ───
+//
+// Bug found via live N=4 concurrency testing (2026-08-17): a teammate that writes a file
+// but never commits leaves its branch with zero new commits. `git merge --squash` against
+// a branch with nothing new is a legitimate no-op that reports success -- team_merge then
+// unconditionally returned "Merged alice's changes... unstaged", which is TRUE in a narrow
+// technical sense but actively misleading: nothing was actually captured. The uncommitted
+// work exists only in the now-abandoned worktree and is permanently lost the moment
+// team_cleanup removes it. team_shutdown and team_cleanup both already warn about this
+// (uncommitted-changes detection existed before this fix) -- the gap was specifically
+// team_merge's own success message papering over a no-op.
+describe("team_merge — honest reporting when nothing to merge", () => {
+  let deps: Deps
+  const lead = "lead-sess"
+
+  beforeEach(() => {
+    deps = setupDeps()
+    spawnFailures.clear()
+  })
+
+  test("reports uncommitted-work-at-risk instead of false success when branch has zero commits and worktree is dirty", async () => {
+    await executeTeamCreate(deps, { name: "no-commit-dirty" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+
+    let mergeCalled = false
+    let deleteCalled = false
+    const trackMerge: MergeBranchFn = async () => { mergeCalled = true; return { ok: true } }
+    const trackDelete: DeleteBranchFn = async () => { deleteCalled = true; return true }
+
+    const result = await executeTeamMerge(
+      deps, { member: "alice" }, lead,
+      trackMerge, trackDelete, noopOverlap,
+      async () => 0,    // commitCount: zero commits on the branch
+      async () => true, // isDirty: worktree has uncommitted changes
+    )
+
+    expect(result).toContain("Nothing to merge")
+    expect(result).toContain("uncommitted")
+    expect(result).not.toContain("Merged alice's changes")
+    // Must not proceed as if the merge succeeded -- no false "merged" claim, and the
+    // branch/worktree must not be torn down while it's the only copy of the work.
+    expect(mergeCalled).toBe(false)
+    expect(deleteCalled).toBe(false)
+
+    const after = deps.db.query("SELECT worktree_branch FROM team_member WHERE name = 'alice'")
+      .get() as { worktree_branch: string | null }
+    expect(after.worktree_branch).not.toBeNull()
+  })
+
+  test("reports plainly that the member made no changes when branch has zero commits and worktree is clean", async () => {
+    await executeTeamCreate(deps, { name: "no-commit-clean" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+
+    const result = await executeTeamMerge(
+      deps, { member: "alice" }, lead,
+      noopMerge, noopDelete, noopOverlap,
+      async () => 0,     // commitCount: zero commits
+      async () => false, // isDirty: nothing uncommitted either
+    )
+
+    expect(result).toContain("Nothing to merge")
+    expect(result).toContain("no changes")
+    expect(result).not.toContain("Merged alice's changes")
+  })
+
+  test("still merges normally when the branch has real commits", async () => {
+    await executeTeamCreate(deps, { name: "has-commits" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+
+    let mergeCalled = false
+    const trackMerge: MergeBranchFn = async () => { mergeCalled = true; return { ok: true } }
+
+    const result = await executeTeamMerge(
+      deps, { member: "alice" }, lead,
+      trackMerge, noopDelete, noopOverlap,
+      async () => 1,     // commitCount: one real commit
+      async () => false,
+    )
+
+    expect(mergeCalled).toBe(true)
+    expect(result).toContain("Merged alice's changes")
+  })
+
+  test("falls through to the normal merge path when commit count cannot be determined", async () => {
+    await executeTeamCreate(deps, { name: "commit-count-unknown" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+
+    let mergeCalled = false
+    const trackMerge: MergeBranchFn = async () => { mergeCalled = true; return { ok: true } }
+
+    // countBranchCommits returns -1 on failure (git error) -- must not be treated as "zero
+    // commits, nothing to merge". An unknown count should never silently skip a real merge.
+    const result = await executeTeamMerge(
+      deps, { member: "alice" }, lead,
+      trackMerge, noopDelete, noopOverlap,
+      async () => -1,
+      async () => false,
+    )
+
+    expect(mergeCalled).toBe(true)
+    expect(result).toContain("Merged alice's changes")
+  })
+})
+
 // ─── Cleanup safety net ───
 
 describe("cleanup safety net for unmerged branches", () => {

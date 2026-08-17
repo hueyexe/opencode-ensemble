@@ -70,6 +70,22 @@ describe("team_spawn", () => {
     expect(row.agent).toBe("build")
   })
 
+  test("records a busy-start baseline on spawn (regression: fresh member inserted directly as busy, never fires a ready->busy transition event)", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+    expect(result).toContain("spawned")
+
+    const row = deps.db.query("SELECT session_id FROM team_member WHERE name = ?").get("alice") as { session_id: string }
+    // team-spawn.ts inserts the row with status='busy' directly -- there is no
+    // status-event transition for the watchdog to hook. isTimeStalled must still
+    // see a baseline from the moment of spawn, or a teammate stalled on its very
+    // first action (the exact pattern this checklist item tests) is invisible.
+    expect(deps.progressTracker.isTimeStalled(row.session_id, 0)).toBe(true)
+  })
+
   test("rejects if caller is not the lead", async () => {
     insertMember(deps.db, "t1", "bob", "bob-sess")
     deps.registry.register("t1", "bob", "bob-sess")

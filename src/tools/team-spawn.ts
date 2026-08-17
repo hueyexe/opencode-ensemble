@@ -231,6 +231,12 @@ export async function executeTeamSpawn(
     [teamInfo.teamId, args.name, childSessionId, agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
   )
 
+  // Row is inserted as 'busy' directly -- there is no ready->busy status-event
+  // transition for a fresh spawn, so the watchdog's usual hook point never fires.
+  // Record the baseline here instead, or a member stalled on its first action
+  // is invisible to checkStalled() until its first step-finish event lands.
+  deps.progressTracker.recordBusyStart(childSessionId)
+
   // Register in memory
   deps.registry.register(teamInfo.teamId, args.name, childSessionId)
 

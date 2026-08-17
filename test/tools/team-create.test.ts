@@ -45,6 +45,36 @@ describe("team_create", () => {
       .rejects.toThrow("already exists")
   })
 
+  test("reclaims a team name whose lead session no longer exists (orphan reconciliation)", async () => {
+    await executeTeamCreate(deps, { name: "my-team" }, "dead-lead-sess")
+    // Simulate the lead session having been deleted externally (e.g. via OpenCode's
+    // own session UI, not through team_cleanup) -- client.session.get throws for it.
+    const originalGet = deps.client.session.get.bind(deps.client.session)
+    deps.client.session.get = async (options) => {
+      if (options.sessionID === "dead-lead-sess") throw new Error("session not found")
+      return originalGet(options)
+    }
+
+    // A brand new session should be able to reclaim the name instead of hitting
+    // "already exists" against a team nobody can ever be lead of again.
+    const result = await executeTeamCreate(deps, { name: "my-team" }, "new-lead-sess")
+    expect(result).toContain("created")
+
+    const rows = deps.db.query("SELECT lead_session_id, status FROM team WHERE name = ? ORDER BY time_created")
+      .all("my-team") as Array<{ lead_session_id: string; status: string }>
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.lead_session_id).toBe("dead-lead-sess")
+    expect(rows[0]!.status).toBe("archived")
+    expect(rows[1]!.lead_session_id).toBe("new-lead-sess")
+    expect(rows[1]!.status).toBe("active")
+  })
+
+  test("still rejects duplicate name when the existing lead session is genuinely alive", async () => {
+    await executeTeamCreate(deps, { name: "my-team" }, "lead-sess")
+    // Default mock client.session.get always resolves -- lead-sess reads as alive.
+    await expect(executeTeamCreate(deps, { name: "my-team" }, "other-sess")).rejects.toThrow("already exists")
+  })
+
   test("allows same active team name in different projects", async () => {
     await executeTeamCreate(deps, { name: "my-team" }, "lead-sess")
 
