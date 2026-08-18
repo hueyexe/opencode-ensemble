@@ -56,7 +56,7 @@ let rr = 0;
 function nextServer(): string {
   const s = SERVERS[rr % SERVERS.length];
   rr += 1;
-  return s;
+  return s ?? SERVERS[0] ?? 'http://127.0.0.1:4242';
 }
 
 async function oc(method: string, server: string, path: string, body?: unknown): Promise<any> {

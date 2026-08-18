@@ -1,0 +1,32 @@
+{
+  "name": "@hueyexe/opencode-ensemble-swarm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Swarm orchestration for OpenCode Ensemble — a Temporal-backed fleet of headless opencode serve agents",
+  "license": "MIT",
+  "scripts": {
+    "worker": "bun run src/worker.ts",
+    "cli": "bun run src/cli.ts",
+    "run": "bun run examples/run.ts",
+    "scale": "bun run examples/scale.ts",
+    "kill-demo": "bun run examples/kill-demo.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "bunx biome lint src/"
+  },
+  "engines": {
+    "node": ">=24",
+    "bun": ">=1.0"
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.22.0",
+    "@temporalio/client": "^1.22.0",
+    "@temporalio/worker": "^1.22.0",
+    "@temporalio/workflow": "^1.22.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.9",
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

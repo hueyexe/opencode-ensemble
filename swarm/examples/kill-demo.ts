@@ -1,5 +1,5 @@
 import { Connection, Client } from '@temporalio/client';
-import { killAllSignal } from './workflows';
+import { killAllSignal } from '../src/workflows';
 
 async function run() {
   const connection = await Connection.connect({ address: '127.0.0.1:7233' });
