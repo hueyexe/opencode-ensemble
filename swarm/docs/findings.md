@@ -257,9 +257,27 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
   across the fan-out). "Hundreds" needs higher-limit endpoints (paid / self-hosted
   Ollama / many keys), NOT more sandboxes.
 
+## Finding 17 — Cloudflare is per-MINUTE (not per-request concurrency); JSON mode is 1 req (2026-08-18)
+
+- Direct Cloudflare Workers AI REST test (deepseek-v4-flash-0731):
+  - 10 concurrent → 10/10 OK (1.9s)
+  - 20 concurrent → 8 OK + 10×429
+  - 40 concurrent → 20 OK + 20×429
+  - Error: `AiError: rate limiting: inference request per min rate reached` (code 3021).
+- Conclusion: Cloudflare Workers AI limits **requests per minute** (~20/min on this
+  account), NOT concurrent requests. The swarm's structured output (tool-calling
+  round-trip ×2) + judge (×2) ≈ 4–6 model requests/agent, so 20 agents ≈ 100
+  requests vs a ~20/min budget → most 429 → poll-timeout stalls.
+- Native JSON mode confirmed working: `response_format: {type:'json_object'}` returns
+  valid JSON in ONE request (vs tool-calling's 2+). Cutting requests/agent ~2× is a
+  code-level lever.
+- Scaling levers: (1) native JSON mode instead of tool-calling; (2) request a higher
+  per-minute limit from Cloudflare (paid); (3) fan out across accounts/keys.
+
 ## Next
 
-- Concurrency limiter (per-endpoint) so the swarm degrades gracefully instead of
-  stalling past the free-model rate limit.
+- Switch swarm structured output to native JSON mode (1 req) where supported, and/or
+  add a per-endpoint request-budget limiter so agents queue instead of 429-stalling.
+- Request a higher Cloudflare per-minute limit (account owner).
 - Rogue-agent stress (dumb model via Ollama, or nemotron-based hung/garbage tests).
 - Fold swarm into the plugin as the v2 "swarm" mode (Teams → Swarm).
