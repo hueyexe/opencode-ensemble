@@ -1,17 +1,22 @@
 import { Context } from '@temporalio/activity';
 
-// Serve FLEET config (spike: round-robin across N instances). The real
-// orchestrator manages fleet lifecycle (start/stop/health-check per instance).
-const SERVERS = (process.env.OPENCODE_SERVERS ?? 'http://127.0.0.1:4242')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
 const PASSWORD = process.env.OPENCODE_SERVER_PASSWORD ?? 'swarm-test';
 const MODEL = {
   providerID: process.env.OPENCODE_MODEL_PROVIDER ?? 'opencode',
   id: process.env.OPENCODE_MODEL_ID ?? 'nemotron-3.5-lightning-free',
 };
-const WORKDIR = process.env.OPENCODE_WORKDIR ?? '/tmp/swarm-smoke';
+const WORKDIR = process.env.OPENCODE_WORKDIR ?? '/tmp/sbx-smoke';
+
+// Sandboxed fleet (DEFAULT): each agent runs in its own sbx microVM hosting a
+// headless opencode serve. Containment is the default; set OPENCODE_SBX=0 to
+// fall back to a plain round-robin server fleet (no microVM isolation).
+const SANDBOXED = process.env.OPENCODE_SBX !== '0';
+const SBX = '/usr/bin/sbx';
+const SBX_BASE_PORT = Number(process.env.OPENCODE_SBX_BASE_PORT ?? 4250);
+const PLAIN_SERVERS = (process.env.OPENCODE_SERVERS ?? 'http://127.0.0.1:4242')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // Structured-output schemas. REQUIRED: every model call uses json_schema.
 const AGENT_SCHEMA = {
@@ -38,6 +43,7 @@ export interface SessionHandle {
   id: string;
   cost: number;
   server: string;
+  sandbox?: string;
 }
 
 export interface PollResult {
@@ -53,11 +59,7 @@ export interface Verdict {
 }
 
 let rr = 0;
-function nextServer(): string {
-  const s = SERVERS[rr % SERVERS.length];
-  rr += 1;
-  return s ?? SERVERS[0] ?? 'http://127.0.0.1:4242';
-}
+let sbxPort = 0;
 
 async function oc(method: string, server: string, path: string, body?: unknown): Promise<any> {
   const auth = btoa(`opencode:${PASSWORD}`);
@@ -78,9 +80,74 @@ async function oc(method: string, server: string, path: string, body?: unknown):
   return text ? JSON.parse(text) : null;
 }
 
-// Create a session (round-robin) + fire-and-forget the task prompt.
+// Shell out to the sbx CLI. Requires the worker process to be in the `kvm` group
+// (start it with `sg kvm -c "bun run src/worker.ts"`).
+async function runSbx(args: string[]): Promise<void> {
+  const proc = Bun.spawn([SBX, ...args], { stdout: 'pipe', stderr: 'pipe' });
+  const err = await new Response(proc.stderr).text();
+  const code = await proc.exited;
+  if (code !== 0) throw new Error(`sbx ${args.join(' ')} (exit ${code}): ${err.slice(0, 200)}`);
+}
+
+async function waitHealthy(server: string): Promise<void> {
+  const auth = btoa(`opencode:${PASSWORD}`);
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await fetch(`${server}/api/health`, {
+        headers: { Authorization: `Basic ${auth}` },
+        signal: AbortSignal.timeout(2000),
+      });
+      if (r.ok) return;
+    } catch {
+      // not up yet
+    }
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+  throw new Error(`serve not healthy after 60s: ${server}`);
+}
+
+function nextPlainServer(): string {
+  const s = PLAIN_SERVERS[rr % PLAIN_SERVERS.length] ?? PLAIN_SERVERS[0] ?? 'http://127.0.0.1:4242';
+  rr += 1;
+  return s;
+}
+
+// Create a session (in a fresh microVM sandbox by default) + fire-and-forget the task.
 export async function spawnAgent(name: string, task: string): Promise<SessionHandle> {
-  const server = nextServer();
+  let server: string;
+  let sandbox: string | undefined;
+
+  if (SANDBOXED) {
+    const port = SBX_BASE_PORT + sbxPort++;
+    sandbox = `swarm-${name}`;
+    await runSbx(['create', 'opencode', WORKDIR, '--name', sandbox, '--publish', `${port}:4243`]);
+    // Detached serve inside the sandbox. The sbx exec stays alive as a worker child;
+    // sbx rm (on abort) severs it.
+    Bun.spawn(
+      [
+        SBX,
+        'exec',
+        '-e',
+        `OPENCODE_SERVER_PASSWORD=${PASSWORD}`,
+        sandbox,
+        'opencode',
+        'serve',
+        '--port',
+        '4243',
+        '--hostname',
+        '0.0.0.0',
+        '--pure',
+        '--log-level',
+        'ERROR',
+      ],
+      { stdout: 'ignore', stderr: 'ignore' },
+    );
+    server = `http://127.0.0.1:${port}`;
+    await waitHealthy(server);
+  } else {
+    server = nextPlainServer();
+  }
+
   const created = await oc('POST', server, '/api/session', {
     model: MODEL,
     location: { directory: WORKDIR },
@@ -95,7 +162,7 @@ export async function spawnAgent(name: string, task: string): Promise<SessionHan
     ],
     format: { type: 'json_schema', schema: AGENT_SCHEMA, retryCount: 1 },
   });
-  return { id, cost: created.data.cost ?? 0, server };
+  return { id, cost: created.data.cost ?? 0, server, sandbox };
 }
 
 // Poll session status; heartbeat each poll so a hung agent trips the timeout.
@@ -107,9 +174,25 @@ export async function pollAgent(id: string, attempt: number, server: string): Pr
   return { done, ok: true, cost: d.cost ?? 0 };
 }
 
-// Abort a session. Real impl must preserve the worktree branch FIRST (invariant).
-export async function abortAgent(id: string, server: string): Promise<{ cost: number }> {
-  await oc('POST', server, `/session/${id}/abort`);
+// Abort a session AND tear down its sandbox (no orphan microVMs). Real impl must
+// preserve the worktree branch FIRST (invariant).
+export async function abortAgent(
+  id: string,
+  server: string,
+  sandbox?: string,
+): Promise<{ cost: number }> {
+  try {
+    await oc('POST', server, `/session/${id}/abort`);
+  } catch {
+    // session may already be gone
+  }
+  if (sandbox) {
+    try {
+      await runSbx(['rm', '--force', sandbox]);
+    } catch {
+      // best-effort; a failed teardown leaves an orphan microVM (flag in real impl)
+    }
+  }
   return { cost: 0 };
 }
 
@@ -132,8 +215,7 @@ export async function judge(name: string, sessionId: string, server: string): Pr
   };
 }
 
-// Inject a user message into an agent's session (no structured output — this is
-// a message, not a report). Used by the parent's message-routing signal.
+// Inject a user message into an agent's session (no structured output — a message).
 export async function sendMessage(
   sessionId: string,
   server: string,

@@ -62,6 +62,7 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
   let cost = 0;
   let sessionId: string | undefined;
   let server: string | undefined;
+  let sandbox: string | undefined;
   let paused = false;
   let pendingMessage: string | undefined;
 
@@ -79,6 +80,7 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
     const session = await spawnAgent(name, task);
     sessionId = session.id;
     server = session.server;
+    sandbox = session.sandbox;
     cost += session.cost;
 
     let done = false;
@@ -123,8 +125,9 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
       if (sessionId && server) {
         const sid = sessionId;
         const srv = server;
+        const sbx = sandbox;
         try {
-          await CancellationScope.nonCancellable(() => abortAgent(sid, srv));
+          await CancellationScope.nonCancellable(() => abortAgent(sid, srv, sbx));
         } catch {
           // best-effort cleanup; a failed abort leaves an orphan (flag in real impl)
         }
