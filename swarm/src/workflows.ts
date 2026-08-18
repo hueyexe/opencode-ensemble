@@ -71,10 +71,11 @@ export interface SwarmResult {
 export async function agentWorkflow(
   name: string,
   task: string,
-  server: string,
+  servers: string[],
 ): Promise<AgentResult> {
   let cost = 0;
   let sessionId: string | undefined;
+  let server: string | undefined;
   let paused = false;
   let pendingMessage: string | undefined;
 
@@ -89,7 +90,8 @@ export async function agentWorkflow(
   });
 
   try {
-    const session = await spawnAgent(name, task, server);
+    const session = await spawnAgent(name, task, servers);
+    server = session.server;
     sessionId = session.id;
     cost += session.cost;
 
@@ -100,9 +102,9 @@ export async function agentWorkflow(
       if (pendingMessage !== undefined) {
         const msg = pendingMessage;
         pendingMessage = undefined;
-        await sendMessage(session.id, server, msg);
+        await sendMessage(session.id, session.server, msg);
       }
-      const poll = await pollAgent(session.id, attempt, server);
+      const poll = await pollAgent(session.id, attempt, session.server);
       cost = poll.cost;
       done = poll.done;
       ok = poll.ok;
@@ -111,7 +113,7 @@ export async function agentWorkflow(
 
     let result: AgentResult;
     if (done && ok) {
-      const verdict = await judge(name, session.id, server);
+      const verdict = await judge(name, session.id, session.server);
       cost += verdict.cost;
       result = {
         name,
@@ -132,10 +134,11 @@ export async function agentWorkflow(
     if (isCancellation(e)) {
       // No-runaway: abort the serve session so kill-all leaves no orphans.
       // Non-cancellable so the abort actually runs during cancellation.
-      if (sessionId) {
+      if (sessionId && server) {
         const sid = sessionId;
+        const srv = server;
         try {
-          await CancellationScope.nonCancellable(() => abortAgent(sid, server));
+          await CancellationScope.nonCancellable(() => abortAgent(sid, srv));
         } catch {
           // best-effort cleanup
         }
@@ -198,14 +201,14 @@ export async function swarmRunWorkflow(
 
   // One shared execution environment for the whole swarm (contained).
   const provision = await provisionSandbox();
-  const server = provision.server;
+  const servers = provision.servers;
   const sharedSandbox = provision.sandbox;
 
   handles = await Promise.all(
     tasks.map((task, i) =>
       startChild(agentWorkflow, {
         workflowId: `${runId}-agent-${i}`,
-        args: [`agent-${i}`, task, server],
+        args: [`agent-${i}`, task, servers],
       }),
     ),
   );

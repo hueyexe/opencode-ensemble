@@ -1,10 +1,27 @@
 import { Context, CancelledFailure } from '@temporalio/activity';
 
 const PASSWORD = process.env.OPENCODE_SERVER_PASSWORD ?? 'swarm-test';
-const MODEL = {
-  providerID: process.env.OPENCODE_MODEL_PROVIDER ?? 'opencode',
-  id: process.env.OPENCODE_MODEL_ID ?? 'nemotron-3.5-lightning-free',
-};
+// Fan-out: round-robin the swarm's agents across MULTIPLE model endpoints so no
+// single provider's concurrency limit becomes the swarm's ceiling. Override with
+// OPENCODE_MODELS="providerID,id|providerID,id|..." (comma splits provider/model,
+// pipe splits entries).
+const MODELS: { providerID: string; id: string }[] = (() => {
+  const env = process.env.OPENCODE_MODELS;
+  if (env) {
+    return env
+      .split('|')
+      .map((s) => {
+        const [providerID, id] = s.split(',');
+        return { providerID: providerID ?? '', id: id ?? '' };
+      })
+      .filter((m) => m.providerID && m.id);
+  }
+  return [
+    { providerID: 'opencode', id: 'nemotron-3.5-lightning-free' },
+    { providerID: 'cloudflare-workers-ai', id: '@cf/deepseek-ai/deepseek-v4-flash-0731' },
+    { providerID: 'kiro-openai', id: 'gpt-5.6-luna' },
+  ];
+})();
 const WORKDIR = process.env.OPENCODE_WORKDIR ?? '/tmp/sbx-smoke';
 
 // Sandboxed fleet (DEFAULT): each agent runs in its own sbx microVM hosting a
@@ -14,8 +31,11 @@ const SANDBOXED = process.env.OPENCODE_SBX !== '0';
 const SBX = '/usr/bin/sbx';
 const SBX_BASE_PORT = Number(process.env.OPENCODE_SBX_BASE_PORT ?? 4250);
 // Per-microVM resource bounds so a fleet can't exhaust the host.
-const SBX_CPUS = process.env.OPENCODE_SBX_CPUS ?? '1';
-const SBX_MEM = process.env.OPENCODE_SBX_MEM ?? '1g';
+const SBX_CPUS = process.env.OPENCODE_SBX_CPUS ?? '2';
+const SBX_MEM = process.env.OPENCODE_SBX_MEM ?? '2g';
+// Number of serve instances inside the single sandbox. Each serve is its own
+// concurrency domain (~4-5 structured calls), so this is the fan-out lever.
+const SBX_SERVERS = Number(process.env.OPENCODE_SBX_SERVERS ?? '3');
 const PLAIN_SERVERS = (process.env.OPENCODE_SERVERS ?? 'http://127.0.0.1:4242')
   .split(',')
   .map((s) => s.trim())
@@ -61,8 +81,21 @@ export interface Verdict {
   cost: number;
 }
 
-let rr = 0;
+let serverIndex = 0;
 let sbxPort = 0;
+let modelIndex = 0;
+
+function pickModel(): { providerID: string; id: string } {
+  const m = MODELS[modelIndex % MODELS.length] ?? MODELS[0]!;
+  modelIndex += 1;
+  return m;
+}
+
+function pickServer(servers: string[]): string {
+  const s = servers[serverIndex % servers.length] ?? servers[0]!;
+  serverIndex += 1;
+  return s;
+}
 
 async function oc(method: string, server: string, path: string, body?: unknown): Promise<any> {
   const auth = btoa(`opencode:${PASSWORD}`);
@@ -112,29 +145,18 @@ async function waitHealthy(server: string): Promise<void> {
   throw new Error(`serve not healthy after 120s: ${server}`);
 }
 
-function nextPlainServer(): string {
-  const s = PLAIN_SERVERS[rr % PLAIN_SERVERS.length] ?? PLAIN_SERVERS[0] ?? 'http://127.0.0.1:4242';
-  rr += 1;
-  return s;
-}
-
 export interface Provision {
   sandbox: string | undefined;
-  server: string;
+  servers: string[];
 }
 
-// Provision the agent's execution environment: a fresh microVM (default) or a
-// round-robin plain server. Cancellation-aware: any failure/cancel tears down
-// the microVM before rethrowing, so a cancelled provision never leaks a sandbox.
+// Provision the swarm's execution environment: ONE fresh microVM (default) running
+// N serve instances (each its own concurrency domain), or the plain server list.
+// Cancellation-aware: any failure/cancel tears down the microVM before rethrowing.
 export async function provisionSandbox(): Promise<Provision> {
-  let server: string;
-  let sandbox: string | undefined;
-
   if (SANDBOXED) {
-    const port = SBX_BASE_PORT + sbxPort++;
-    // Unique per workflow execution so concurrent/retried spawns never collide.
     const wfId = Context.current().info.workflowExecution?.workflowId ?? 'unknown';
-    sandbox = `swarm-${wfId.replace(/^swarm-/, '')}`;
+    const sandbox = `swarm-${wfId.replace(/^swarm-/, '')}`;
     try {
       // Idempotent create: drop any leftover microVM from a prior attempt first.
       try {
@@ -142,33 +164,36 @@ export async function provisionSandbox(): Promise<Provision> {
       } catch {
         // nothing to remove
       }
-      await runSbx(['create', 'opencode', WORKDIR, '--name', sandbox, '--publish', `${port}:4243`, '--cpus', SBX_CPUS, '-m', SBX_MEM]);
-      // Detached serve inside the sandbox. The sbx exec stays alive as a worker child;
-      // sbx rm (on abort/teardown) severs it.
-      Bun.spawn(
-        [
-          SBX,
-          'exec',
-          '-e',
-          `OPENCODE_SERVER_PASSWORD=${PASSWORD}`,
-          sandbox,
-          'opencode',
-          'serve',
-          '--port',
-          '4243',
-          '--hostname',
-          '0.0.0.0',
-          '--pure',
-          '--log-level',
-          'ERROR',
-        ],
-        { stdout: 'ignore', stderr: 'ignore' },
-      );
-      server = `http://127.0.0.1:${port}`;
-      await waitHealthy(server);
+      const publishes: string[] = [];
+      const servers: string[] = [];
+      for (let i = 0; i < SBX_SERVERS; i++) {
+        const hostPort = SBX_BASE_PORT + sbxPort++;
+        const sandboxPort = 4243 + i;
+        publishes.push('--publish', `${hostPort}:${sandboxPort}`);
+        servers.push(`http://127.0.0.1:${hostPort}`);
+      }
+      await runSbx([
+        'create', 'opencode', WORKDIR, '--name', sandbox,
+        ...publishes, '--cpus', SBX_CPUS, '-m', SBX_MEM,
+      ]);
+      // One serve per sandbox port. Each sbx exec stays alive as a worker child;
+      // sbx rm (on abort/teardown) severs them all.
+      for (let i = 0; i < SBX_SERVERS; i++) {
+        Bun.spawn(
+          [
+            SBX, 'exec', '-e', `OPENCODE_SERVER_PASSWORD=${PASSWORD}`, sandbox,
+            'opencode', 'serve', '--port', String(4243 + i), '--hostname', '0.0.0.0',
+            '--pure', '--log-level', 'ERROR',
+          ],
+          { stdout: 'ignore', stderr: 'ignore' },
+        );
+      }
+      for (const s of servers) {
+        await waitHealthy(s);
+      }
+      return { sandbox, servers };
     } catch (e) {
-      // Clean up the microVM on any failure (including cancellation) so a
-      // cancelled provision never leaks a sandbox.
+      // Clean up the microVM on any failure (including cancellation).
       try {
         await runSbx(['rm', '--force', sandbox]);
       } catch {
@@ -176,21 +201,19 @@ export async function provisionSandbox(): Promise<Provision> {
       }
       throw e;
     }
-  } else {
-    server = nextPlainServer();
   }
-
-  return { sandbox, server };
+  return { sandbox: undefined, servers: [...PLAIN_SERVERS] };
 }
 
 // Create a session on the (already-provisioned) server + fire-and-forget the task.
 export async function spawnAgent(
   name: string,
   task: string,
-  server: string,
+  servers: string[],
 ): Promise<SessionHandle> {
+  const server = pickServer(servers);
   const created = await oc('POST', server, '/api/session', {
-    model: MODEL,
+    model: pickModel(),
     location: { directory: WORKDIR },
   });
   const id = created.data.id;

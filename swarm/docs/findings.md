@@ -243,9 +243,23 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Next fix: a concurrency limiter (cap concurrent agent model calls at ~5) or a
   higher-concurrency model/provider.
 
+## Finding 16 — multi-serve fan-out; ceiling = free-model rate limit (2026-08-18)
+
+- Refactor: ONE sandbox runs N serve instances (each its own concurrency domain)
+  + round-robin across M models (`OPENCODE_MODELS`). Fan-out lever = serves × models.
+- Verified endpoints: `opencode/nemotron-3.5-lightning-free` (free),
+  `cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4-flash-0731`,
+  `kiro-openai/gpt-5.6-luna`.
+- Results: 1 serve/3 models/12 agents → 4/12; 3 serves/3 models/20 agents → 7/20.
+  Bumping the sandbox 2→4 CPU + 2→4 GiB did NOT change 7/20 → not a resource bound.
+- Conclusion: swarm + containment scale fine (20 agents in one sandbox); the
+  ceiling is the free/cheap model APIs' rate limits (~7 concurrent structured calls
+  across the fan-out). "Hundreds" needs higher-limit endpoints (paid / self-hosted
+  Ollama / many keys), NOT more sandboxes.
+
 ## Next
 
-- Add a concurrency limiter (cap ~5 concurrent structured calls) to scale the
-  shared-sandbox swarm past the free-model ceiling.
+- Concurrency limiter (per-endpoint) so the swarm degrades gracefully instead of
+  stalling past the free-model rate limit.
 - Rogue-agent stress (dumb model via Ollama, or nemotron-based hung/garbage tests).
 - Fold swarm into the plugin as the v2 "swarm" mode (Teams → Swarm).
