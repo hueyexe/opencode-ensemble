@@ -13,6 +13,9 @@ const WORKDIR = process.env.OPENCODE_WORKDIR ?? '/tmp/sbx-smoke';
 const SANDBOXED = process.env.OPENCODE_SBX !== '0';
 const SBX = '/usr/bin/sbx';
 const SBX_BASE_PORT = Number(process.env.OPENCODE_SBX_BASE_PORT ?? 4250);
+// Per-microVM resource bounds so a fleet can't exhaust the host.
+const SBX_CPUS = process.env.OPENCODE_SBX_CPUS ?? '1';
+const SBX_MEM = process.env.OPENCODE_SBX_MEM ?? '1g';
 const PLAIN_SERVERS = (process.env.OPENCODE_SERVERS ?? 'http://127.0.0.1:4242')
   .split(',')
   .map((s) => s.trim())
@@ -131,7 +134,7 @@ export async function provisionSandbox(): Promise<Provision> {
     const port = SBX_BASE_PORT + sbxPort++;
     // Unique per workflow execution so concurrent/retried spawns never collide.
     const wfId = Context.current().info.workflowExecution?.workflowId ?? 'unknown';
-    sandbox = `swarm-${wfId}`;
+    sandbox = `swarm-${wfId.replace(/^swarm-/, '')}`;
     try {
       // Idempotent create: drop any leftover microVM from a prior attempt first.
       try {
@@ -139,7 +142,7 @@ export async function provisionSandbox(): Promise<Provision> {
       } catch {
         // nothing to remove
       }
-      await runSbx(['create', 'opencode', WORKDIR, '--name', sandbox, '--publish', `${port}:4243`]);
+      await runSbx(['create', 'opencode', WORKDIR, '--name', sandbox, '--publish', `${port}:4243`, '--cpus', SBX_CPUS, '-m', SBX_MEM]);
       // Detached serve inside the sandbox. The sbx exec stays alive as a worker child;
       // sbx rm (on abort/teardown) severs it.
       Bun.spawn(

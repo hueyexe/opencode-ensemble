@@ -66,11 +66,15 @@ export interface SwarmResult {
 
 // One task's full lifecycle: spawn -> poll (heartbeat) -> judge. Pausable,
 // accepts injected messages, and reports completion to the parent for live status.
-export async function agentWorkflow(name: string, task: string): Promise<AgentResult> {
+// Runs on the swarm's shared server (provisioned once by the parent), so no
+// per-agent sandbox lifecycle lives here.
+export async function agentWorkflow(
+  name: string,
+  task: string,
+  server: string,
+): Promise<AgentResult> {
   let cost = 0;
   let sessionId: string | undefined;
-  let server: string | undefined;
-  let sandbox: string | undefined;
   let paused = false;
   let pendingMessage: string | undefined;
 
@@ -85,9 +89,6 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
   });
 
   try {
-    const provision = await provisionSandbox();
-    sandbox = provision.sandbox;
-    server = provision.server;
     const session = await spawnAgent(name, task, server);
     sessionId = session.id;
     cost += session.cost;
@@ -99,9 +100,9 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
       if (pendingMessage !== undefined) {
         const msg = pendingMessage;
         pendingMessage = undefined;
-        await sendMessage(session.id, session.server, msg);
+        await sendMessage(session.id, server, msg);
       }
-      const poll = await pollAgent(session.id, attempt, session.server);
+      const poll = await pollAgent(session.id, attempt, server);
       cost = poll.cost;
       done = poll.done;
       ok = poll.ok;
@@ -110,7 +111,7 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
 
     let result: AgentResult;
     if (done && ok) {
-      const verdict = await judge(name, session.id, session.server);
+      const verdict = await judge(name, session.id, server);
       cost += verdict.cost;
       result = {
         name,
@@ -122,14 +123,6 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
       result = { name, status: 'failed', cost };
     }
 
-    if (sandbox) {
-      try {
-        await teardownSandbox(sandbox);
-      } catch {
-        // best-effort; a failed teardown leaves an orphan microVM (flag in real impl)
-      }
-    }
-
     const parentId = workflowInfo().parent?.workflowId;
     if (parentId) {
       await getExternalWorkflowHandle(parentId).signal(agentDoneSignal, result);
@@ -139,30 +132,23 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
     if (isCancellation(e)) {
       // No-runaway: abort the serve session so kill-all leaves no orphans.
       // Non-cancellable so the abort actually runs during cancellation.
-      if (sandbox) {
+      if (sessionId) {
+        const sid = sessionId;
         try {
-          await CancellationScope.nonCancellable(() =>
-            abortAgent(sessionId ?? '', server ?? '', sandbox),
-          );
+          await CancellationScope.nonCancellable(() => abortAgent(sid, server));
         } catch {
-          // best-effort cleanup; a failed abort leaves an orphan (flag in real impl)
+          // best-effort cleanup
         }
       }
       return { name, status: 'aborted', cost };
-    }
-    if (sandbox) {
-      try {
-        await teardownSandbox(sandbox);
-      } catch {
-        // best-effort
-      }
     }
     return { name, status: 'failed', cost };
   }
 }
 
-// Parent: budget cap, kill-all/pause/resume/message signals, live status query,
-// result + cost aggregation.
+// Parent: provisions ONE shared sandbox (the whole swarm runs inside it), applies
+// the budget cap, handles kill-all/pause/resume/message signals + live status
+// query, and aggregates results + cost. Tears down the shared sandbox at the end.
 export async function swarmRunWorkflow(
   runId: string,
   tasks: string[],
@@ -210,11 +196,16 @@ export async function swarmRunWorkflow(
     throw new Error(`estimated cost ${estimated} exceeds budget ${budget}`);
   }
 
+  // One shared execution environment for the whole swarm (contained).
+  const provision = await provisionSandbox();
+  const server = provision.server;
+  const sharedSandbox = provision.sandbox;
+
   handles = await Promise.all(
     tasks.map((task, i) =>
       startChild(agentWorkflow, {
         workflowId: `${runId}-agent-${i}`,
-        args: [`agent-${i}`, task],
+        args: [`agent-${i}`, task, server],
       }),
     ),
   );
@@ -243,6 +234,15 @@ export async function swarmRunWorkflow(
     );
   } else {
     results = winner.results;
+  }
+
+  // Tear down the shared sandbox (kill-all leaves no orphan microVM).
+  if (sharedSandbox) {
+    try {
+      await teardownSandbox(sharedSandbox);
+    } catch {
+      // best-effort; a failed teardown leaves an orphan (flag in real impl)
+    }
   }
 
   return {
