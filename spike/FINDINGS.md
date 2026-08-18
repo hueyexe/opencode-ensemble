@@ -154,7 +154,39 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Real swarmctl adds pause/resume/msg (signals) + a `cost` query for running
   swarms (needs a workflow query handler).
 
-## Next
+## Finding 10 — Docker Sandboxes (sbx) verified ✅ (2026-08-18)
 
-- Docker sandbox (`sbx`) wrapping the agent fleet (isolated state + microVM).
-  Caveat: WSL microVM/KVM support needs verification; fallback = gVisor (`runsc`).
+- Install: apt `docker-sbx` v0.38.0 (needs Docker apt repo + `kvm` group). CLI is
+  a standalone `sbx` binary, NOT `docker sbx`. KVM was already present in WSL.
+- `sbx daemon start` runs in foreground (run in background). `sbx policy init
+  balanced` required before create. `sbx login` (Docker Hub identity, free)
+  required to pull sandbox images.
+- `sbx create shell <workspace>` → microVM, workspace bind-mounted at the SAME
+  host path; agent runs as `agent` (UID 1000, not host user).
+- Isolation VERIFIED:
+  - Filesystem: own `/home` + `/etc/passwd`; host user/repos/SSH keys invisible;
+    only the mounted workspace is accessible.
+  - Network: internet egress OK (balanced policy); sandbox loopback is ISOLATED
+    (cannot reach host's `127.0.0.1` services).
+- `sbx create opencode` is the native agent type for the swarm fleet.
+- `sbx exec` mirrors `docker exec` (COMMAND run directly; use `sh -c '...'`).
+
+## Finding 11 — opencode in sandbox + network policy ✅ (2026-08-18)
+
+- `sbx create opencode <workspace>` provisions opencode v1.18.13 + Node 22 inside
+  the microVM (no auth inside — isolated like `XDG_DATA_HOME`).
+- Network policy defaults to deny: model call to `opencode.ai:443` was BLOCKED
+  ("Blocked by network policy: domain opencode.ai:443").
+- Fix: `sbx policy allow network 'opencode.ai,*.opencode.ai'` → model call
+  succeeded (free `deepseek-v4-flash-free` returned "PONG").
+- Complete containment story: microVM fs/network/user isolation + default-deny
+  egress + explicit allow for model APIs only.
+
+## Phase 1 spike — COMPLETE (all 11 findings ✅)
+
+Next (beyond spike — real `swarm/` package):
+- Move the spike into the monorepo `swarm/` package (Temporal SDK dep lives there).
+- swarmctl: add pause/resume/msg signals + a `cost` query handler.
+- Fleet on sbx: `sbx create opencode --clone` per agent, `--publish` the serve
+  port, network allow-rules for the configured model providers only.
+- Scale test beyond 20 (rate-limit ceiling measurement) + rogue-agent stress.
