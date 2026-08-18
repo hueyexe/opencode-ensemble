@@ -226,7 +226,26 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
     step (else kill-all mid-session leaks the microVM).
 - Verified: 2/2 completion + teardown; kill-all → 3/3 aborted with zero orphan VMs.
 
+## Finding 15 — scale ceiling: structured-output concurrency (2026-08-18)
+
+- Scale ramp (shared sandbox, free `nemotron-3.5-lightning-free`):
+  - 3 agents → 3/3 ✅ (~110s)
+  - 5 agents → 4/5 ✅ (~106s)
+  - 7 agents → 0/7 ❌ (all poll-timeout — no output)
+  - 10 agents → 0/10 ❌ (all poll-timeout)
+- Direct model check: 7 concurrent PLAIN "PONG" calls → 7/7 OK. The model itself
+  handles 7 concurrent; the cliff is in the STRUCTURED-output path
+  (`json_schema` tool-calling), which stalls beyond ~5-6 concurrent.
+- Bumping the shared sandbox to 2 CPU / 2 GiB did not help → not a resource bound.
+- Conclusion: free-model structured-output concurrency is the ceiling (~5-6).
+  The swarm ORCHESTRATION scaled fine to 10 children (all provisioned + polled);
+  the model call is the bottleneck, not Temporal or the sandbox.
+- Next fix: a concurrency limiter (cap concurrent agent model calls at ~5) or a
+  higher-concurrency model/provider.
+
 ## Next
 
-- Scale test beyond 20 sandboxed agents (rate-limit / resource ceiling) + rogue-agent stress.
+- Add a concurrency limiter (cap ~5 concurrent structured calls) to scale the
+  shared-sandbox swarm past the free-model ceiling.
+- Rogue-agent stress (dumb model via Ollama, or nemotron-based hung/garbage tests).
 - Fold swarm into the plugin as the v2 "swarm" mode (Teams → Swarm).
