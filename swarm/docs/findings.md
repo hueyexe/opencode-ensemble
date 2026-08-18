@@ -206,9 +206,27 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Lesson: free models drift; pin the model and re-verify structured output after
   provider changes.
 
+## Finding 14 — sandboxed fleet + reliable kill-all teardown ✅ (2026-08-18)
+
+- Containment proven adversarially: escape battery in a live microVM showed host
+  fs/ssh/`/mnt/c`/process all unreachable; only the workspace is mounted
+  (`rw,nosuid,nodev`); only `opencode.ai` egress allowed (webhook.site → 403).
+- Sandboxed serve: `opencode serve` INSIDE the microVM, bound to `0.0.0.0`
+  (`--hostname`), published via `--publish`; reachable from host; structured
+  model call works through the published port.
+- Fleet wired contained-by-default: `spawnAgent` provisions a microVM per agent;
+  teardown on completion/failure/abort. `OPENCODE_SBX=0` falls back to plain fleet.
+- Pitfalls hit + fixed:
+  - `sbx exec` kills backgrounded processes → run the serve as a persistent exec child.
+  - serve must bind `0.0.0.0` (`--hostname 0.0.0.0`) or the published port can't reach it.
+  - activity `startToCloseTimeout` 1m was too short for provisioning → 5m.
+  - cancellation must throw `CancelledFailure`, not `Error`, or Temporal retries forever.
+  - sandbox name must be unique per workflow + idempotent (rm before create).
+  - split provision/session so the child records its sandbox before the session
+    step (else kill-all mid-session leaks the microVM).
+- Verified: 2/2 completion + teardown; kill-all → 3/3 aborted with zero orphan VMs.
+
 ## Next
 
-- Fleet on sbx: `sbx create opencode --clone` per agent, `--publish` the serve
-  port, network allow-rules for the configured model providers only.
-- Scale test beyond 20 (rate-limit ceiling measurement) + rogue-agent stress.
+- Scale test beyond 20 sandboxed agents (rate-limit / resource ceiling) + rogue-agent stress.
 - Fold swarm into the plugin as the v2 "swarm" mode (Teams → Swarm).
