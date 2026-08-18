@@ -182,11 +182,33 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Complete containment story: microVM fs/network/user isolation + default-deny
   egress + explicit allow for model APIs only.
 
-## Phase 1 spike — COMPLETE (all 11 findings ✅)
+## Finding 12 — swarm/ package + control-plane ✅ (2026-08-18)
 
-Next (beyond spike — real `swarm/` package):
-- Move the spike into the monorepo `swarm/` package (Temporal SDK dep lives there).
-- swarmctl: add pause/resume/msg signals + a `cost` query handler.
+- Migrated spike → `swarm/` package (own package.json + Temporal deps, strict
+  tsconfig, README, docs/findings.md, examples/). Plugin stays zero-dep. Typecheck
+  passing.
+- swarmctl extended: `run` / `status` (live query) / `pause` / `resume` / `msg` /
+  `kill-all`.
+- Control-plane VERIFIED live: `status` query returns live state (agentCount,
+  finished results, cost, paused/killed/messages); `pause`/`resume` flip a flag
+  gated by the child poll loop via `condition(() => !paused)`; `msg` routes to an
+  agent or broadcast and logs it. Children report completion via `agentDoneSignal`
+  (parent located via `workflowInfo().parent`).
+
+## Finding 13 — free-model drift: deepseek-v4-flash-free broke structured output (2026-08-18)
+
+- `deepseek-v4-flash-free` (opencode provider) now runs in "thinking mode" and
+  rejects structured output's tool_choice:
+  `AI_APICallError: [invalid_request_error] Thinking mode does not support this tool_choice`.
+  Symptom: serve 500s + agents never produce output (poll timeout → all failed).
+- Fix: switch default model to `nemotron-3.5-lightning-free` (supports structured
+  output). `ling-3.0-tiny-free` also fails (output 0).
+- Lesson: free models drift; pin the model and re-verify structured output after
+  provider changes.
+
+## Next
+
 - Fleet on sbx: `sbx create opencode --clone` per agent, `--publish` the serve
   port, network allow-rules for the configured model providers only.
 - Scale test beyond 20 (rate-limit ceiling measurement) + rogue-agent stress.
+- Fold swarm into the plugin as the v2 "swarm" mode (Teams → Swarm).

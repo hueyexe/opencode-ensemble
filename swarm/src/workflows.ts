@@ -4,14 +4,16 @@ import {
   setHandler,
   condition,
   defineSignal,
+  defineQuery,
   sleep,
   getExternalWorkflowHandle,
   isCancellation,
   CancellationScope,
+  workflowInfo,
 } from '@temporalio/workflow';
 import type * as activities from './activities';
 
-const { spawnAgent, abortAgent, judge } = proxyActivities<typeof activities>({
+const { spawnAgent, abortAgent, judge, sendMessage } = proxyActivities<typeof activities>({
   startToCloseTimeout: '1 minute',
 });
 
@@ -23,6 +25,14 @@ const { pollAgent } = proxyActivities<typeof activities>({
 });
 
 export const killAllSignal = defineSignal('killAll');
+export const pauseSignal = defineSignal('pause');
+export const resumeSignal = defineSignal('resume');
+export const messageSignal = defineSignal<[{ agent: string; text: string }]>('message');
+export const agentPauseSignal = defineSignal('agentPause');
+export const agentResumeSignal = defineSignal('agentResume');
+export const agentMessageSignal = defineSignal<[{ text: string }]>('agentMessage');
+export const agentDoneSignal = defineSignal<[AgentResult]>('agentDone');
+export const statusQuery = defineQuery<SwarmStatus>('status');
 
 export interface AgentResult {
   name: string;
@@ -31,17 +41,40 @@ export interface AgentResult {
   cost: number;
 }
 
+export interface SwarmStatus {
+  agentCount: number;
+  results: AgentResult[];
+  totalCost: number;
+  paused: boolean;
+  killed: boolean;
+  messages: string[];
+}
+
 export interface SwarmResult {
   agents: AgentResult[];
   totalCost: number;
   killed: boolean;
 }
 
-// One task's full lifecycle: spawn -> poll (heartbeat) -> judge.
+// One task's full lifecycle: spawn -> poll (heartbeat) -> judge. Pausable,
+// accepts injected messages, and reports completion to the parent for live status.
 export async function agentWorkflow(name: string, task: string): Promise<AgentResult> {
   let cost = 0;
   let sessionId: string | undefined;
   let server: string | undefined;
+  let paused = false;
+  let pendingMessage: string | undefined;
+
+  setHandler(agentPauseSignal, () => {
+    paused = true;
+  });
+  setHandler(agentResumeSignal, () => {
+    paused = false;
+  });
+  setHandler(agentMessageSignal, ({ text }) => {
+    pendingMessage = text;
+  });
+
   try {
     const session = await spawnAgent(name, task);
     sessionId = session.id;
@@ -51,23 +84,38 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
     let done = false;
     let ok = false;
     for (let attempt = 1; attempt <= 40 && !done; attempt++) {
+      await condition(() => !paused);
+      if (pendingMessage !== undefined) {
+        const msg = pendingMessage;
+        pendingMessage = undefined;
+        await sendMessage(session.id, session.server, msg);
+      }
       const poll = await pollAgent(session.id, attempt, session.server);
-      cost = poll.cost; // cumulative session cost
+      cost = poll.cost;
       done = poll.done;
       ok = poll.ok;
       if (!done) await sleep('3 seconds');
     }
+
+    let result: AgentResult;
     if (done && ok) {
       const verdict = await judge(name, session.id, session.server);
       cost += verdict.cost;
-      return {
+      result = {
         name,
         status: verdict.verdict === 'accept' ? 'completed' : 'failed',
         result: `${verdict.verdict}: ${verdict.reason}`,
         cost,
       };
+    } else {
+      result = { name, status: 'failed', cost };
     }
-    return { name, status: 'failed', cost };
+
+    const parentId = workflowInfo().parent?.workflowId;
+    if (parentId) {
+      await getExternalWorkflowHandle(parentId).signal(agentDoneSignal, result);
+    }
+    return result;
   } catch (e) {
     if (isCancellation(e)) {
       // No-runaway: abort the serve session so kill-all leaves no orphans.
@@ -87,23 +135,56 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
   }
 }
 
-// Parent: budget cap, kill-all signal, result + cost aggregation.
+// Parent: budget cap, kill-all/pause/resume/message signals, live status query,
+// result + cost aggregation.
 export async function swarmRunWorkflow(
   runId: string,
   tasks: string[],
   budget: number,
 ): Promise<SwarmResult> {
   let killAll = false;
+  let paused = false;
+  const messages: string[] = [];
+  const finished: AgentResult[] = [];
+  let handles: Array<{ workflowId: string; result: () => Promise<AgentResult> }> = [];
+
   setHandler(killAllSignal, () => {
     killAll = true;
   });
+  setHandler(pauseSignal, () => {
+    paused = true;
+    for (const h of handles) void getExternalWorkflowHandle(h.workflowId).signal(agentPauseSignal);
+  });
+  setHandler(resumeSignal, () => {
+    paused = false;
+    for (const h of handles) void getExternalWorkflowHandle(h.workflowId).signal(agentResumeSignal);
+  });
+  setHandler(messageSignal, ({ agent, text }) => {
+    messages.push(`[${agent}] ${text}`);
+    handles.forEach((h, i) => {
+      if (agent === '*' || agent === `agent-${i}`) {
+        void getExternalWorkflowHandle(h.workflowId).signal(agentMessageSignal, { text });
+      }
+    });
+  });
+  setHandler(agentDoneSignal, (r) => {
+    finished.push(r);
+  });
+  setHandler(statusQuery, () => ({
+    agentCount: tasks.length,
+    results: [...finished],
+    totalCost: finished.reduce((s, r) => s + r.cost, 0),
+    paused,
+    killed: killAll,
+    messages: [...messages],
+  }));
 
   const estimated = tasks.length * 0.01;
   if (estimated > budget) {
     throw new Error(`estimated cost ${estimated} exceeds budget ${budget}`);
   }
 
-  const handles = await Promise.all(
+  handles = await Promise.all(
     tasks.map((task, i) =>
       startChild(agentWorkflow, {
         workflowId: `${runId}-agent-${i}`,

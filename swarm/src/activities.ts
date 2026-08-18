@@ -9,7 +9,7 @@ const SERVERS = (process.env.OPENCODE_SERVERS ?? 'http://127.0.0.1:4242')
 const PASSWORD = process.env.OPENCODE_SERVER_PASSWORD ?? 'swarm-test';
 const MODEL = {
   providerID: process.env.OPENCODE_MODEL_PROVIDER ?? 'opencode',
-  id: process.env.OPENCODE_MODEL_ID ?? 'deepseek-v4-flash-free',
+  id: process.env.OPENCODE_MODEL_ID ?? 'nemotron-3.5-lightning-free',
 };
 const WORKDIR = process.env.OPENCODE_WORKDIR ?? '/tmp/swarm-smoke';
 
@@ -130,4 +130,17 @@ export async function judge(name: string, sessionId: string, server: string): Pr
     reason: structured.reason ?? 'no reason given',
     cost: m.info?.cost ?? 0,
   };
+}
+
+// Inject a user message into an agent's session (no structured output — this is
+// a message, not a report). Used by the parent's message-routing signal.
+export async function sendMessage(
+  sessionId: string,
+  server: string,
+  text: string,
+): Promise<{ cost: number }> {
+  await oc('POST', server, `/session/${sessionId}/prompt_async`, {
+    parts: [{ type: 'text', text }],
+  });
+  return { cost: 0 };
 }

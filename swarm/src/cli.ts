@@ -1,16 +1,18 @@
 import { Connection, Client } from '@temporalio/client';
-import { killAllSignal } from './workflows';
+import {
+  killAllSignal,
+  pauseSignal,
+  resumeSignal,
+  messageSignal,
+  statusQuery,
+  type SwarmResult,
+  type SwarmStatus,
+} from './workflows';
 
 const DEFAULT_TASKS = [
   'Summarize what a Temporal workflow is in one sentence.',
   'Summarize what structured outputs are in one sentence.',
 ];
-
-interface SwarmOutcome {
-  killed: boolean;
-  totalCost: number;
-  agents: { name: string; status: string; result?: string; cost: number }[];
-}
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -28,7 +30,7 @@ async function main() {
         args: [runId, tasks, 5],
       });
       console.log(`swarm started: ${handle.workflowId} (${tasks.length} agents)`);
-      const result = (await handle.result()) as SwarmOutcome;
+      const result = (await handle.result()) as SwarmResult;
       const counts: Record<string, number> = {};
       for (const a of result.agents) counts[a.status] = (counts[a.status] ?? 0) + 1;
       console.log(
@@ -39,8 +41,34 @@ async function main() {
     case 'status': {
       const wfId = rest[0];
       if (!wfId) throw new Error('status needs a workflowId');
-      const desc = await client.workflow.getHandle(wfId).describe();
-      console.log(`${wfId}: ${desc.status.name}`);
+      const status = await client.workflow.getHandle(wfId).query<SwarmStatus>(statusQuery);
+      console.log(JSON.stringify(status, null, 2));
+      break;
+    }
+    case 'pause': {
+      const wfId = rest[0];
+      if (!wfId) throw new Error('pause needs a workflowId');
+      await client.workflow.getHandle(wfId).signal(pauseSignal);
+      console.log(`pause sent to ${wfId}`);
+      break;
+    }
+    case 'resume': {
+      const wfId = rest[0];
+      if (!wfId) throw new Error('resume needs a workflowId');
+      await client.workflow.getHandle(wfId).signal(resumeSignal);
+      console.log(`resume sent to ${wfId}`);
+      break;
+    }
+    case 'msg': {
+      const [wfId, agent, ...textParts] = rest;
+      if (!wfId || !agent || textParts.length === 0) {
+        throw new Error('msg needs workflowId, agent (or *), and text');
+      }
+      await client.workflow.getHandle(wfId).signal(messageSignal, {
+        agent,
+        text: textParts.join(' '),
+      });
+      console.log(`message sent to ${agent} in ${wfId}`);
       break;
     }
     case 'kill-all': {
@@ -51,7 +79,9 @@ async function main() {
       break;
     }
     default:
-      console.log('usage: swarmctl run [task...] | status <wfId> | kill-all <wfId>');
+      console.log(
+        'usage: swarmctl run [task...] | status <wfId> | pause <wfId> | resume <wfId> | msg <wfId> <agent|*> <text> | kill-all <wfId>',
+      );
   }
 }
 
