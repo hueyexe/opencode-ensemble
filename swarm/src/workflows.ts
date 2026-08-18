@@ -13,7 +13,15 @@ import {
 } from '@temporalio/workflow';
 import type * as activities from './activities';
 
-const { spawnAgent, abortAgent, judge, sendMessage } = proxyActivities<typeof activities>({
+const { provisionSandbox, spawnAgent, abortAgent, teardownSandbox } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '5 minutes',
+});
+
+const { judge } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '4 minutes',
+});
+
+const { sendMessage } = proxyActivities<typeof activities>({
   startToCloseTimeout: '1 minute',
 });
 
@@ -77,10 +85,11 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
   });
 
   try {
-    const session = await spawnAgent(name, task);
+    const provision = await provisionSandbox();
+    sandbox = provision.sandbox;
+    server = provision.server;
+    const session = await spawnAgent(name, task, server);
     sessionId = session.id;
-    server = session.server;
-    sandbox = session.sandbox;
     cost += session.cost;
 
     let done = false;
@@ -113,6 +122,14 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
       result = { name, status: 'failed', cost };
     }
 
+    if (sandbox) {
+      try {
+        await teardownSandbox(sandbox);
+      } catch {
+        // best-effort; a failed teardown leaves an orphan microVM (flag in real impl)
+      }
+    }
+
     const parentId = workflowInfo().parent?.workflowId;
     if (parentId) {
       await getExternalWorkflowHandle(parentId).signal(agentDoneSignal, result);
@@ -122,17 +139,23 @@ export async function agentWorkflow(name: string, task: string): Promise<AgentRe
     if (isCancellation(e)) {
       // No-runaway: abort the serve session so kill-all leaves no orphans.
       // Non-cancellable so the abort actually runs during cancellation.
-      if (sessionId && server) {
-        const sid = sessionId;
-        const srv = server;
-        const sbx = sandbox;
+      if (sandbox) {
         try {
-          await CancellationScope.nonCancellable(() => abortAgent(sid, srv, sbx));
+          await CancellationScope.nonCancellable(() =>
+            abortAgent(sessionId ?? '', server ?? '', sandbox),
+          );
         } catch {
           // best-effort cleanup; a failed abort leaves an orphan (flag in real impl)
         }
       }
       return { name, status: 'aborted', cost };
+    }
+    if (sandbox) {
+      try {
+        await teardownSandbox(sandbox);
+      } catch {
+        // best-effort
+      }
     }
     return { name, status: 'failed', cost };
   }

@@ -1,4 +1,4 @@
-import { Context } from '@temporalio/activity';
+import { Context, CancelledFailure } from '@temporalio/activity';
 
 const PASSWORD = process.env.OPENCODE_SERVER_PASSWORD ?? 'swarm-test';
 const MODEL = {
@@ -91,7 +91,10 @@ async function runSbx(args: string[]): Promise<void> {
 
 async function waitHealthy(server: string): Promise<void> {
   const auth = btoa(`opencode:${PASSWORD}`);
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
+    if (Context.current().cancellationSignal.aborted) {
+      throw new CancelledFailure('cancelled while waiting for serve');
+    }
     try {
       const r = await fetch(`${server}/api/health`, {
         headers: { Authorization: `Basic ${auth}` },
@@ -103,7 +106,7 @@ async function waitHealthy(server: string): Promise<void> {
     }
     await new Promise((res) => setTimeout(res, 1000));
   }
-  throw new Error(`serve not healthy after 60s: ${server}`);
+  throw new Error(`serve not healthy after 120s: ${server}`);
 }
 
 function nextPlainServer(): string {
@@ -112,42 +115,77 @@ function nextPlainServer(): string {
   return s;
 }
 
-// Create a session (in a fresh microVM sandbox by default) + fire-and-forget the task.
-export async function spawnAgent(name: string, task: string): Promise<SessionHandle> {
+export interface Provision {
+  sandbox: string | undefined;
+  server: string;
+}
+
+// Provision the agent's execution environment: a fresh microVM (default) or a
+// round-robin plain server. Cancellation-aware: any failure/cancel tears down
+// the microVM before rethrowing, so a cancelled provision never leaks a sandbox.
+export async function provisionSandbox(): Promise<Provision> {
   let server: string;
   let sandbox: string | undefined;
 
   if (SANDBOXED) {
     const port = SBX_BASE_PORT + sbxPort++;
-    sandbox = `swarm-${name}`;
-    await runSbx(['create', 'opencode', WORKDIR, '--name', sandbox, '--publish', `${port}:4243`]);
-    // Detached serve inside the sandbox. The sbx exec stays alive as a worker child;
-    // sbx rm (on abort) severs it.
-    Bun.spawn(
-      [
-        SBX,
-        'exec',
-        '-e',
-        `OPENCODE_SERVER_PASSWORD=${PASSWORD}`,
-        sandbox,
-        'opencode',
-        'serve',
-        '--port',
-        '4243',
-        '--hostname',
-        '0.0.0.0',
-        '--pure',
-        '--log-level',
-        'ERROR',
-      ],
-      { stdout: 'ignore', stderr: 'ignore' },
-    );
-    server = `http://127.0.0.1:${port}`;
-    await waitHealthy(server);
+    // Unique per workflow execution so concurrent/retried spawns never collide.
+    const wfId = Context.current().info.workflowExecution?.workflowId ?? 'unknown';
+    sandbox = `swarm-${wfId}`;
+    try {
+      // Idempotent create: drop any leftover microVM from a prior attempt first.
+      try {
+        await runSbx(['rm', '--force', sandbox]);
+      } catch {
+        // nothing to remove
+      }
+      await runSbx(['create', 'opencode', WORKDIR, '--name', sandbox, '--publish', `${port}:4243`]);
+      // Detached serve inside the sandbox. The sbx exec stays alive as a worker child;
+      // sbx rm (on abort/teardown) severs it.
+      Bun.spawn(
+        [
+          SBX,
+          'exec',
+          '-e',
+          `OPENCODE_SERVER_PASSWORD=${PASSWORD}`,
+          sandbox,
+          'opencode',
+          'serve',
+          '--port',
+          '4243',
+          '--hostname',
+          '0.0.0.0',
+          '--pure',
+          '--log-level',
+          'ERROR',
+        ],
+        { stdout: 'ignore', stderr: 'ignore' },
+      );
+      server = `http://127.0.0.1:${port}`;
+      await waitHealthy(server);
+    } catch (e) {
+      // Clean up the microVM on any failure (including cancellation) so a
+      // cancelled provision never leaks a sandbox.
+      try {
+        await runSbx(['rm', '--force', sandbox]);
+      } catch {
+        // best-effort
+      }
+      throw e;
+    }
   } else {
     server = nextPlainServer();
   }
 
+  return { sandbox, server };
+}
+
+// Create a session on the (already-provisioned) server + fire-and-forget the task.
+export async function spawnAgent(
+  name: string,
+  task: string,
+  server: string,
+): Promise<SessionHandle> {
   const created = await oc('POST', server, '/api/session', {
     model: MODEL,
     location: { directory: WORKDIR },
@@ -162,7 +200,7 @@ export async function spawnAgent(name: string, task: string): Promise<SessionHan
     ],
     format: { type: 'json_schema', schema: AGENT_SCHEMA, retryCount: 1 },
   });
-  return { id, cost: created.data.cost ?? 0, server, sandbox };
+  return { id, cost: created.data.cost ?? 0, server };
 }
 
 // Poll session status; heartbeat each poll so a hung agent trips the timeout.
@@ -224,5 +262,15 @@ export async function sendMessage(
   await oc('POST', server, `/session/${sessionId}/prompt_async`, {
     parts: [{ type: 'text', text }],
   });
+  return { cost: 0 };
+}
+
+// Tear down an agent's microVM on completion/failure (abort uses abortAgent).
+export async function teardownSandbox(sandbox: string): Promise<{ cost: number }> {
+  try {
+    await runSbx(['rm', '--force', sandbox]);
+  } catch {
+    // best-effort; a failure here leaves an orphan microVM (flag in real impl)
+  }
   return { cost: 0 };
 }
