@@ -72,6 +72,7 @@ export async function agentWorkflow(
   name: string,
   task: string,
   servers: string[],
+  maxRetries: number,
 ): Promise<AgentResult> {
   let cost = 0;
   let sessionId: string | undefined;
@@ -90,40 +91,58 @@ export async function agentWorkflow(
   });
 
   try {
-    const session = await spawnAgent(name, task, servers);
+    const retries = Math.max(0, maxRetries);
+    let session = await spawnAgent(name, task, servers);
     server = session.server;
     sessionId = session.id;
     cost += session.cost;
 
-    let done = false;
-    let ok = false;
-    for (let attempt = 1; attempt <= 40 && !done; attempt++) {
-      await condition(() => !paused);
-      if (pendingMessage !== undefined) {
-        const msg = pendingMessage;
-        pendingMessage = undefined;
-        await sendMessage(session.id, session.server, msg);
+    let result: AgentResult | undefined;
+
+    // Drive the agent to completion; if its model call stalls (rate-limit),
+    // abort the hung session and re-drive with bounded backoff instead of failing.
+    for (let retry = 0; retry <= retries && !result; retry++) {
+      let done = false;
+      let ok = false;
+      for (let attempt = 1; attempt <= 40 && !done; attempt++) {
+        await condition(() => !paused);
+        if (pendingMessage !== undefined) {
+          const msg = pendingMessage;
+          pendingMessage = undefined;
+          await sendMessage(session.id, session.server, msg);
+        }
+        const poll = await pollAgent(session.id, attempt, session.server);
+        cost = poll.cost;
+        done = poll.done;
+        ok = poll.ok;
+        if (!done) await sleep('3 seconds');
       }
-      const poll = await pollAgent(session.id, attempt, session.server);
-      cost = poll.cost;
-      done = poll.done;
-      ok = poll.ok;
-      if (!done) await sleep('3 seconds');
+
+      if (done && ok) {
+        const verdict = await judge(name, session.id, session.server);
+        cost += verdict.cost;
+        result = {
+          name,
+          status: verdict.verdict === 'accept' ? 'completed' : 'failed',
+          result: `${verdict.verdict}: ${verdict.reason}`,
+          cost,
+        };
+      } else if (retry < retries) {
+        // Stalled (rate-limit): abort the hung session and re-drive with backoff.
+        // The re-spawn round-robins models, so the retry may land on a different
+        // provider and clear the throttle.
+        await abortAgent(session.id, session.server);
+        await sleep(`${10 * (retry + 1)} seconds`);
+        session = await spawnAgent(name, task, servers);
+        server = session.server;
+        sessionId = session.id;
+        cost += session.cost;
+      } else {
+        result = { name, status: 'failed', cost };
+      }
     }
 
-    let result: AgentResult;
-    if (done && ok) {
-      const verdict = await judge(name, session.id, session.server);
-      cost += verdict.cost;
-      result = {
-        name,
-        status: verdict.verdict === 'accept' ? 'completed' : 'failed',
-        result: `${verdict.verdict}: ${verdict.reason}`,
-        cost,
-      };
-    } else {
-      result = { name, status: 'failed', cost };
-    }
+    if (!result) result = { name, status: 'failed', cost };
 
     const parentId = workflowInfo().parent?.workflowId;
     if (parentId) {
@@ -157,6 +176,7 @@ export async function swarmRunWorkflow(
   tasks: string[],
   budget: number,
   concurrency: number,
+  maxRetries: number,
 ): Promise<SwarmResult> {
   let killAll = false;
   let paused = false;
@@ -216,7 +236,7 @@ export async function swarmRunWorkflow(
       batch.map((task, j) =>
         startChild(agentWorkflow, {
           workflowId: `${runId}-agent-${i + j}`,
-          args: [`agent-${i + j}`, task, servers],
+          args: [`agent-${i + j}`, task, servers, maxRetries],
         }),
       ),
     );

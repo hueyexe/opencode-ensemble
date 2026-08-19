@@ -328,6 +328,17 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Remaining gap: a stalled agent fails after the poll timeout instead of retrying.
   Graceful retry-on-stall (bounded backoff) is the next piece.
 
+## Finding 22 — retry-on-stall recovers rate-limited agents (2026-08-19)
+
+- Added `OPENCODE_SWARM_RETRIES` (default 3): a stalled agent (poll timeout) is
+  aborted and re-driven with bounded backoff (10s/20s/30s…), re-spawning via the
+  model round-robin so the retry can land on a different provider.
+- Verified (single serve, concurrency 3, 6 agents): 3/6 → **6/6 completed**. Trade-off:
+  wall time 328s → 851s, because a heavily-throttled agent pays ~120s poll + backoff
+  per retry (up to ~3×). Bounded retries keep it from looping forever.
+- Net: the swarm now degrades gracefully under rate limits — queues via waves
+  (`OPENCODE_SWARM_CONCURRENCY`) and recovers via retry (`OPENCODE_SWARM_RETRIES`).
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or

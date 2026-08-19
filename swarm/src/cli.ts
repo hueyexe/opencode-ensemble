@@ -24,11 +24,12 @@ async function main() {
       const tasks = rest.length ? rest : DEFAULT_TASKS;
       const runId = Date.now().toString();
       const concurrency = Math.max(1, Number(process.env.OPENCODE_SWARM_CONCURRENCY ?? '5'));
+      const maxRetries = Math.max(0, Number(process.env.OPENCODE_SWARM_RETRIES ?? '3'));
       const t0 = Date.now();
       const handle = await client.workflow.start('swarmRunWorkflow', {
         taskQueue: 'swarm-tasks',
         workflowId: `swarm-${runId}`,
-        args: [runId, tasks, 5, concurrency],
+        args: [runId, tasks, 5, concurrency, maxRetries],
       });
       console.log(`swarm started: ${handle.workflowId} (${tasks.length} agents)`);
       const result = (await handle.result()) as SwarmResult;

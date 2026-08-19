@@ -69,6 +69,11 @@ spawns agents in waves of this size so it queues work instead of firing every ag
 at once and rate-limit-stalling the whole provider. Lower it to stay under a tight
 provider budget; raise it when you have more headroom.
 
+Retry-on-stall: `OPENCODE_SWARM_RETRIES` (default 3) — an agent whose model call
+stalls (rate-limit) is aborted and re-driven with bounded backoff (10s, 20s, 30s…)
+instead of failing immediately. Each retry round-robins models, so it may land on a
+different provider and clear the throttle.
+
 ## License
 
 MIT
