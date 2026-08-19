@@ -81,7 +81,28 @@ function parseDependsOn(value: string | null): string[] {
   return []
 }
 
-function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
+/**
+ * Bare-integer version of the `/api/state` response shape. Bump on any
+ * breaking change to the payload (field removed/renamed/retyped, not
+ * additive fields). Consumers outside this repo compare this field with
+ * strict equality — no semver ranges. Currently consumed externally by the
+ * OpenCode sidebar TUI plugin that renders Team status from this endpoint.
+ */
+export const ENSEMBLE_STATE_VERSION = 1
+
+/**
+ * `/api/state` response shape. Exported and versioned because at least one
+ * consumer outside this repo (an OpenCode sidebar TUI plugin) polls this
+ * endpoint and depends on its shape. Treat additive-only changes as safe;
+ * bump {@link ENSEMBLE_STATE_VERSION} for anything else.
+ */
+export interface EnsembleDashboardState {
+  version: number
+  projects: unknown[]
+  teams: unknown[]
+}
+
+function buildState(db: Database): EnsembleDashboardState {
   const projects = db.query("SELECT id, name, path, status, time_created, time_updated FROM project ORDER BY time_updated DESC").all() as ProjectRow[]
   const teams = db.query("SELECT id, name, project_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
   const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
@@ -140,6 +161,7 @@ function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
   })
 
   return {
+    version: ENSEMBLE_STATE_VERSION,
     projects: projects.flatMap(project => {
       const projectTeams = teamsByProject.get(project.id) ?? []
       if (projectTeams.length === 0) return []
