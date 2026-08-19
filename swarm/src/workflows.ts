@@ -206,19 +206,28 @@ export async function swarmRunWorkflow(
   setHandler(agentDoneSignal, (r) => {
     finished.push(r);
   });
-  setHandler(statusQuery, () => ({
-    agentCount: tasks.length,
-    results: [...finished],
-    totalCost: finished.reduce((s, r) => s + r.cost, 0),
-    paused,
-    killed: killAll,
-    messages: [...messages],
-  }));
 
-  const estimated = tasks.length * 0.01;
+  // Upfront estimate: ~$0.002/agent is a conservative default for cheap models
+  // (observed ~$0.001/agent on DeepSeek Flash with OpenRouter prompt caching).
+  const estimated = tasks.length * 0.002;
   if (estimated > budget) {
-    throw new Error(`estimated cost ${estimated} exceeds budget ${budget}`);
+    throw new Error(`estimated cost $${estimated.toFixed(3)} exceeds budget $${budget}`);
   }
+
+  setHandler(statusQuery, () => {
+    const totalCost = finished.reduce((s, r) => s + r.cost, 0);
+    return {
+      agentCount: tasks.length,
+      results: [...finished],
+      totalCost,
+      estimated,
+      budget,
+      percentUsed: budget > 0 ? totalCost / budget : 0,
+      paused,
+      killed: killAll,
+      messages: [...messages],
+    };
+  });
 
   // One shared execution environment for the whole swarm (contained).
   const provision = await provisionSandbox();
@@ -247,7 +256,13 @@ export async function swarmRunWorkflow(
       condition(() => killAll).then(() => 'kill' as const),
     ]);
 
-    if (winner === 'kill') killed = true;
+    if (winner === 'kill') {
+      killed = true;
+    } else if (finished.reduce((s, r) => s + r.cost, 0) > budget) {
+      // Budget cap: stop spawning further waves once the swarm's live cost
+      // exceeds the user's budget (already-spawned agents still settle).
+      killed = true;
+    }
   }
 
   // On kill-all, cancel any in-flight agents, then settle every spawned handle.

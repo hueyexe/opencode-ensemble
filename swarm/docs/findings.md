@@ -355,6 +355,28 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
   structured output), so agent self-reports weren't readable; the ground truth is the
   host snapshot + process table, both clean.
 
+## Finding 24 — OpenRouter unblocks scale; sbx secrets was the real auth bug (2026-08-19)
+
+- OpenRouter concurrency probe: **100/100 concurrent OK** (p50 1.4s), zero 429s —
+  unlike Cloudflare's ~20 req/min. DeepSeek Flash `openrouter/deepseek/deepseek-v4-flash-0731`
+  is ~$0.14/M in / $0.28/M out on OpenRouter.
+- **Root cause of all prior "rate-limit" failures**: the sbx sandbox injects provider
+  keys as placeholder env vars (`SBX_CRED_OPENROUTER_MODE=none`, 13-char `proxy-ma…`)
+  because the **secrets store was empty** (`sbx secret ls` → none). So keyed providers
+  (Cloudflare, OpenRouter, kiro) never authenticated inside the sandbox — only the
+  auth-free opencode free models ever worked. Fix: `sbx secret set openrouter` (and the
+  egress allow `sbx policy allow network openrouter.ai:443,*.openrouter.ai:443`).
+  After fix: 3/3 smoke in 98.5s.
+- 50-agent run (5 serves, 6 CPU/6 GiB, concurrency 50): **37/51 completed (73%), 0
+  rate-limit stalls**, ~$0.03 total. Failures are all JUDGE-side (empty structured →
+  "no reason", or 180s timeouts), not fan-out. DeepSeek Flash's json_schema output is
+  flaky; a more reliable judge (native response_format or a different judge model) is
+  the next fix.
+- Price control added: `OPENCODE_SWARM_BUDGET` (default $5) caps spend — upfront
+  estimate + mid-run wave stop + live `%used` in status. Estimate = agents ×
+  `OPENCODE_EST_COST_PER_AGENT` (default $0.002; observed ~$0.001/agent with OpenRouter
+  prompt caching).
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or

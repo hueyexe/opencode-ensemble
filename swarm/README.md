@@ -74,6 +74,12 @@ stalls (rate-limit) is aborted and re-driven with bounded backoff (10s, 20s, 30s
 instead of failing immediately. Each retry round-robins models, so it may land on a
 different provider and clear the throttle.
 
+Price control: `OPENCODE_SWARM_BUDGET` (default $5) caps total spend — the swarm
+refuses to start if the upfront estimate exceeds it, and stops spawning further
+waves mid-run once live cost crosses it. The estimate is `agents ×
+OPENCODE_EST_COST_PER_AGENT` (default $0.002). Live spend, budget, and %-used are
+visible via `swarmctl status`.
+
 ## License
 
 MIT
