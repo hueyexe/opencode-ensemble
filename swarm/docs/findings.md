@@ -377,6 +377,16 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
   `OPENCODE_EST_COST_PER_AGENT` (default $0.002; observed ~$0.001/agent with OpenRouter
   prompt caching).
 
+## Finding 25 — judge hardening: 73% → 88% (2026-08-19)
+
+- Judge flakiness fixed by (a) retrying the `judge` message up to 3× with a 45s timeout
+  (was 180s) + (b) conservative fallback. Result on 50 agents (3 serves, 4 CPU/4 GiB):
+  **45/51 completed (88%), $0.084**, vs 37/51 (73%) before. Remaining 6 failures are all
+  *legitimate* rejects (2 sentences vs 1, or task not done) — zero judge artifacts.
+- Provisioning robustness: raised serve health timeout 120s→180s, and found that
+  orphaned `sbx exec` processes from failed provision attempts starve the host (4 GiB
+  leaked) and cascade into "serve not healthy". Cleaning them restored 8.6 GiB free.
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or

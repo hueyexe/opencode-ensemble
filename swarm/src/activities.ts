@@ -96,7 +96,7 @@ function pickServer(servers: string[]): string {
   return s;
 }
 
-async function oc(method: string, server: string, path: string, body?: unknown): Promise<any> {
+async function oc(method: string, server: string, path: string, body?: unknown, timeoutMs = 180_000): Promise<any> {
   const auth = btoa(`opencode:${PASSWORD}`);
   const res = await fetch(`${server}${path}`, {
     method,
@@ -105,7 +105,7 @@ async function oc(method: string, server: string, path: string, body?: unknown):
       'Content-Type': 'application/json',
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(180_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 204) return null;
   const text = await res.text();
@@ -126,7 +126,7 @@ async function runSbx(args: string[]): Promise<void> {
 
 async function waitHealthy(server: string): Promise<void> {
   const auth = btoa(`opencode:${PASSWORD}`);
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 180; i++) {
     if (Context.current().cancellationSignal.aborted) {
       throw new CancelledFailure('cancelled while waiting for serve');
     }
@@ -141,7 +141,7 @@ async function waitHealthy(server: string): Promise<void> {
     }
     await new Promise((res) => setTimeout(res, 1000));
   }
-  throw new Error(`serve not healthy after 120s: ${server}`);
+  throw new Error(`serve not healthy after 180s: ${server}`);
 }
 
 export interface Provision {
@@ -259,23 +259,41 @@ export async function abortAgent(
   return { cost: 0 };
 }
 
-// Sync judge call (structured) — returns the verdict inline.
+// Sync judge call (structured) — returns the verdict inline. Retries with a short
+// timeout because opencode's json_schema (tool-calling) is flaky with some models:
+// it occasionally returns empty structured output or hangs the tool-call round-trip.
 export async function judge(name: string, sessionId: string, server: string): Promise<Verdict> {
-  const m = await oc('POST', server, `/session/${sessionId}/message`, {
-    parts: [
-      {
-        type: 'text',
-        text: `You are the lead. Review worker agent "${name}"'s work above and return a verdict using the required JSON schema.`,
-      },
-    ],
-    format: { type: 'json_schema', schema: JUDGE_SCHEMA, retryCount: 1 },
-  });
-  const structured = m.info?.structured ?? {};
-  return {
-    verdict: structured.verdict ?? 'reject',
-    reason: structured.reason ?? 'no reason given',
-    cost: m.info?.cost ?? 0,
-  };
+  const attempts = 3;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const m = await oc(
+        'POST',
+        server,
+        `/session/${sessionId}/message`,
+        {
+          parts: [
+            {
+              type: 'text',
+              text: `You are the lead. Review worker agent "${name}"'s work above and return a verdict using the required JSON schema.`,
+            },
+          ],
+          format: { type: 'json_schema', schema: JUDGE_SCHEMA, retryCount: 1 },
+        },
+        45_000,
+      );
+      const structured = m.info?.structured ?? {};
+      if (structured.verdict === 'accept' || structured.verdict === 'reject') {
+        return { verdict: structured.verdict, reason: structured.reason ?? '', cost: m.info?.cost ?? 0 };
+      }
+    } catch {
+      // timeout or transport error — retry below
+    }
+    if (i < attempts) {
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
+  // Conservative fallback after retries: don't silently accept unjudged work.
+  return { verdict: 'reject', reason: 'judge returned no valid verdict after retries', cost: 0 };
 }
 
 // Inject a user message into an agent's session (no structured output — a message).
