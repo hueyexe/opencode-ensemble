@@ -288,6 +288,21 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
   context; to use native mode the agent summary must be captured at spawn (session
   GET doesn't expose structured output, and `/messages` isn't a REST route).
 
+## Finding 19 — native judge wired; kiro removed; config simplified (2026-08-19)
+
+- Removed `kiro-openai/gpt-5.6-luna` from defaults (user's personal AWS hack, not a
+  public endpoint). Defaults are now the two working endpoints: opencode free +
+  Cloudflare DeepSeek V4 Flash.
+- Wired `native.ts` into the judge: `spawnAgent` now runs the agent synchronously
+  (`/message`, captures the structured summary + model); `judge` uses native
+  `response_format: json_schema` (1 request) when the provider supports it, else
+  falls back to opencode's session judge. 4/4 smoke passed.
+- OpenRouter DeepSeek verified (`openrouter/deepseek/deepseek-v4-flash-latest` and
+  `deepseek/deepseek-chat`) but the stored key is invalid (401 "User not found") —
+  it's a bring-your-own-key option, not a default.
+- Config is now trivial: `OPENCODE_MODELS="providerID,id|providerID,id|..."`, one or
+  many or a mixture, auth reuses opencode's `auth.json` (no swarm-managed keys).
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or

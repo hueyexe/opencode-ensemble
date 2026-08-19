@@ -113,7 +113,7 @@ export async function agentWorkflow(
 
     let result: AgentResult;
     if (done && ok) {
-      const verdict = await judge(name, session.id, session.server);
+      const verdict = await judge(name, session.id, session.server, task, session.summary, session.model);
       cost += verdict.cost;
       result = {
         name,
