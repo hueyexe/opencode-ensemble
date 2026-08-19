@@ -64,6 +64,11 @@ loopback can't reach host services.
 Resource bounds per sandbox (configurable): `OPENCODE_SBX_CPUS` (default 2),
 `OPENCODE_SBX_MEM` (default 2g), `OPENCODE_SBX_SERVERS` (default 3 serve instances).
 
+Graceful budget limiter: `OPENCODE_SWARM_CONCURRENCY` (default 5) — the swarm
+spawns agents in waves of this size so it queues work instead of firing every agent
+at once and rate-limit-stalling the whole provider. Lower it to stay under a tight
+provider budget; raise it when you have more headroom.
+
 ## License
 
 MIT

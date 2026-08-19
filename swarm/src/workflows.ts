@@ -156,6 +156,7 @@ export async function swarmRunWorkflow(
   runId: string,
   tasks: string[],
   budget: number,
+  concurrency: number,
 ): Promise<SwarmResult> {
   let killAll = false;
   let paused = false;
@@ -204,39 +205,46 @@ export async function swarmRunWorkflow(
   const servers = provision.servers;
   const sharedSandbox = provision.sandbox;
 
-  handles = await Promise.all(
-    tasks.map((task, i) =>
-      startChild(agentWorkflow, {
-        workflowId: `${runId}-agent-${i}`,
-        args: [`agent-${i}`, task, servers],
-      }),
-    ),
-  );
-
-  let results: AgentResult[];
+  // Graceful budget limiter: spawn agents in WAVES of `concurrency` so the swarm
+  // queues work instead of firing N model calls at once and rate-limit-stalling
+  // the whole wave. Each wave completes (or kill-all fires) before the next.
+  const maxConcurrent = Math.max(1, concurrency);
   let killed = false;
+  for (let i = 0; i < tasks.length && !killed; i += maxConcurrent) {
+    const batch = tasks.slice(i, i + maxConcurrent);
+    const batchHandles = await Promise.all(
+      batch.map((task, j) =>
+        startChild(agentWorkflow, {
+          workflowId: `${runId}-agent-${i + j}`,
+          args: [`agent-${i + j}`, task, servers],
+        }),
+      ),
+    );
+    handles.push(...batchHandles);
 
-  const completed = Promise.all(handles.map((h) => h.result()));
-  const killReached = condition(() => killAll);
+    const winner = await Promise.race([
+      Promise.all(batchHandles.map((h) => h.result())).then(() => 'done' as const),
+      condition(() => killAll).then(() => 'kill' as const),
+    ]);
 
-  const winner = await Promise.race([
-    completed.then((r) => ({ kind: 'done' as const, results: r })),
-    killReached.then(() => ({ kind: 'kill' as const })),
-  ]);
+    if (winner === 'kill') killed = true;
+  }
 
-  if (winner.kind === 'kill') {
-    killed = true;
+  // On kill-all, cancel any in-flight agents, then settle every spawned handle.
+  if (killed) {
     await Promise.allSettled(
       handles.map((h) => getExternalWorkflowHandle(h.workflowId).cancel()),
     );
-    const settled = await Promise.allSettled(handles.map((h) => h.result()));
-    results = settled.map((r, i) =>
-      r.status === 'fulfilled'
-        ? r.value
-        : ({ name: `agent-${i}`, status: 'aborted', cost: 0 } as AgentResult),
-    );
-  } else {
-    results = winner.results;
+  }
+  const settled = await Promise.allSettled(handles.map((h) => h.result()));
+  const results: AgentResult[] = settled.map((r, i) =>
+    r.status === 'fulfilled'
+      ? r.value
+      : ({ name: `agent-${i}`, status: 'aborted', cost: 0 } as AgentResult),
+  );
+  // Agents never spawned (waves skipped when kill-all fired early) → aborted.
+  for (let k = settled.length; k < tasks.length; k++) {
+    results.push({ name: `agent-${k}`, status: 'aborted', cost: 0 });
   }
 
   // Tear down the shared sandbox (kill-all leaves no orphan microVM).

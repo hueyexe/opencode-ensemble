@@ -315,6 +315,19 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Net: swarm is back to opencode-only; the multi-serve + multi-model fan-out
   (`OPENCODE_MODELS`) and kiro removal remain.
 
+## Finding 21 — graceful wave-based limiter; request multiplier (2026-08-19)
+
+- Added `OPENCODE_SWARM_CONCURRENCY` (default 5): the parent spawns agents in WAVES
+  of this size instead of firing all N at once, so the swarm queues work rather than
+  rate-limit-stalling the whole fleet. Verified: 6 agents / concurrency 3 → two waves.
+- Still saw stalls at concurrency 3 on a single serve: each agent costs 2+ model
+  requests (opencode `json_schema` = tool-calling round-trip ×2 + judge ×2), so
+  N agents ≈ 2N+ concurrent model calls — the effective per-serve ceiling (~4-5
+  calls) is hit at ~2 agents, not ~5. Tune `OPENCODE_SWARM_CONCURRENCY` ~2 per serve
+  (or more serves) to stay under it.
+- Remaining gap: a stalled agent fails after the poll timeout instead of retrying.
+  Graceful retry-on-stall (bounded backoff) is the next piece.
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or
