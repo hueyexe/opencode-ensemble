@@ -274,6 +274,20 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Scaling levers: (1) native JSON mode instead of tool-calling; (2) request a higher
   per-minute limit from Cloudflare (paid); (3) fan out across accounts/keys.
 
+## Finding 18 — native JSON-schema mode (direct API, 1 request) (2026-08-18)
+
+- opencode serve only accepts `format: {type:'text'|'json_schema'}`; `{type:'json'}`
+  → 400. So "native JSON mode" can't be requested through the serve.
+- Cloudflare Workers AI supports NATIVE `response_format: json_schema` (full schema)
+  directly — 1 request, schema-enforced. Same for OpenRouter (OpenAI-compatible).
+- Built `swarm/src/native.ts`: `nativeStructured(model, prompt, schema)` calls the
+  provider's REST API directly with native `response_format` (Cloudflare + OpenRouter),
+  reads auth from opencode's `auth.json`, and parses the JSON (fence/prose tolerant).
+- Smoke (15 concurrent Cloudflare): 10 OK + 5 timeout (per-minute budget, not code).
+- Wiring note: the judge's `json_schema` currently relies on the serve's session
+  context; to use native mode the agent summary must be captured at spawn (session
+  GET doesn't expose structured output, and `/messages` isn't a REST route).
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or
