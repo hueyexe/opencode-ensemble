@@ -16,6 +16,7 @@ interface TeamRow {
   id: string
   name: string
   project_id: string
+  lead_session_id: string
   status: string
   lead_agent: string | null
   time_created: number
@@ -104,7 +105,7 @@ export interface EnsembleDashboardState {
 
 function buildState(db: Database): EnsembleDashboardState {
   const projects = db.query("SELECT id, name, path, status, time_created, time_updated FROM project ORDER BY time_updated DESC").all() as ProjectRow[]
-  const teams = db.query("SELECT id, name, project_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
+  const teams = db.query("SELECT id, name, project_id, lead_session_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
   const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
   const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
   const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT 50")
@@ -127,6 +128,7 @@ function buildState(db: Database): EnsembleDashboardState {
       id: t.id,
       name: t.name,
       projectId: t.project_id,
+      leadSessionId: t.lead_session_id,
       status: t.status,
       leadAgent: t.lead_agent,
       timeCreated: t.time_created,
