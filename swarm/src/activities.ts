@@ -1,5 +1,4 @@
 import { Context, CancelledFailure } from '@temporalio/activity';
-import { nativeStructured, supportsNative, type NativeModel } from './native';
 
 const PASSWORD = process.env.OPENCODE_SERVER_PASSWORD ?? 'swarm-test';
 // Fan-out: round-robin the swarm's agents across MULTIPLE model endpoints so no
@@ -67,8 +66,6 @@ export interface SessionHandle {
   cost: number;
   server: string;
   sandbox?: string;
-  summary?: string;
-  model?: NativeModel;
 }
 
 export interface PollResult {
@@ -214,15 +211,12 @@ export async function spawnAgent(
   servers: string[],
 ): Promise<SessionHandle> {
   const server = pickServer(servers);
-  const model = pickModel();
   const created = await oc('POST', server, '/api/session', {
-    model,
+    model: pickModel(),
     location: { directory: WORKDIR },
   });
   const id = created.data.id;
-  // Sync run: for smoke-test tasks (a single model call) the agent completes
-  // within this activity, and the structured summary is captured for the judge.
-  const m = await oc('POST', server, `/session/${id}/message`, {
+  await oc('POST', server, `/session/${id}/prompt_async`, {
     parts: [
       {
         type: 'text',
@@ -231,14 +225,7 @@ export async function spawnAgent(
     ],
     format: { type: 'json_schema', schema: AGENT_SCHEMA, retryCount: 1 },
   });
-  const structured = m.info?.structured ?? {};
-  return {
-    id,
-    cost: (created.data.cost ?? 0) + (m.info?.cost ?? 0),
-    server,
-    summary: structured.summary,
-    model,
-  };
+  return { id, cost: created.data.cost ?? 0, server };
 }
 
 // Poll session status; heartbeat each poll so a hung agent trips the timeout.
@@ -272,32 +259,8 @@ export async function abortAgent(
   return { cost: 0 };
 }
 
-// Judge the agent's summary. Uses native JSON-schema output (1 request) when the
-// agent's provider supports it; otherwise falls back to opencode's session judge.
-export async function judge(
-  name: string,
-  sessionId: string,
-  server: string,
-  task: string,
-  summary: string | undefined,
-  model: NativeModel | undefined,
-): Promise<Verdict> {
-  if (model && summary && supportsNative(model.providerID)) {
-    try {
-      const r = await nativeStructured(
-        model,
-        `You are the lead reviewing worker agent "${name}".\n\nTask: ${task}\n\nAgent summary:\n${summary}\n\nReturn a verdict using the required JSON schema.`,
-        JUDGE_SCHEMA,
-      );
-      return {
-        verdict: r.verdict === 'accept' ? 'accept' : 'reject',
-        reason: String(r.reason ?? ''),
-        cost: 0,
-      };
-    } catch {
-      // fall through to opencode session-based judge
-    }
-  }
+// Sync judge call (structured) — returns the verdict inline.
+export async function judge(name: string, sessionId: string, server: string): Promise<Verdict> {
   const m = await oc('POST', server, `/session/${sessionId}/message`, {
     parts: [
       {

@@ -303,6 +303,18 @@ returned `accept` with detailed reasoning. Total cost $0 (free model).
 - Config is now trivial: `OPENCODE_MODELS="providerID,id|providerID,id|..."`, one or
   many or a mixture, auth reuses opencode's `auth.json` (no swarm-managed keys).
 
+## Finding 20 — all providers route through opencode (native.ts removed) (2026-08-19)
+
+- Reverted the `native.ts` direct-API layer: every provider flows through opencode's
+  own provider abstraction (`opencode serve` + `format: json_schema`). A parallel
+  provider path in the swarm would duplicate opencode's provider/auth/API work and
+  grow unbounded as providers are added.
+- The native `response_format` optimization (1 request vs tool-calling) belongs
+  upstream in opencode's provider, not in the swarm. If a provider's structured
+  output is request-hungry, that's an opencode concern.
+- Net: swarm is back to opencode-only; the multi-serve + multi-model fan-out
+  (`OPENCODE_MODELS`) and kiro removal remain.
+
 ## Next
 
 - Switch swarm structured output to native JSON mode (1 req) where supported, and/or

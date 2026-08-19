@@ -14,9 +14,8 @@ models/providers** to scale past any single provider's rate limit.
 |---|---|
 | Temporal | durable spine — parallel agent workflows, kill-all signal, cost aggregation |
 | `opencode serve` | headless agent execution — N instances inside one sandbox = the fleet |
-| Structured outputs | JSON schema for every model call; results read from `info.structured` |
+| Structured outputs | JSON schema for every model call, via opencode's `format: json_schema` |
 | Docker Sandboxes (`sbx`) | ONE microVM contains the whole swarm (host isolation) |
-| Native JSON mode | optional direct-API `response_format` (1 request) for OpenAI-compatible providers |
 
 ## Models — trivial to configure
 
