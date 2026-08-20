@@ -193,6 +193,17 @@ export const MIGRATIONS: string[] = [
   // consumer that switches on the 5 known status strings. This column is additive —
   // existing consumers that don't know about it simply don't render it.
   `ALTER TABLE team_member ADD COLUMN last_nudged_at INTEGER;`,
+  // Migration 10: Add retry_* columns to team_member — additive-only provider-retry
+  // display signal (see hooks.ts's "retry" branch). Same non-negotiable as Migration
+  // 9: no 6th status/execution_status literal, no table rebuild. retry_until is a
+  // TTL, not a stored enum — "currently retrying" is derived at read time
+  // (retry_until > Date.now()), so there is no explicit clear-write anywhere in this
+  // fix; it simply becomes stale and gets superseded by real activity or by time
+  // elapsing.
+  `ALTER TABLE team_member ADD COLUMN retry_until INTEGER;
+   ALTER TABLE team_member ADD COLUMN retry_attempt INTEGER;
+   ALTER TABLE team_member ADD COLUMN retry_provider TEXT;
+   ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
 ]
 
 /**

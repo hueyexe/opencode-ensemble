@@ -164,7 +164,10 @@ const plugin: Plugin = async (input) => {
       if (event.type === "session.status") {
         const { sessionID, status } = event.properties
         const statusType = status.type as "idle" | "busy" | "retry"
-        const transition = handleSessionStatusEvent(db, registry, sessionID, statusType)
+        const retryPayload = statusType === "retry"
+          ? (status as { attempt: number; message: string; action?: { reason: string; provider: string; title: string; message: string; label: string; link?: string }; next: number })
+          : undefined
+        const transition = handleSessionStatusEvent(db, registry, sessionID, statusType, retryPayload)
 
         // Fire toast notifications for meaningful transitions
         if (transition) {

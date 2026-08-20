@@ -54,9 +54,10 @@ export async function executeTeamStatus(
   lastKnownState.set(teamInfo.teamId, currentMarker)
 
   const members = deps.db.query(
-    "SELECT name, session_id, agent, status, execution_status, worktree_branch, worktree_dir, plan_approval, time_updated, last_nudged_at FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
+    "SELECT name, session_id, agent, status, execution_status, worktree_branch, worktree_dir, plan_approval, time_updated, last_nudged_at, retry_until, retry_attempt FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
   ).all(teamInfo.teamId) as Array<{
     name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; worktree_dir: string | null; plan_approval: string; time_updated: number; last_nudged_at: number | null
+    retry_until: number | null; retry_attempt: number | null
   }>
 
   const tasks = deps.db.query(
@@ -80,13 +81,18 @@ export async function executeTeamStatus(
       // without inventing a new status value. Annotates the existing status, doesn't
       // replace it.
       const nudged = m.last_nudged_at ? `, nudged ${formatDuration(now - m.last_nudged_at)} ago` : ""
+      // Additive provider-retry annotation (Fix 4) — derived at read time from the
+      // retry_until TTL (Fix 3), same annotation pattern as `nudged` above. Generic
+      // "retrying" label, no rate-limit-specific wording (Fix 2).
+      const isRetrying = m.retry_until !== null && m.retry_until > now
+      const retrying = isRetrying ? `, retrying (attempt ${m.retry_attempt}, ~${formatDuration(m.retry_until! - now)})` : ""
 
       // Last message time
       const lastMsg = deps.db.query("SELECT MAX(time_created) as last_msg FROM team_message WHERE team_id = ? AND from_name = ?")
         .get(teamInfo.teamId, m.name) as { last_msg: number | null } | null
       const msgInfo = lastMsg?.last_msg ? `last msg: ${formatDuration(now - lastMsg.last_msg)} ago` : "no messages yet"
 
-      lines.push(`  ${m.name}  [${statusIcon} ${duration}, ${msgInfo}${plan}${nudged}]  agent: ${m.agent}${branch}`)
+      lines.push(`  ${m.name}  [${statusIcon} ${duration}, ${msgInfo}${plan}${nudged}${retrying}]  agent: ${m.agent}${branch}`)
 
       // Current task
       const task = deps.db.query("SELECT content FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress' LIMIT 1")
