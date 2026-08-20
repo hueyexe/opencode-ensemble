@@ -90,6 +90,7 @@ function rAgents(t){
       (mp?'<div class="mt-1 text-[12px] text-txt-400 truncate">Latest: '+E(mp)+'</div>':'')+
       '<div class="mt-2 flex items-center gap-1.5 flex-wrap">'+
         chip('status '+d,'muted')+chip('msg '+mi,'muted')+chip(E(m.executionStatus||m.status),m.status==='busy'?'blue':m.status==='error'?'red':'muted')+
+        (m.isRetrying?chip('retrying'+(m.retryAttempt!=null?' (attempt '+m.retryAttempt+')':''),'amber'):'')+
         (m.worktreeBranch?chip(E(m.worktreeBranch),'muted'):'')+
       '</div></button>';
   }).join('');
@@ -114,6 +115,7 @@ function openDrawer(name){
   if(m.planApproval&&m.planApproval!=='none')meta.push(chip(E(m.planApproval),m.planApproval==='approved'?'green':m.planApproval==='rejected'?'red':'amber'));
   meta.push(chip('spawned '+relT(m.timeCreated),'muted'));
   if(m.lastNudgedAt)meta.push(chip('nudged '+relT(m.lastNudgedAt),'amber'));
+  if(m.isRetrying)meta.push(chip('retrying'+(m.retryAttempt!=null?' (attempt '+m.retryAttempt+')':'')+(m.retryMessage?': '+E(m.retryMessage):''),'amber'));
   if(m.worktreeBranch)meta.push(chip(E(m.worktreeBranch),'muted'));
   h+='<div class="flex flex-wrap gap-1.5 mb-4 pb-4 border-b border-base-800/50">'+meta.join('')+'</div>';
   // Prompt
