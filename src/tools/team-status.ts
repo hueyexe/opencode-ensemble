@@ -4,7 +4,27 @@ import { requireTeamMember } from "./shared"
 /** Tracks the last time team_status was called per team ID (epoch ms). */
 export const lastCallTime = new Map<string, number>()
 
+/** Tracks the state marker (see computeStateMarker) observed at the last real read per team. */
+export const lastKnownState = new Map<string, number>()
+
 const RATE_LIMIT_MS = 30_000
+
+/**
+ * Cheap per-team "has anything changed" fingerprint — the max time_updated/time_created
+ * across the three tables team_status reports on. One MAX() query, no hashing: the
+ * throttle only needs to detect "something changed," not what, so this is deliberately
+ * the simplest sufficient version (see Fix 3 in the spec).
+ */
+function computeStateMarker(deps: ToolDeps, teamId: string): number {
+  const row = deps.db.query(
+    `SELECT MAX(x) as marker FROM (
+       SELECT MAX(time_updated) as x FROM team_member WHERE team_id = ?
+       UNION SELECT MAX(time_updated) FROM team_task WHERE team_id = ?
+       UNION SELECT MAX(time_created) FROM team_message WHERE team_id = ?
+     )`
+  ).get(teamId, teamId, teamId) as { marker: number | null } | null
+  return row?.marker ?? 0
+}
 
 /** Format a duration in ms to a human-readable string. */
 export function formatDuration(ms: number): string {
@@ -24,15 +44,19 @@ export async function executeTeamStatus(
 
   const now = Date.now()
   const last = lastCallTime.get(teamInfo.teamId)
-  if (last !== undefined && (now - last) < RATE_LIMIT_MS) {
+  const currentMarker = computeStateMarker(deps, teamInfo.teamId)
+  // The 30s throttle's purpose is preventing hammering, not lying about state — only
+  // short-circuit when nothing has actually changed since the last real read.
+  if (last !== undefined && (now - last) < RATE_LIMIT_MS && lastKnownState.get(teamInfo.teamId) === currentMarker) {
     return "No changes since last check."
   }
   lastCallTime.set(teamInfo.teamId, now)
+  lastKnownState.set(teamInfo.teamId, currentMarker)
 
   const members = deps.db.query(
-    "SELECT name, session_id, agent, status, execution_status, worktree_branch, worktree_dir, plan_approval, time_updated FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
+    "SELECT name, session_id, agent, status, execution_status, worktree_branch, worktree_dir, plan_approval, time_updated, last_nudged_at FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
   ).all(teamInfo.teamId) as Array<{
-    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; worktree_dir: string | null; plan_approval: string; time_updated: number
+    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; worktree_dir: string | null; plan_approval: string; time_updated: number; last_nudged_at: number | null
   }>
 
   const tasks = deps.db.query(
@@ -52,13 +76,17 @@ export async function executeTeamStatus(
       const duration = formatDuration(now - m.time_updated)
       const branch = m.worktree_branch ? `  branch: ${m.worktree_branch}` : ""
       const plan = m.plan_approval !== "none" ? `, plan: ${m.plan_approval}` : ""
+      // Additive display-staleness annotation (Fix 1) — surfaces a soft stall-nudge
+      // without inventing a new status value. Annotates the existing status, doesn't
+      // replace it.
+      const nudged = m.last_nudged_at ? `, nudged ${formatDuration(now - m.last_nudged_at)} ago` : ""
 
       // Last message time
       const lastMsg = deps.db.query("SELECT MAX(time_created) as last_msg FROM team_message WHERE team_id = ? AND from_name = ?")
         .get(teamInfo.teamId, m.name) as { last_msg: number | null } | null
       const msgInfo = lastMsg?.last_msg ? `last msg: ${formatDuration(now - lastMsg.last_msg)} ago` : "no messages yet"
 
-      lines.push(`  ${m.name}  [${statusIcon} ${duration}, ${msgInfo}${plan}]  agent: ${m.agent}${branch}`)
+      lines.push(`  ${m.name}  [${statusIcon} ${duration}, ${msgInfo}${plan}${nudged}]  agent: ${m.agent}${branch}`)
 
       // Current task
       const task = deps.db.query("SELECT content FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress' LIMIT 1")

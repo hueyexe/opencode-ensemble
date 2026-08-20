@@ -3,7 +3,7 @@ import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
-import { sendMessage } from "./messaging"
+import { sendMessage, hasReportedCompletion } from "./messaging"
 import { log } from "./log"
 
 interface WatchdogOpts {
@@ -112,14 +112,37 @@ export class Watchdog {
 
       if (!tokenStalled && !timeStalled) continue
 
-      this.progressTracker.markReported(member.session_id)
+      // hasReportedCompletion() is the documented invariant every promptAsync delivery
+      // path must honor (see hooks.ts:63). The in-memory isReported() check above only
+      // catches this watchdog's own prior nudges — it doesn't know if the member reported
+      // completion by some other path while still transiently 'busy' in the DB.
+      if (hasReportedCompletion(this.db, member.team_id, member.name)) {
+        log(`watchdog:stall:skip member=${member.name} team=${member.team_id} reason=already-reported-completion`)
+        continue
+      }
+
       const reason = tokenStalled ? "low output tokens" : "no communication"
 
-      // Nudge the teammate directly
+      // Additive display-staleness signal (does not change team_member.status) — lets
+      // the dashboard/team_status annotate "busy, nudged Xs ago" so a soft nudge is
+      // visible without inventing a new status value.
+      this.db.run(
+        "UPDATE team_member SET last_nudged_at = ? WHERE team_id = ? AND name = ?",
+        [Date.now(), member.team_id, member.name]
+      )
+
+      // Nudge the teammate directly. markReported() only fires once delivery is
+      // confirmed — marking it before delivery is known would permanently and silently
+      // orphan the stall state if promptAsync throws (aborted session, invalid ID),
+      // since ProgressTracker.reported is in-memory and only cleared by new activity.
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You appear stalled — no progress detected. Report your current status to the lead via team_message, or wrap up your work." }],
-      }).catch(() => { /* best effort */ })
+      }).then(() => {
+        this.progressTracker!.markReported(member.session_id)
+      }).catch((err) => {
+        log(`watchdog:stall:nudge-failed member=${member.name} team=${member.team_id} session=${member.session_id} err=${err instanceof Error ? err.message : String(err)}`)
+      })
 
       // Notify the lead
       sendMessage(this.db, {
@@ -156,13 +179,21 @@ export class Watchdog {
       if (this.progressTracker.isChattyReported(member.session_id)) continue
       if (!this.progressTracker.isChatty(member.session_id, this.peerMessageLimit, this.peerMessageWindowMs)) continue
 
+      // hasReportedCompletion() guard — same invariant/rationale as checkStalled() above.
+      if (hasReportedCompletion(this.db, member.team_id, member.name)) {
+        log(`watchdog:chatty:skip member=${member.name} team=${member.team_id} reason=already-reported-completion`)
+        continue
+      }
+
       this.progressTracker.markChattyReported(member.session_id)
 
       // Nudge the agent
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You've sent several messages to teammates. Focus on completing your task and send your results to the lead via team_message." }],
-      }).catch(() => { /* best effort */ })
+      }).catch((err) => {
+        log(`watchdog:chatty:nudge-failed member=${member.name} team=${member.team_id} session=${member.session_id} err=${err instanceof Error ? err.message : String(err)}`)
+      })
 
       // Notify the lead
       sendMessage(this.db, {

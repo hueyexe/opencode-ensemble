@@ -214,7 +214,9 @@ const plugin: Plugin = async (input) => {
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now." }],
-              }).catch(() => { /* best effort */ })
+              }).catch((err) => {
+                log(`nudge:idle-without-report:failed name=${transition.memberName} team=${transition.teamId} err=${err instanceof Error ? err.message : String(err)}`)
+              })
             }
           } else if (transition.to === "error") {
             notifyTeamEvent(client, "error", { memberName: transition.memberName })
