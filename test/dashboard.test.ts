@@ -90,6 +90,7 @@ describe("dashboard", () => {
       expect(team.members[0]!.agent).toBe("build")
       expect(team.members[0]!.status).toBe("busy")
       expect(team.members[0]!.executionStatus).toBe("running")
+      expect(team.members[0]!.lastNudgedAt).toBeNull()
 
       expect(team.tasks).toHaveLength(1)
       expect(team.tasks[0]!.id).toBe("task-1")
@@ -109,6 +110,19 @@ describe("dashboard", () => {
       expect(body.projects[0]!.activeTeams).toBe(1)
       expect(body.projects[0]!.workingAgents).toBe(1)
       expect(body.projects[0]!.teams[0]!.id).toBe("t1")
+    })
+
+    test("Fix 1: exposes last_nudged_at as an additive lastNudgedAt field", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+      const nudgedAt = Date.now() - 5000
+      db.run("UPDATE team_member SET last_nudged_at = ? WHERE team_id = ? AND name = ?", [nudgedAt, "t1", "alice"])
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+
+      expect(body.teams[0]!.members[0]!.lastNudgedAt).toBe(nudgedAt)
     })
 
     test("summarizes progress across projects", async () => {

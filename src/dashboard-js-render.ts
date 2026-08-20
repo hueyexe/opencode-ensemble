@@ -81,7 +81,7 @@ function rAgents(t){
       '<div class="flex items-center gap-2">'+
         '<span class="w-[8px] h-[8px] rounded-full '+s.d+(m.status==='busy'?' pulse':'')+' shrink-0"></span>'+
         '<span class="font-mono font-semibold text-[14px] truncate">'+E(m.name)+'</span>'+
-        '<span class="text-[10px] px-1.5 py-[1px] rounded '+s.t+' bg-base-800/80 shrink-0">'+s.l+'</span>'+
+        '<span class="text-[10px] px-1.5 py-[1px] rounded '+s.t+' bg-base-800/80 shrink-0">'+s.l+(m.lastNudgedAt?', nudged '+relT(m.lastNudgedAt):'')+'</span>'+
         spark+
         '<span class="text-[10px] text-txt-500 ml-auto shrink-0">'+E(m.agent)+'</span>'+
         (m.model?chip(E(m.model),'muted'):'')+
@@ -113,6 +113,7 @@ function openDrawer(name){
   meta.push(chip(E(m.executionStatus||m.status),m.status==='busy'?'blue':m.status==='error'?'red':'muted'));
   if(m.planApproval&&m.planApproval!=='none')meta.push(chip(E(m.planApproval),m.planApproval==='approved'?'green':m.planApproval==='rejected'?'red':'amber'));
   meta.push(chip('spawned '+relT(m.timeCreated),'muted'));
+  if(m.lastNudgedAt)meta.push(chip('nudged '+relT(m.lastNudgedAt),'amber'));
   if(m.worktreeBranch)meta.push(chip(E(m.worktreeBranch),'muted'));
   h+='<div class="flex flex-wrap gap-1.5 mb-4 pb-4 border-b border-base-800/50">'+meta.join('')+'</div>';
   // Prompt
