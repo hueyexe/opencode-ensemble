@@ -188,6 +188,92 @@ describe("handleSessionStatusEvent", () => {
     expect(row.execution_status).toBe("running")
   })
 
+  test("Fix 2: persists retry_* columns from the retry payload without touching status", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const nextAt = Date.now() + 30_000
+    handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+      attempt: 3,
+      message: "upstream error: 429 too many requests",
+      action: {
+        reason: "provider_overloaded",
+        provider: "anthropic",
+        title: "Provider busy",
+        message: "Anthropic is currently overloaded",
+        label: "Retry",
+      },
+      next: nextAt,
+    })
+
+    const row = db.query(
+      "SELECT status, execution_status, retry_until, retry_attempt, retry_provider, retry_message FROM team_member WHERE session_id = ?"
+    ).get("sess-1") as {
+      status: string; execution_status: string
+      retry_until: number | null; retry_attempt: number | null; retry_provider: string | null; retry_message: string | null
+    }
+
+    // Fix 1's non-goal: status/execution_status are completely untouched.
+    expect(row.status).toBe("busy")
+    expect(row.execution_status).toBe("running")
+
+    // Fix 2: the four retry columns get written from the payload.
+    expect(row.retry_until).toBe(nextAt)
+    expect(row.retry_attempt).toBe(3)
+    expect(row.retry_provider).toBe("anthropic")
+    // action.message wins over the generic status.message when present.
+    expect(row.retry_message).toBe("Anthropic is currently overloaded")
+  })
+
+  test("Fix 2: falls back to status.message when action is absent, and never hardcodes throttle language", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+      attempt: 1,
+      message: "transient network error, retrying",
+      next: Date.now() + 5_000,
+    })
+
+    const row = db.query(
+      "SELECT retry_provider, retry_message FROM team_member WHERE session_id = ?"
+    ).get("sess-1") as { retry_provider: string | null; retry_message: string | null }
+
+    expect(row.retry_provider).toBeNull()
+    expect(row.retry_message).toBe("transient network error, retrying")
+    // Guard against regressions that hardcode rate-limit-specific language —
+    // the persisted message must be exactly what the SDK reported, no relabeling.
+    expect(row.retry_message).not.toMatch(/rate.?limit/i)
+  })
+
+  test("Fix 3: retry_until is a TTL — the derived isRetrying boolean flips false once it elapses, with no clear-write", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const nextAt = Date.now() + 50
+    handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+      attempt: 1,
+      message: "retrying",
+      next: nextAt,
+    })
+
+    const before = db.query("SELECT retry_until FROM team_member WHERE session_id = ?").get("sess-1") as { retry_until: number | null }
+    expect(before.retry_until).toBe(nextAt)
+    expect(before.retry_until !== null && before.retry_until > Date.now()).toBe(true)
+
+    // No explicit clear-write happens anywhere — wait for the TTL to actually elapse.
+    Bun.sleepSync(100)
+
+    const after = db.query("SELECT retry_until FROM team_member WHERE session_id = ?").get("sess-1") as { retry_until: number | null }
+    // The stored value itself is untouched (no clear-write)...
+    expect(after.retry_until).toBe(nextAt)
+    // ...but the read-time derived boolean now reads false, purely from time passing.
+    expect(after.retry_until !== null && after.retry_until > Date.now()).toBe(false)
+  })
+
   test("returns StatusTransition on successful idle transition", () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "busy", "running")

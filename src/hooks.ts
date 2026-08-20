@@ -5,6 +5,32 @@ import { findTeamBySession } from "./types"
 
 const TEAM_TOOL_PREFIX = "team_"
 
+/**
+ * Retry-specific payload carried by a `session.status` event when
+ * `status === "retry"`. Mirrors the SDK's `SessionStatus` retry variant.
+ * `action` is optional and free-form (not rate-limit-specific) — see Fix 2
+ * in the retry-observability spec.
+ */
+export interface RetryStatusPayload {
+  attempt: number
+  message: string
+  action?: {
+    reason: string
+    provider: string
+    title: string
+    message: string
+    label: string
+    link?: string
+  }
+  /**
+   * Absolute epoch-ms timestamp of the next retry attempt — NOT a relative
+   * delta. Confirmed against the opencode server/TUI source (session.retry.scheduled
+   * emits `{attempt, at, error}` mapped straight onto `next`, and the built-in
+   * TUI computes remaining seconds as `Math.round((next - Date.now()) / 1000)`).
+   */
+  next: number
+}
+
 /** Result of a session status event — tells the caller what transition happened. */
 export interface StatusTransition {
   memberName: string
@@ -18,12 +44,17 @@ export interface StatusTransition {
  * in SQLite based on the new session status.
  * Ignores events for unknown sessions or archived teams.
  * Returns the transition if one occurred, for toast notifications.
+ *
+ * `retryPayload` is only consulted when `status === "retry"` — it persists
+ * the four additive retry_* columns (Fix 2) without changing `status`/
+ * `execution_status` at all (Fix 1's non-goal: no FSM change).
  */
 export function handleSessionStatusEvent(
   db: Database,
   registry: MemberRegistry,
   sessionId: string,
   status: "idle" | "busy" | "retry",
+  retryPayload?: RetryStatusPayload,
 ): StatusTransition | undefined {
   const entry = registry.getBySession(sessionId)
   if (!entry) return undefined
@@ -72,7 +103,24 @@ export function handleSessionStatusEvent(
       return { memberName: entry.memberName, teamId: entry.teamId, from: "shutdown_requested", to: "busy_while_shutdown" }
     }
   } else if (status === "retry") {
-    // Session is being rate-limited — signal for toast but don't change state
+    // Session is being rate-limited — signal for toast but don't change state.
+    // Persist the retry_* columns so the signal survives past the toast (Fix 2)
+    // — status/execution_status are untouched, and there is no "provider
+    // throttled" language baked in here: the SDK's retry status is generic,
+    // so we surface whatever action.message/status.message actually says.
+    if (retryPayload) {
+      db.run(
+        "UPDATE team_member SET retry_until = ?, retry_attempt = ?, retry_provider = ?, retry_message = ? WHERE team_id = ? AND name = ?",
+        [
+          retryPayload.next,
+          retryPayload.attempt,
+          retryPayload.action?.provider ?? null,
+          retryPayload.action?.message ?? retryPayload.message ?? null,
+          entry.teamId,
+          entry.memberName,
+        ]
+      )
+    }
     return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "retry" }
   }
   return undefined

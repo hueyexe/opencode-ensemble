@@ -248,4 +248,39 @@ describe("team_status", () => {
     const result = await executeTeamStatus(deps, "lead-sess")
     expect(result).not.toContain("nudged")
   })
+
+  test("Fix 4: annotates a retrying member's existing status with attempt/remaining time, generically labeled", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.db.run(
+      "UPDATE team_member SET retry_until = ?, retry_attempt = ? WHERE team_id = ? AND name = ?",
+      [Date.now() + 45_000, 2, "t1", "alice"]
+    )
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("working") // status label unchanged, not replaced
+    expect(result).toContain("retrying (attempt 2")
+    // Generic label only — never rate-limit-specific wording (Fix 2).
+    expect(result).not.toMatch(/rate.?limit/i)
+  })
+
+  test("Fix 4/Fix 3: does not annotate a member once retry_until has elapsed (derived TTL, no clear-write)", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.db.run(
+      "UPDATE team_member SET retry_until = ?, retry_attempt = ? WHERE team_id = ? AND name = ?",
+      [Date.now() - 5_000, 1, "t1", "alice"]
+    )
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).not.toContain("retrying")
+  })
+
+  test("Fix 4: does not annotate a member who has never retried", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).not.toContain("retrying")
+  })
 })
