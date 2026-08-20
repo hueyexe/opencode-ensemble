@@ -6,6 +6,7 @@ import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
 import { sendMessage } from "../src/messaging"
+import { mockClient } from "./helpers"
 
 function setupDb(): Database {
   const db = new Database(":memory:")
@@ -658,17 +659,19 @@ describe("buildTeamCompactionContext — completion requirement", () => {
 describe("handleSessionErrorEvent", () => {
   let db: Database
   let registry: MemberRegistry
+  let client: ReturnType<typeof mockClient>
 
   beforeEach(() => {
     db = setupDb()
     registry = new MemberRegistry()
+    client = mockClient()
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
     registry.register("t1", "scout", "scout-sess")
   })
 
   test("posts a system message to the lead when a known member errors", () => {
-    handleSessionErrorEvent(db, registry, "scout-sess", {
+    handleSessionErrorEvent(db, registry, client, "scout-sess", {
       name: "UnknownError",
       data: { message: "Tool team_message failed: This session is not in a team." },
     })
@@ -683,8 +686,19 @@ describe("handleSessionErrorEvent", () => {
     expect(msgs[0]?.content).toContain("Tool team_message failed")
   })
 
+  test("actively wakes the lead so the error message is delivered", () => {
+    handleSessionErrorEvent(db, registry, client, "scout-sess", {
+      name: "UnknownError",
+      data: { message: "boom" },
+    })
+
+    const wakes = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(wakes).toHaveLength(1)
+    expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
+  })
+
   test("uses error.name as fallback when data.message is missing", () => {
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "ProviderAuthError" })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "ProviderAuthError" })
 
     const msgs = db.query("SELECT content FROM team_message WHERE team_id = ?")
       .all("t1") as Array<{ content: string }>
@@ -692,7 +706,7 @@ describe("handleSessionErrorEvent", () => {
   })
 
   test("uses 'unknown error' when error is undefined", () => {
-    handleSessionErrorEvent(db, registry, "scout-sess", undefined)
+    handleSessionErrorEvent(db, registry, client, "scout-sess", undefined)
 
     const msgs = db.query("SELECT content FROM team_message WHERE team_id = ?")
       .all("t1") as Array<{ content: string }>
@@ -700,7 +714,7 @@ describe("handleSessionErrorEvent", () => {
   })
 
   test("ignores errors for unknown sessions (not in registry)", () => {
-    handleSessionErrorEvent(db, registry, "stranger-sess", {
+    handleSessionErrorEvent(db, registry, client, "stranger-sess", {
       name: "UnknownError",
       data: { message: "boom" },
     })
@@ -710,7 +724,7 @@ describe("handleSessionErrorEvent", () => {
   })
 
   test("ignores undefined sessionID", () => {
-    handleSessionErrorEvent(db, registry, undefined, { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, undefined, { name: "UnknownError", data: { message: "boom" } })
 
     const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
     expect(msgs).toHaveLength(0)
@@ -719,7 +733,7 @@ describe("handleSessionErrorEvent", () => {
   test("does not post a duplicate message for the lead — leads are not in registry", () => {
     // The lead's session is NOT in the registry (leads are looked up via SQLite).
     // A session.error for the lead's session should not produce a teammate-error message.
-    handleSessionErrorEvent(db, registry, "lead-sess", {
+    handleSessionErrorEvent(db, registry, client, "lead-sess", {
       name: "UnknownError",
       data: { message: "boom" },
     })
@@ -930,10 +944,12 @@ describe("checkToolIsolation — SQLite fallback for multi-instance scenarios", 
 describe("handleSessionErrorEvent — SQLite fallback when registry is empty", () => {
   let db: Database
   let registry: MemberRegistry
+  let client: ReturnType<typeof mockClient>
 
   beforeEach(() => {
     db = setupDb()
     registry = new MemberRegistry()
+    client = mockClient()
   })
 
   test("posts a system message via SQLite fallback when registry is empty", () => {
@@ -942,7 +958,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", {
+    handleSessionErrorEvent(db, registry, client, "scout-sess", {
       name: "UnknownError",
       data: { message: "Tool team_message failed" },
     })
@@ -960,7 +976,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
 
     expect(registry.getBySession("scout-sess")?.memberName).toBe("scout")
   })
@@ -969,7 +985,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "shutdown", "completed")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
 
     const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
     expect(msgs).toHaveLength(0)
@@ -979,7 +995,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "error", "failed")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
 
     const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
     expect(msgs).toHaveLength(0)

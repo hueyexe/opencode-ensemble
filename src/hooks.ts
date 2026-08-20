@@ -1,6 +1,7 @@
 import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker } from "./state"
-import { sendMessage } from "./messaging"
+import type { PluginClient } from "./types"
+import { notifyLead } from "./notify"
 import { releaseMemberTasks } from "./tasks"
 import { findTeamBySession } from "./types"
 
@@ -187,6 +188,11 @@ export interface SessionErrorPayload {
  * Handle a session.error event. Surfaces tool/model failures from a teammate
  * as a system message to the lead, so otherwise-silent failures are visible.
  *
+ * The lead is actively woken via notifyLead so the message is delivered even
+ * when the errored teammate was the last busy member (the "all done" gate in
+ * the passive wake path would otherwise strand the message). The teammate
+ * itself is NOT auto-resumed — recovery is left to the lead's judgement.
+ *
  * Ignored when:
  * - sessionID is undefined
  * - the session is not a registered teammate (leads are not in the registry)
@@ -194,6 +200,7 @@ export interface SessionErrorPayload {
 export function handleSessionErrorEvent(
   db: Database,
   registry: MemberRegistry,
+  client: PluginClient,
   sessionId: string | undefined,
   error: SessionErrorPayload | undefined,
 ): void {
@@ -205,10 +212,10 @@ export function handleSessionErrorEvent(
   if (!teamInfo || teamInfo.role !== "member" || !teamInfo.memberName) return
 
   const errMsg = error?.data?.message ?? error?.name ?? "unknown error"
-  sendMessage(db, {
-    teamId: teamInfo.teamId,
-    from: "system",
-    to: "lead",
-    content: `Teammate "${teamInfo.memberName}" had a session error: ${errMsg}. Check their session for details. They may be stuck and need investigation or shutdown.`,
-  })
+  notifyLead(
+    client,
+    db,
+    teamInfo.teamId,
+    `Teammate "${teamInfo.memberName}" had a session error: ${errMsg}. Check their session for details. They may be stuck and need investigation or shutdown.`,
+  )
 }

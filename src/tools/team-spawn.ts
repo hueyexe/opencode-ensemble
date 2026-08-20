@@ -2,7 +2,7 @@ import type { ToolDeps, PermissionRule } from "../types"
 import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
-import { sendMessage } from "../messaging"
+import { notifyLead } from "../notify"
 import { releaseMemberTasks } from "../tasks"
 import { parseModelId } from "../member-model"
 import { log } from "../log"
@@ -409,12 +409,12 @@ export async function executeTeamSpawn(
         variant: "error",
         duration: 8000,
       }).catch(() => { /* TUI may not be available */ })
-      sendMessage(deps.db, {
-        teamId: teamInfo.teamId,
-        from: "system",
-        to: "lead",
-        content: `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
-      })
+      notifyLead(
+        deps.client,
+        deps.db,
+        teamInfo.teamId,
+        `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
+      )
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })
 
