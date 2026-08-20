@@ -125,6 +125,66 @@ describe("dashboard", () => {
       expect(body.teams[0]!.members[0]!.lastNudgedAt).toBe(nudgedAt)
     })
 
+    test("Fix 4: exposes retry_* columns additively, with isRetrying derived at read time", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+      const futureRetryAt = Date.now() + 30_000
+      db.run(
+        "UPDATE team_member SET retry_until = ?, retry_attempt = ?, retry_provider = ?, retry_message = ? WHERE team_id = ? AND name = ?",
+        [futureRetryAt, 2, "anthropic", "Anthropic is currently overloaded", "t1", "alice"]
+      )
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+      const member = body.teams[0]!.members[0]! as unknown as {
+        isRetrying: boolean; retryUntil: number; retryAttempt: number; retryProvider: string; retryMessage: string
+      }
+
+      expect(member.isRetrying).toBe(true)
+      expect(member.retryUntil).toBe(futureRetryAt)
+      expect(member.retryAttempt).toBe(2)
+      expect(member.retryProvider).toBe("anthropic")
+      expect(member.retryMessage).toBe("Anthropic is currently overloaded")
+    })
+
+    test("Fix 4/Fix 3: isRetrying reads false once retry_until has elapsed, with no explicit clear-write", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+      const pastRetryAt = Date.now() - 5000
+      db.run(
+        "UPDATE team_member SET retry_until = ?, retry_attempt = ?, retry_provider = ?, retry_message = ? WHERE team_id = ? AND name = ?",
+        [pastRetryAt, 1, "openai", "rate limited", "t1", "alice"]
+      )
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+      const member = body.teams[0]!.members[0]! as unknown as { isRetrying: boolean; retryUntil: number }
+
+      // Column is untouched (no clear-write happened) but the derived boolean flipped.
+      expect(member.retryUntil).toBe(pastRetryAt)
+      expect(member.isRetrying).toBe(false)
+    })
+
+    test("Fix 4: retry fields are null/false for a member that has never retried", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+      const member = body.teams[0]!.members[0]! as unknown as {
+        isRetrying: boolean; retryUntil: number | null; retryAttempt: number | null; retryProvider: string | null; retryMessage: string | null
+      }
+
+      expect(member.isRetrying).toBe(false)
+      expect(member.retryUntil).toBeNull()
+      expect(member.retryAttempt).toBeNull()
+      expect(member.retryProvider).toBeNull()
+      expect(member.retryMessage).toBeNull()
+    })
+
     test("summarizes progress across projects", async () => {
       insertTeam(db, "t1", "alpha", "lead-1")
       db.run("INSERT OR IGNORE INTO project (id, name, path, status, time_created, time_updated) VALUES (?, ?, ?, 'active', ?, ?)", ["/tmp/project-a", "project-a", "/tmp/project-a", Date.now(), Date.now()])
