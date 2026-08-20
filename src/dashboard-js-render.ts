@@ -183,7 +183,7 @@ function rDrawerActivityUpdate(){
     el.innerHTML='<div class="text-txt-500 text-[12px]">No activity recorded</div>';
     return;
   }
-  var html=drawerActivity.map(function(a){
+  var html=drawerActivity.slice().reverse().map(function(a){
     var icon='\\u25CF',color='text-txt-500',label=a.type;
     if(a.type==='tool_call'){icon='\\u25B8';color='text-blue-400';label=a.tool||'tool'}
     if(a.type==='tool_result'){icon='\\u25B8';color=a.error?'text-red-400':'text-emerald-400';label=a.tool||'tool'}

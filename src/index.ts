@@ -9,8 +9,8 @@ import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktre
 import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "./hooks"
-import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
-import { sendMessage, hasReportedCompletion } from "./messaging"
+import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "./notify"
+import { hasReportedCompletion } from "./messaging"
 import { getMemberModel } from "./member-model"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
@@ -193,12 +193,12 @@ const plugin: Plugin = async (input) => {
                   nudgedMembers.add(fastIdleKey)
                   const modelInfo = memberInfo.model ? ` (model: ${memberInfo.model})` : ""
                   log(`fast-idle: ${transition.memberName} went idle ${Math.round(spawnAge / 1000)}s after spawn with 0 messages${modelInfo}`)
-                  sendMessage(db, {
-                    teamId: transition.teamId,
-                    from: "system",
-                    to: "lead",
-                    content: `Warning: Teammate "${transition.memberName}" went idle immediately after spawning with no output${modelInfo}. This usually means the model failed to start (authentication error, invalid model, or provider issue). Check your API key and model configuration, then retry the spawn.`,
-                  })
+                  notifyLead(
+                    client,
+                    db,
+                    transition.teamId,
+                    `Warning: Teammate "${transition.memberName}" went idle immediately after spawning with no output${modelInfo}. This usually means the model failed to start (authentication error, invalid model, or provider issue). Check your API key and model configuration, then retry the spawn.`,
+                  )
                   client.tui.showToast({
                     title: "Team",
                     message: `${transition.memberName} failed to produce output${modelInfo}`,
@@ -332,7 +332,7 @@ const plugin: Plugin = async (input) => {
       // teammate just appears stuck.
       if (event.type === "session.error") {
         const props = event.properties as { sessionID?: string; error?: { name?: string; data?: { message?: string } } }
-        handleSessionErrorEvent(db, registry, props.sessionID, props.error)
+        handleSessionErrorEvent(db, registry, client, props.sessionID, props.error)
       }
 
       // Track per-step output tokens for stall detection

@@ -4,12 +4,9 @@ import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
 import { releaseMemberTasks } from "./tasks"
-<<<<<<< HEAD
-import { sendMessage, hasReportedCompletion } from "./messaging"
-=======
+import { hasReportedCompletion } from "./messaging"
 import { getMemberModel } from "./member-model"
-import { sendMessage } from "./messaging"
->>>>>>> e32f6fd (feat: update a teammate's model in-place via team_message (#26))
+import { notifyLead } from "./notify"
 import { log } from "./log"
 
 interface WatchdogOpts {
@@ -153,12 +150,12 @@ export class Watchdog {
       })
 
       // Notify the lead
-      sendMessage(this.db, {
-        teamId: member.team_id,
-        from: "system",
-        to: "lead",
-        content: `Teammate "${member.name}" appears stalled (${reason}). Consider checking on them via team_message or shutting them down.`,
-      })
+      notifyLead(
+        this.client,
+        this.db,
+        member.team_id,
+        `Teammate "${member.name}" appears stalled (${reason}). Consider checking on them via team_message or shutting them down.`,
+      )
 
       // Toast for the user
       try {
@@ -206,12 +203,12 @@ export class Watchdog {
       })
 
       // Notify the lead
-      sendMessage(this.db, {
-        teamId: member.team_id,
-        from: "system",
-        to: "lead",
-        content: `Agent "${member.name}" is sending many peer messages and may be over-coordinating. Consider checking on them.`,
-      })
+      notifyLead(
+        this.client,
+        this.db,
+        member.team_id,
+        `Agent "${member.name}" is sending many peer messages and may be over-coordinating. Consider checking on them.`,
+      )
 
       log(`watchdog:chatty member=${member.name} limit=${this.peerMessageLimit}`)
     }
@@ -256,6 +253,16 @@ export class Watchdog {
       // Release the timed-out member's in_progress tasks back to the pool (issue #27)
       const released = releaseMemberTasks(this.db, member.team_id, member.name)
       if (released > 0) log(`watchdog:tasks:released name=${member.name} count=${released}`)
+
+      // Notify AND wake the lead — a timed-out teammate is otherwise a silent
+      // failure. This is the "leave recovery to the lead" path: we surface the
+      // timeout, we do not auto-resume the teammate.
+      notifyLead(
+        this.client,
+        this.db,
+        member.team_id,
+        `Teammate "${member.name}" timed out after exceeding the busy time limit and was aborted. Their in-progress work has been released. Review their session, then re-spawn or reassign the task if needed.`,
+      )
 
       // Abort session (best effort)
       try {

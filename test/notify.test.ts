@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
-import { notifyTeamEvent, notifyWorkingProgress } from "../src/notify"
+import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "../src/notify"
 
 describe("notifyTeamEvent", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -119,5 +119,63 @@ describe("notifyWorkingProgress", () => {
     await notifyWorkingProgress(deps.client, deps.db, "t1")
     const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
     expect((toasts[0]!.args[0] as Record<string, unknown>).variant).toBe("info")
+  })
+})
+
+describe("notifyLead", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("persists a system message to the lead", () => {
+    notifyLead(deps.client, deps.db, "t1", "alice failed")
+    const msgs = deps.db.query(
+      "SELECT from_name, to_name, content, delivered FROM team_message WHERE team_id = ?"
+    ).all("t1") as Array<{ from_name: string; to_name: string; content: string; delivered: number }>
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.from_name).toBe("system")
+    expect(msgs[0]!.to_name).toBe("lead")
+    expect(msgs[0]!.content).toBe("alice failed")
+  })
+
+  test("actively wakes the lead via promptAsync", () => {
+    notifyLead(deps.client, deps.db, "t1", "alice failed")
+    const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(wakes).toHaveLength(1)
+    expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
+  })
+
+  test("wakes the lead even when all teammates are terminal (the error/abort case)", () => {
+    insertMember(deps.db, "t1", "alice", "sess-a", "error")
+    notifyLead(deps.client, deps.db, "t1", "alice hit an error and aborted")
+    const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(wakes).toHaveLength(1)
+    expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
+  })
+
+  test("does not wake when the team does not exist (no-op wake, persist still attempted)", () => {
+    // A valid teamId is required for persistence (FK); with an unknown team the
+    // lead lookup yields nothing, so no wake is fired.
+    insertTeam(deps.db, "t2", "second-team", "lead-sess-2")
+    notifyLead(deps.client, deps.db, "t2", "second team message")
+    const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(wakes).toHaveLength(1)
+    expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess-2")
+  })
+
+  test("swallows promptAsync failures — message is already persisted", () => {
+    deps.client.session.promptAsync = async () => { throw new Error("transport down") }
+    expect(() => notifyLead(deps.client, deps.db, "t1", "alice failed")).not.toThrow()
+    const msgs = deps.db.query("SELECT id FROM team_message WHERE team_id = ?").all("t1") as unknown[]
+    expect(msgs).toHaveLength(1)
+  })
+
+  test("returns the persisted message id", () => {
+    const id = notifyLead(deps.client, deps.db, "t1", "alice failed")
+    expect(typeof id).toBe("string")
+    expect(id).toMatch(/^msg_/)
   })
 })

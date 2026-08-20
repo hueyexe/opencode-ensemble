@@ -40,6 +40,33 @@ describe("Watchdog", () => {
     expect(msg).toContain("timed out")
   })
 
+  test("notifies AND wakes the lead when a member times out", async () => {
+    const pastTime = Date.now() - 60_000
+    deps.db.run(
+      "INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, time_created, time_updated) VALUES (?, ?, ?, 'build', 'busy', 'running', ?, ?)",
+      ["t1", "alice", "sess-a", pastTime, pastTime]
+    )
+    deps.registry.register("t1", "alice", "sess-a")
+
+    const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 30_000 })
+    await watchdog.check()
+
+    // A system message must be persisted to the lead so the timeout is not silent
+    const leadMsgs = deps.db.query(
+      "SELECT content FROM team_message WHERE team_id = 't1' AND from_name = 'system' AND to_name = 'lead'"
+    ).all() as Array<{ content: string }>
+    expect(leadMsgs).toHaveLength(1)
+    expect(leadMsgs[0]!.content).toContain("alice")
+    expect(leadMsgs[0]!.content).toContain("timed out")
+
+    // The lead's session must be woken so the message is actually delivered
+    const wakes = deps.client.calls.filter(c =>
+      c.method === "session.promptAsync" &&
+      (c.args[0] as { sessionID?: string }).sessionID === "lead-sess"
+    )
+    expect(wakes).toHaveLength(1)
+  })
+
   test("releases the member's in_progress tasks on timeout", async () => {
     const pastTime = Date.now() - 60_000
     deps.db.run(
