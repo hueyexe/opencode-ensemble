@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
 import { Watchdog } from "../src/watchdog"
+import { ProgressTracker } from "../src/progress"
 
 describe("Watchdog", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -212,5 +213,154 @@ describe("Watchdog", () => {
       const row = deps.db.query("SELECT worktree_dir FROM team_member WHERE name = 'alice'").get() as Record<string, unknown>
       expect(row.worktree_dir).toBe("/tmp/wt-alice")
     })
+  })
+})
+
+describe("Watchdog.checkStalled — last_nudged_at, deferred markReported, completion guard", () => {
+  let deps: ReturnType<typeof setupDeps>
+  let pt: ProgressTracker
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    pt = new ProgressTracker()
+  })
+
+  function insertStalledMember(name: string, sessionId: string) {
+    insertMember(deps.db, "t1", name, sessionId, "busy", "running")
+    pt.recordBusyStart(sessionId)
+    // isTimeStalled's baseline is max(msgAt, taskAt, lastStepAt, busySince) — age the
+    // busySince entry directly so the member reads as stalled against a small threshold.
+    const busySince = (pt as unknown as { busySince: Map<string, number> }).busySince
+    busySince.set(sessionId, Date.now() - 10_000)
+  }
+
+  test("Fix 1: writes last_nudged_at on a successful nudge", async () => {
+    insertStalledMember("alice", "sess-a")
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    const before = Date.now()
+    await watchdog.checkStalled()
+    // Flush the promptAsync().then() microtask.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const row = deps.db.query("SELECT last_nudged_at FROM team_member WHERE name = 'alice'").get() as { last_nudged_at: number | null }
+    expect(row.last_nudged_at).not.toBeNull()
+    expect(row.last_nudged_at!).toBeGreaterThanOrEqual(before)
+  })
+
+  test("Fix 4: markReported is deferred until promptAsync delivery succeeds — a failed delivery does not orphan the stall state permanently", async () => {
+    insertStalledMember("alice", "sess-a")
+    let attempt = 0
+    const originalPromptAsync = deps.client.session.promptAsync.bind(deps.client.session)
+    deps.client.session.promptAsync = async (opts) => {
+      attempt++
+      if (attempt === 1) throw new Error("session aborted")
+      return originalPromptAsync(opts)
+    }
+
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    await watchdog.checkStalled()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Delivery failed — markReported must NOT have fired, so a later check can retry.
+    expect(pt.isReported("sess-a")).toBe(false)
+
+    deps.client.calls.length = 0
+    await watchdog.checkStalled()
+    const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(nudges).toHaveLength(1) // retried, not permanently orphaned
+    expect(attempt).toBe(2)
+  })
+
+  test("Fix 4: markReported fires after a successful delivery, preventing re-nudge on the next check", async () => {
+    insertStalledMember("alice", "sess-a")
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    await watchdog.checkStalled()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(pt.isReported("sess-a")).toBe(true)
+
+    deps.client.calls.length = 0
+    await watchdog.checkStalled()
+    const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(nudges).toHaveLength(0) // already reported, no duplicate nudge
+  })
+
+  test("Fix 2: logs a structured failure when the stall nudge delivery fails", async () => {
+    insertStalledMember("alice", "sess-a")
+    deps.client.session.promptAsync = async () => { throw new Error("session aborted") }
+    const logCalls: string[] = []
+    ;(deps.client as unknown as { app: { log: (p: { message: string }) => Promise<unknown> } }).app = { log: async (p) => { logCalls.push(p.message); return {} } }
+    const { initLog } = await import("../src/log")
+    initLog(deps.client)
+
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    await watchdog.checkStalled()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(logCalls.some(m => m.includes("alice") && m.includes("session aborted"))).toBe(true)
+  })
+
+  test("Fix 6: skips nudging a member who already reported completion, and logs the skip", async () => {
+    insertStalledMember("alice", "sess-a")
+    deps.db.run("UPDATE team_member SET reported_to_lead = 1 WHERE team_id = 't1' AND name = 'alice'")
+
+    const logCalls: string[] = []
+    ;(deps.client as unknown as { app: { log: (p: { message: string }) => Promise<unknown> } }).app = { log: async (p) => { logCalls.push(p.message); return {} } }
+    const { initLog } = await import("../src/log")
+    initLog(deps.client)
+
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    await watchdog.checkStalled()
+
+    const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(nudges).toHaveLength(0)
+    expect(logCalls.some(m => m.includes("alice"))).toBe(true)
+  })
+
+  test("Fix 6: checkChatty skips nudging a member who already reported completion, and logs the skip", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-a", "busy", "running")
+    deps.db.run("UPDATE team_member SET reported_to_lead = 1 WHERE team_id = 't1' AND name = 'alice'")
+    pt.recordPeerMessage("sess-a")
+    pt.recordPeerMessage("sess-a")
+
+    const logCalls: string[] = []
+    ;(deps.client as unknown as { app: { log: (p: { message: string }) => Promise<unknown> } }).app = { log: async (p) => { logCalls.push(p.message); return {} } }
+    const { initLog } = await import("../src/log")
+    initLog(deps.client)
+
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, peerMessageLimit: 2, peerMessageWindowMs: 300_000,
+    })
+
+    await watchdog.checkChatty()
+
+    const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(nudges).toHaveLength(0)
+    expect(logCalls.some(m => m.includes("alice"))).toBe(true)
   })
 })

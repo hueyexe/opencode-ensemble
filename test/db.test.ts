@@ -36,6 +36,29 @@ describe("schema migrations", () => {
     expect(row).toBeTruthy()
   })
 
+  test("migration 9 adds an additive last_nudged_at column to team_member, nullable, no CHECK constraint touched", () => {
+    applyMigrations(db)
+    const cols = db.query("PRAGMA table_info(team_member)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>
+    const col = cols.find(c => c.name === "last_nudged_at")
+    expect(col).toBeTruthy()
+    expect(col?.notnull).toBe(0)
+    expect(col?.dflt_value).toBeNull()
+
+    // The status CHECK constraint must be untouched — still exactly the 5 known literals.
+    const schemaRow = db.query("SELECT sql FROM sqlite_master WHERE type='table' AND name='team_member'").get() as { sql: string }
+    expect(schemaRow.sql).toContain("CHECK(status IN ('ready', 'busy', 'shutdown_requested', 'shutdown', 'error'))")
+
+    // Existing rows get NULL, not some default sentinel.
+    db.run(
+      "INSERT INTO team (id, name, project_id, lead_session_id, status, delegate, time_created, time_updated) VALUES ('t1', 'team', 'default', 'lead', 'active', 0, 0, 0)"
+    )
+    db.run(
+      "INSERT INTO team_member (team_id, name, session_id, agent, time_created, time_updated) VALUES ('t1', 'alice', 's1', 'build', 0, 0)"
+    )
+    const row = db.query("SELECT last_nudged_at FROM team_member WHERE name = 'alice'").get() as { last_nudged_at: number | null }
+    expect(row.last_nudged_at).toBeNull()
+  })
+
   test("creates team_task table", () => {
     applyMigrations(db)
     const row = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='team_task'").get()

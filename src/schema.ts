@@ -186,6 +186,13 @@ export const MIGRATIONS: string[] = [
    CREATE INDEX IF NOT EXISTS team_message_undelivered_idx ON team_message(team_id, delivered) WHERE delivered = 0;
    CREATE INDEX IF NOT EXISTS team_message_unread_idx ON team_message(team_id, read) WHERE read = 0;
    PRAGMA foreign_keys=ON;`,
+  // Migration 9: Add last_nudged_at to team_member — additive-only display-staleness
+  // signal for the watchdog's soft stall-nudge path. Deliberately NOT a new status
+  // enum value (see checkStalled() in watchdog.ts for the rationale): a 6th CHECK
+  // constraint literal would require a table-rebuild migration and touch every
+  // consumer that switches on the 5 known status strings. This column is additive —
+  // existing consumers that don't know about it simply don't render it.
+  `ALTER TABLE team_member ADD COLUMN last_nudged_at INTEGER;`,
 ]
 
 /**
