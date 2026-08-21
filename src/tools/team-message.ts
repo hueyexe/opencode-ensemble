@@ -8,9 +8,6 @@ import { log } from "../log"
 /**
  * Execute the team_message tool. Sends a direct message to a teammate or lead.
  * Optionally approves or rejects a teammate's plan (lead only).
-/**
- * Execute the team_message tool. Sends a direct message to a teammate or lead.
- * Optionally approves or rejects a teammate's plan (lead only).
  * Optionally forces delivery to a teammate who already reported completion (lead only) —
  * see the `force` guard below.
  * Optionally updates a teammate's model in-place (lead only) via the `model`
