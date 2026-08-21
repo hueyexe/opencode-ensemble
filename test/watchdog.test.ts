@@ -305,6 +305,8 @@ describe("Watchdog.checkStalled — last_nudged_at, deferred markReported, compl
     let attempt = 0
     const originalPromptAsync = deps.client.session.promptAsync.bind(deps.client.session)
     deps.client.session.promptAsync = async (opts) => {
+      // Only fail the teammate nudge — lead wakes from notifyLead are unrelated here.
+      if ((opts as { sessionID?: string }).sessionID !== "sess-a") return originalPromptAsync(opts)
       attempt++
       if (attempt === 1) throw new Error("session aborted")
       return originalPromptAsync(opts)
@@ -324,7 +326,10 @@ describe("Watchdog.checkStalled — last_nudged_at, deferred markReported, compl
 
     deps.client.calls.length = 0
     await watchdog.checkStalled()
-    const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const nudges = deps.client.calls.filter(c =>
+      c.method === "session.promptAsync" &&
+      (c.args[0] as { sessionID?: string }).sessionID === "sess-a"
+    )
     expect(nudges).toHaveLength(1) // retried, not permanently orphaned
     expect(attempt).toBe(2)
   })
