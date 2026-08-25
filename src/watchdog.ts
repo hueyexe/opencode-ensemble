@@ -126,6 +126,28 @@ export class Watchdog {
 
       const reason = tokenStalled ? "low output tokens" : "no communication"
 
+      // Re-nudge suppression: markReported is deferred until promptAsync delivery
+      // succeeds, so a persistently failing nudge (session deleted mid-run while the
+      // DB row stays busy, bad stored model) would otherwise re-fire this whole
+      // block on every tick — a fresh last_nudged_at write, lead wake, and toast
+      // forever. Skip while the previous nudge is recent AND the member has shown
+      // no activity since it; genuine activity after a nudge makes them eligible
+      // for a fresh evaluation (and a fresh stall verdict) immediately.
+      const recentNudgeRow = this.db.query(
+        "SELECT last_nudged_at FROM team_member WHERE team_id = ? AND name = ?"
+      ).get(member.team_id, member.name) as { last_nudged_at: number | null } | null
+      if (recentNudgeRow?.last_nudged_at) {
+        const nudgedAt = recentNudgeRow.last_nudged_at
+        // >= because Date.now() has ms resolution: activity recorded in the same
+        // tick as the nudge write must count as post-nudge, or a member that went
+        // idle, worked, and stalled again would stay suppressed forever.
+        const activeSinceNudge = (this.progressTracker?.lastActivityAt(member.session_id) ?? 0) >= nudgedAt
+        if (!activeSinceNudge && Date.now() - nudgedAt < this.stallThresholdMs) {
+          log(`watchdog:stall:skip member=${member.name} team=${member.team_id} reason=recently-nudged`)
+          continue
+        }
+      }
+
       // Additive display-staleness signal (does not change team_member.status) — lets
       // the dashboard/team_status annotate "busy, nudged Xs ago" so a soft nudge is
       // visible without inventing a new status value.

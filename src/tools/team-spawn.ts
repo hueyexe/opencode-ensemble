@@ -397,7 +397,7 @@ export async function executeTeamSpawn(
       // Release any task auto-claimed for this teammate so it returns to the pool.
       if (claimedTaskContent) {
         deps.db.run(
-          "UPDATE team_task SET status = 'pending', assignee = NULL, time_updated = ? WHERE id = ? AND assignee = ?",
+          "UPDATE team_task SET status = 'pending', assignee = NULL, time_updated = ? WHERE id = ? AND assignee = ? AND status = 'in_progress'",
           [Date.now(), args.claim_task, args.name]
         )
       }

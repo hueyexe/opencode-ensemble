@@ -94,15 +94,21 @@ export class ProgressTracker {
     this.busySince.set(sessionId, Date.now())
   }
 
+  /** Latest activity timestamp across all tracked signals (0 when nothing recorded). */
+  lastActivityAt(sessionId: string): number {
+    const records = this.steps.get(sessionId)
+    const lastStepAt = records && records.length > 0 ? records[records.length - 1]!.timestamp : 0
+    return Math.max(
+      this.lastMessageAt.get(sessionId) ?? 0,
+      this.lastTaskAt.get(sessionId) ?? 0,
+      lastStepAt,
+      this.busySince.get(sessionId) ?? 0,
+    )
+  }
+
   /** Time-based stall: no message, task completion, step, or busy-transition within `thresholdMs` of now. */
   isTimeStalled(sessionId: string, thresholdMs: number): boolean {
-    const records = this.steps.get(sessionId)
-    const msgAt = this.lastMessageAt.get(sessionId) ?? 0
-    const taskAt = this.lastTaskAt.get(sessionId) ?? 0
-    const lastStepAt = records && records.length > 0 ? records[records.length - 1]!.timestamp : 0
-    const busySince = this.busySince.get(sessionId) ?? 0
-
-    const baseline = Math.max(msgAt, taskAt, lastStepAt, busySince)
+    const baseline = this.lastActivityAt(sessionId)
     if (baseline === 0) return false // no activity or busy signal recorded at all yet
 
     return Date.now() - baseline >= thresholdMs

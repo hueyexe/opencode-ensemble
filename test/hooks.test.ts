@@ -264,6 +264,7 @@ describe("handleSessionStatusEvent", () => {
       status: string; execution_status: string
       retry_until: number | null; retry_attempt: number | null; retry_provider: string | null; retry_message: string | null
     }
+    expect(row.retry_until).toBe(nextAt)
 
     // Fix 1's non-goal: status/execution_status are completely untouched.
     expect(row.status).toBe("busy")
@@ -297,6 +298,33 @@ describe("handleSessionStatusEvent", () => {
     // Guard against regressions that hardcode rate-limit-specific language —
     // the persisted message must be exactly what the SDK reported, no relabeling.
     expect(row.retry_message).not.toMatch(/rate.?limit/i)
+  })
+
+  test("malformed retry payload (missing next/attempt) does not throw inside the event handler", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    // Older server versions may omit next/attempt. An unguarded undefined bind
+    // would throw here and discard the event's remaining processing.
+    expect(() =>
+      handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+        attempt: undefined as unknown as number,
+        message: "retrying",
+        next: undefined as unknown as number,
+      })
+    ).not.toThrow()
+
+    const row = db.query(
+      "SELECT retry_until, retry_attempt, retry_message FROM team_member WHERE session_id = ?"
+    ).get("sess-1") as { retry_until: number | null; retry_attempt: number | null; retry_message: string | null }
+    expect(row.retry_until).toBeNull()
+    expect(row.retry_attempt).toBeNull()
+    expect(row.retry_message).toBe("retrying")
+
+    // The transition still fires so the toast path is unaffected.
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "retry", { attempt: 1, message: "m", next: Date.now() })
+    expect(result?.to).toBe("retry")
   })
 
   test("Fix 3: retry_until is a TTL — the derived isRetrying boolean flips false once it elapses, with no clear-write", () => {

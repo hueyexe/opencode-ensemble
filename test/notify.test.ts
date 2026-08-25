@@ -156,14 +156,26 @@ describe("notifyLead", () => {
     expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
   })
 
-  test("does not wake when the team does not exist (no-op wake, persist still attempted)", () => {
-    // A valid teamId is required for persistence (FK); with an unknown team the
-    // lead lookup yields nothing, so no wake is fired.
+  test("wakes a second team's own lead (per-team lead lookup)", () => {
+    // A valid teamId is required for persistence (FK); each team wakes its own
+    // lead session.
     insertTeam(deps.db, "t2", "second-team", "lead-sess-2")
     notifyLead(deps.client, deps.db, "t2", "second team message")
     const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(wakes).toHaveLength(1)
     expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess-2")
+  })
+
+  test("does not wake when the team has no lead session (persist still attempted)", () => {
+    // Empty lead_session_id (e.g. lead row lost): the message is persisted but
+    // notifyLead has nothing to wake.
+    insertTeam(deps.db, "t2", "second-team", "lead-sess-2")
+    deps.db.run("UPDATE team SET lead_session_id = '' WHERE id = 't2'")
+    expect(() => notifyLead(deps.client, deps.db, "t2", "second team message")).not.toThrow()
+    const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(wakes).toHaveLength(0)
+    const msgs = deps.db.query("SELECT id FROM team_message WHERE team_id = 't2'").all() as unknown[]
+    expect(msgs).toHaveLength(1)
   })
 
   test("swallows promptAsync failures — message is already persisted", () => {

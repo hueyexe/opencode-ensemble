@@ -128,11 +128,16 @@ export function handleSessionStatusEvent(
     // throttled" language baked in here: the SDK's retry status is generic,
     // so we surface whatever action.message/status.message actually says.
     if (retryPayload) {
+      // Coerce before binding: older server versions may emit a partial retry
+      // payload, and an undefined bind throws synchronously inside this event
+      // handler, discarding the event's remaining processing.
+      const next = typeof retryPayload.next === "number" && Number.isFinite(retryPayload.next) ? retryPayload.next : null
+      const attempt = typeof retryPayload.attempt === "number" && Number.isFinite(retryPayload.attempt) ? retryPayload.attempt : null
       db.run(
         "UPDATE team_member SET retry_until = ?, retry_attempt = ?, retry_provider = ?, retry_message = ? WHERE team_id = ? AND name = ?",
         [
-          retryPayload.next,
-          retryPayload.attempt,
+          next,
+          attempt,
           retryPayload.action?.provider ?? null,
           retryPayload.action?.message ?? retryPayload.message ?? null,
           entry.teamId,

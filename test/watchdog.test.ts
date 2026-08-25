@@ -321,16 +321,19 @@ describe("Watchdog.checkStalled — last_nudged_at, deferred markReported, compl
     await Promise.resolve()
     await Promise.resolve()
 
-    // Delivery failed — markReported must NOT have fired, so a later check can retry.
+    // Delivery failed — markReported must NOT have fired, so the state is not orphaned.
     expect(pt.isReported("sess-a")).toBe(false)
 
+    // The immediate next check is suppressed (re-nudge guard), not lost: once the
+    // recorded nudge ages past the threshold the delivery is genuinely retried.
+    deps.db.run("UPDATE team_member SET last_nudged_at = ? WHERE name = 'alice'", [Date.now() - 6_000])
     deps.client.calls.length = 0
     await watchdog.checkStalled()
     const nudges = deps.client.calls.filter(c =>
       c.method === "session.promptAsync" &&
       (c.args[0] as { sessionID?: string }).sessionID === "sess-a"
     )
-    expect(nudges).toHaveLength(1) // retried, not permanently orphaned
+    expect(nudges).toHaveLength(1) // retried after suppression expires, not permanently orphaned
     expect(attempt).toBe(2)
   })
 
@@ -350,6 +353,48 @@ describe("Watchdog.checkStalled — last_nudged_at, deferred markReported, compl
     await watchdog.checkStalled()
     const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(nudges).toHaveLength(0) // already reported, no duplicate nudge
+  })
+
+  test("re-nudge suppression: a failed nudge does not re-fire lead notification on every subsequent check", async () => {
+    insertStalledMember("alice", "sess-a")
+    // Teammate nudge fails persistently (session gone mid-run, DB still busy).
+    deps.client.session.promptAsync = async () => { throw new Error("session not found") }
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    await watchdog.checkStalled()
+    await watchdog.checkStalled()
+    await watchdog.checkStalled()
+
+    // First pass writes last_nudged_at and notifies the lead once. The recent
+    // nudge suppresses the follow-up passes instead of looping forever.
+    const nudgedRows = deps.db.query("SELECT last_nudged_at FROM team_member WHERE name = 'alice'").all() as Array<{ last_nudged_at: number | null }>
+    expect(nudgedRows[0]!.last_nudged_at).not.toBeNull()
+    const leadMsgs = deps.db.query(
+      "SELECT id FROM team_message WHERE team_id = 't1' AND from_name = 'system' AND to_name = 'lead'"
+    ).all() as unknown[]
+    expect(leadMsgs).toHaveLength(1)
+  })
+
+  test("re-nudge suppression expires: after the nudge ages past the threshold the member is eligible again", async () => {
+    insertStalledMember("alice", "sess-a")
+    deps.client.session.promptAsync = async () => { throw new Error("session not found") }
+    const watchdog = new Watchdog({
+      db: deps.db, client: deps.client, registry: deps.registry,
+      ttlMs: 0, progressTracker: pt, stallThresholdMs: 5_000,
+    })
+
+    await watchdog.checkStalled()
+    // Age the recorded nudge past the stall threshold.
+    deps.db.run("UPDATE team_member SET last_nudged_at = ? WHERE name = 'alice'", [Date.now() - 6_000])
+    await watchdog.checkStalled()
+
+    const leadMsgs = deps.db.query(
+      "SELECT id FROM team_message WHERE team_id = 't1' AND from_name = 'system' AND to_name = 'lead'"
+    ).all() as unknown[]
+    expect(leadMsgs).toHaveLength(2)
   })
 
   test("Fix 2: logs a structured failure when the stall nudge delivery fails", async () => {
