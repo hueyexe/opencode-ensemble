@@ -3,7 +3,10 @@ import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import type { ProgressTracker } from "./progress"
 import { preserveBranch, preservedBranchName } from "./tools/merge-helper"
-import { sendMessage } from "./messaging"
+import { releaseMemberTasks } from "./tasks"
+import { hasReportedCompletion } from "./messaging"
+import { getMemberModel } from "./member-model"
+import { notifyLead } from "./notify"
 import { log } from "./log"
 
 interface WatchdogOpts {
@@ -112,22 +115,47 @@ export class Watchdog {
 
       if (!tokenStalled && !timeStalled) continue
 
-      this.progressTracker.markReported(member.session_id)
+      // hasReportedCompletion() is the documented invariant every promptAsync delivery
+      // path must honor (see hooks.ts:63). The in-memory isReported() check above only
+      // catches this watchdog's own prior nudges — it doesn't know if the member reported
+      // completion by some other path while still transiently 'busy' in the DB.
+      if (hasReportedCompletion(this.db, member.team_id, member.name)) {
+        log(`watchdog:stall:skip member=${member.name} team=${member.team_id} reason=already-reported-completion`)
+        continue
+      }
+
       const reason = tokenStalled ? "low output tokens" : "no communication"
 
-      // Nudge the teammate directly
+      // Additive display-staleness signal (does not change team_member.status) — lets
+      // the dashboard/team_status annotate "busy, nudged Xs ago" so a soft nudge is
+      // visible without inventing a new status value.
+      this.db.run(
+        "UPDATE team_member SET last_nudged_at = ? WHERE team_id = ? AND name = ?",
+        [Date.now(), member.team_id, member.name]
+      )
+
+      // Nudge the teammate directly. markReported() only fires once delivery is
+      // confirmed — marking it before delivery is known would permanently and silently
+      // orphan the stall state if promptAsync throws (aborted session, invalid ID),
+      // since ProgressTracker.reported is in-memory and only cleared by new activity.
+      const stallModel = getMemberModel(this.db, member.team_id, member.name)
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You appear stalled — no progress detected. Report your current status to the lead via team_message, or wrap up your work." }],
-      }).catch(() => { /* best effort */ })
+        ...(stallModel ? { model: stallModel } : {}),
+      }).then(() => {
+        this.progressTracker!.markReported(member.session_id)
+      }).catch((err) => {
+        log(`watchdog:stall:nudge-failed member=${member.name} team=${member.team_id} session=${member.session_id} err=${err instanceof Error ? err.message : String(err)}`)
+      })
 
       // Notify the lead
-      sendMessage(this.db, {
-        teamId: member.team_id,
-        from: "system",
-        to: "lead",
-        content: `Teammate "${member.name}" appears stalled (${reason}). Consider checking on them via team_message or shutting them down.`,
-      })
+      notifyLead(
+        this.client,
+        this.db,
+        member.team_id,
+        `Teammate "${member.name}" appears stalled (${reason}). Consider checking on them via team_message or shutting them down.`,
+      )
 
       // Toast for the user
       try {
@@ -156,21 +184,31 @@ export class Watchdog {
       if (this.progressTracker.isChattyReported(member.session_id)) continue
       if (!this.progressTracker.isChatty(member.session_id, this.peerMessageLimit, this.peerMessageWindowMs)) continue
 
+      // hasReportedCompletion() guard — same invariant/rationale as checkStalled() above.
+      if (hasReportedCompletion(this.db, member.team_id, member.name)) {
+        log(`watchdog:chatty:skip member=${member.name} team=${member.team_id} reason=already-reported-completion`)
+        continue
+      }
+
       this.progressTracker.markChattyReported(member.session_id)
 
       // Nudge the agent
+      const chattyModel = getMemberModel(this.db, member.team_id, member.name)
       this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You've sent several messages to teammates. Focus on completing your task and send your results to the lead via team_message." }],
-      }).catch(() => { /* best effort */ })
+        ...(chattyModel ? { model: chattyModel } : {}),
+      }).catch((err) => {
+        log(`watchdog:chatty:nudge-failed member=${member.name} team=${member.team_id} session=${member.session_id} err=${err instanceof Error ? err.message : String(err)}`)
+      })
 
       // Notify the lead
-      sendMessage(this.db, {
-        teamId: member.team_id,
-        from: "system",
-        to: "lead",
-        content: `Agent "${member.name}" is sending many peer messages and may be over-coordinating. Consider checking on them.`,
-      })
+      notifyLead(
+        this.client,
+        this.db,
+        member.team_id,
+        `Agent "${member.name}" is sending many peer messages and may be over-coordinating. Consider checking on them.`,
+      )
 
       log(`watchdog:chatty member=${member.name} limit=${this.peerMessageLimit}`)
     }
@@ -210,6 +248,20 @@ export class Watchdog {
       this.db.run(
         "UPDATE team_member SET status = 'error', execution_status = 'timed_out', time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), member.team_id, member.name]
+      )
+
+      // Release the timed-out member's in_progress tasks back to the pool (issue #27)
+      const released = releaseMemberTasks(this.db, member.team_id, member.name)
+      if (released > 0) log(`watchdog:tasks:released name=${member.name} count=${released}`)
+
+      // Notify AND wake the lead — a timed-out teammate is otherwise a silent
+      // failure. This is the "leave recovery to the lead" path: we surface the
+      // timeout, we do not auto-resume the teammate.
+      notifyLead(
+        this.client,
+        this.db,
+        member.team_id,
+        `Teammate "${member.name}" timed out after exceeding the busy time limit and was aborted. Their in-progress work has been released. Review their session, then re-spawn or reassign the task if needed.`,
       )
 
       // Abort session (best effort)

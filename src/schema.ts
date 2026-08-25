@@ -186,6 +186,24 @@ export const MIGRATIONS: string[] = [
    CREATE INDEX IF NOT EXISTS team_message_undelivered_idx ON team_message(team_id, delivered) WHERE delivered = 0;
    CREATE INDEX IF NOT EXISTS team_message_unread_idx ON team_message(team_id, read) WHERE read = 0;
    PRAGMA foreign_keys=ON;`,
+  // Migration 9: Add last_nudged_at to team_member — additive-only display-staleness
+  // signal for the watchdog's soft stall-nudge path. Deliberately NOT a new status
+  // enum value (see checkStalled() in watchdog.ts for the rationale): a 6th CHECK
+  // constraint literal would require a table-rebuild migration and touch every
+  // consumer that switches on the 5 known status strings. This column is additive —
+  // existing consumers that don't know about it simply don't render it.
+  `ALTER TABLE team_member ADD COLUMN last_nudged_at INTEGER;`,
+  // Migration 10: Add retry_* columns to team_member — additive-only provider-retry
+  // display signal (see hooks.ts's "retry" branch). Same non-negotiable as Migration
+  // 9: no 6th status/execution_status literal, no table rebuild. retry_until is a
+  // TTL, not a stored enum — "currently retrying" is derived at read time
+  // (retry_until > Date.now()), so there is no explicit clear-write anywhere in this
+  // fix; it simply becomes stale and gets superseded by real activity or by time
+  // elapsing.
+  `ALTER TABLE team_member ADD COLUMN retry_until INTEGER;
+   ALTER TABLE team_member ADD COLUMN retry_attempt INTEGER;
+   ALTER TABLE team_member ADD COLUMN retry_provider TEXT;
+   ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
 ]
 
 /**

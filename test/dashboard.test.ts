@@ -25,8 +25,8 @@ function insertMessage(db: Database, teamId: string, id: string, fromName: strin
 
 // biome-lint: use Record for JSON response shape
 interface HealthResponse { ensemble: boolean; pid: number }
-interface DashboardTeam { id: string; name: string; projectId: string; status: string; timeCreated: number; timeUpdated: number; members: Array<{ sessionId?: string } & Record<string, unknown>>; tasks: Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> }
-interface StateResponse { projects: Array<{ id: string; name: string; path: string; activeTeams: number; workingAgents: number; teams: DashboardTeam[] }>; teams: DashboardTeam[] }
+interface DashboardTeam { id: string; name: string; projectId: string; leadSessionId?: string; status: string; timeCreated: number; timeUpdated: number; members: Array<{ sessionId?: string } & Record<string, unknown>>; tasks: Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> }
+interface StateResponse { version: number; projects: Array<{ id: string; name: string; path: string; activeTeams: number; workingAgents: number; teams: DashboardTeam[] }>; teams: DashboardTeam[] }
 
 describe("dashboard", () => {
   let db: Database
@@ -63,7 +63,7 @@ describe("dashboard", () => {
       expect(res.status).toBe(200)
       expect(res.headers.get("access-control-allow-origin")).toBe("*")
       const body = (await res.json()) as StateResponse
-      expect(body).toEqual({ projects: [], teams: [] })
+      expect(body).toEqual({ version: 1, projects: [], teams: [] })
     })
 
     test("returns team with members, tasks, messages", async () => {
@@ -90,6 +90,7 @@ describe("dashboard", () => {
       expect(team.members[0]!.agent).toBe("build")
       expect(team.members[0]!.status).toBe("busy")
       expect(team.members[0]!.executionStatus).toBe("running")
+      expect(team.members[0]!.lastNudgedAt).toBeNull()
 
       expect(team.tasks).toHaveLength(1)
       expect(team.tasks[0]!.id).toBe("task-1")
@@ -109,6 +110,79 @@ describe("dashboard", () => {
       expect(body.projects[0]!.activeTeams).toBe(1)
       expect(body.projects[0]!.workingAgents).toBe(1)
       expect(body.projects[0]!.teams[0]!.id).toBe("t1")
+    })
+
+    test("Fix 1: exposes last_nudged_at as an additive lastNudgedAt field", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+      const nudgedAt = Date.now() - 5000
+      db.run("UPDATE team_member SET last_nudged_at = ? WHERE team_id = ? AND name = ?", [nudgedAt, "t1", "alice"])
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+
+      expect(body.teams[0]!.members[0]!.lastNudgedAt).toBe(nudgedAt)
+    })
+
+    test("Fix 4: exposes retry_* columns additively, with isRetrying derived at read time", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+      const futureRetryAt = Date.now() + 30_000
+      db.run(
+        "UPDATE team_member SET retry_until = ?, retry_attempt = ?, retry_provider = ?, retry_message = ? WHERE team_id = ? AND name = ?",
+        [futureRetryAt, 2, "anthropic", "Anthropic is currently overloaded", "t1", "alice"]
+      )
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+      const member = body.teams[0]!.members[0]! as unknown as {
+        isRetrying: boolean; retryUntil: number; retryAttempt: number; retryProvider: string; retryMessage: string
+      }
+
+      expect(member.isRetrying).toBe(true)
+      expect(member.retryUntil).toBe(futureRetryAt)
+      expect(member.retryAttempt).toBe(2)
+      expect(member.retryProvider).toBe("anthropic")
+      expect(member.retryMessage).toBe("Anthropic is currently overloaded")
+    })
+
+    test("Fix 4/Fix 3: isRetrying reads false once retry_until has elapsed, with no explicit clear-write", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+      const pastRetryAt = Date.now() - 5000
+      db.run(
+        "UPDATE team_member SET retry_until = ?, retry_attempt = ?, retry_provider = ?, retry_message = ? WHERE team_id = ? AND name = ?",
+        [pastRetryAt, 1, "openai", "rate limited", "t1", "alice"]
+      )
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+      const member = body.teams[0]!.members[0]! as unknown as { isRetrying: boolean; retryUntil: number }
+
+      // Column is untouched (no clear-write happened) but the derived boolean flipped.
+      expect(member.retryUntil).toBe(pastRetryAt)
+      expect(member.isRetrying).toBe(false)
+    })
+
+    test("Fix 4: retry fields are null/false for a member that has never retried", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess")
+      insertMember(db, "t1", "alice", "sess-a", "busy", "running")
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+      const member = body.teams[0]!.members[0]! as unknown as {
+        isRetrying: boolean; retryUntil: number | null; retryAttempt: number | null; retryProvider: string | null; retryMessage: string | null
+      }
+
+      expect(member.isRetrying).toBe(false)
+      expect(member.retryUntil).toBeNull()
+      expect(member.retryAttempt).toBeNull()
+      expect(member.retryProvider).toBeNull()
+      expect(member.retryMessage).toBeNull()
     })
 
     test("summarizes progress across projects", async () => {
@@ -452,6 +526,34 @@ describe("dashboard", () => {
     })
   })
 
+  describe("state includes leadSessionId", () => {
+    test("team objects include leadSessionId, scoping to the session that created them", async () => {
+      insertTeam(db, "t1", "alpha", "lead-sess-a")
+      insertTeam(db, "t2", "beta", "lead-sess-b")
+
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse
+
+      const teamA = body.teams.find((t) => t.id === "t1")
+      const teamB = body.teams.find((t) => t.id === "t2")
+      expect(teamA?.leadSessionId).toBe("lead-sess-a")
+      expect(teamB?.leadSessionId).toBe("lead-sess-b")
+    })
+  })
+
+  describe("state includes version", () => {
+    test("top-level response carries a bare-integer version field", async () => {
+      server = await startDashboard(db, port)
+      const res = await fetch(`http://localhost:${port}/api/state`)
+      const body = (await res.json()) as StateResponse & { version: number }
+
+      expect(typeof body.version).toBe("number")
+      expect(Number.isInteger(body.version)).toBe(true)
+      expect(body.version).toBe(1)
+    })
+  })
+
   describe("parseMessageParts", () => {
     test("parses step-start parts", () => {
       const entries = parseMessageParts(
@@ -490,6 +592,31 @@ describe("dashboard", () => {
         { time: new Date().toISOString() },
       )
       expect(entries).toHaveLength(0)
+    })
+
+    test("uses info.time.created (SDK object shape) for the timestamp", () => {
+      const created = 1_700_000_000_000
+      const entries = parseMessageParts(
+        [{ type: "text", text: "hello" }],
+        { role: "assistant", time: { created } },
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.timestamp).toBe(created)
+    })
+
+    test("does not produce a NaN/epoch timestamp for the SDK object shape", () => {
+      const entries = parseMessageParts(
+        [{ type: "text", text: "hi" }],
+        { role: "assistant", time: { created: 1_700_000_000_000 } },
+      )
+      expect(Number.isNaN(entries[0]!.timestamp)).toBe(false)
+      expect(entries[0]!.timestamp).toBeGreaterThan(0)
+    })
+
+    test("falls back to a sane timestamp when time is missing", () => {
+      const before = Date.now()
+      const entries = parseMessageParts([{ type: "text", text: "hi" }], { role: "assistant" })
+      expect(entries[0]!.timestamp).toBeGreaterThanOrEqual(before)
     })
   })
 

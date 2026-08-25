@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
-import { executeTeamStatus, lastCallTime } from "../../src/tools/team-status"
+import { executeTeamStatus, lastCallTime, lastKnownState } from "../../src/tools/team-status"
 
 describe("team_status", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -9,6 +9,7 @@ describe("team_status", () => {
     deps = setupDeps()
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
     lastCallTime.clear()
+    lastKnownState.clear()
   })
 
   test("shows team with no members", async () => {
@@ -110,6 +111,37 @@ describe("team_status", () => {
     expect(second).toBe("No changes since last check.")
   })
 
+  test("Fix 3: does NOT return the hardcoded 'no changes' string within the 30s throttle window if state actually changed", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const first = await executeTeamStatus(deps, "lead-sess")
+    expect(first).toContain("alice")
+
+    // Real state change inside the 30s throttle window — a new teammate spawned.
+    insertMember(deps.db, "t1", "bob", "sess-bob", "busy", "running")
+    deps.registry.register("t1", "bob", "sess-bob")
+    // Force a distinct marker in case both inserts land in the same millisecond.
+    deps.db.run("UPDATE team_member SET time_updated = ? WHERE team_id = ? AND name = ?", [Date.now() + 1000, "t1", "bob"])
+
+    const second = await executeTeamStatus(deps, "lead-sess")
+    expect(second).not.toBe("No changes since last check.")
+    expect(second).toContain("bob")
+  })
+
+  test("Fix 3: still throttles to the hardcoded string when nothing has actually changed", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const first = await executeTeamStatus(deps, "lead-sess")
+    expect(first).toContain("alice")
+
+    // No DB mutation between calls — the 30s throttle's original purpose (don't
+    // hammer) should still be preserved when there's genuinely nothing new.
+    const second = await executeTeamStatus(deps, "lead-sess")
+    expect(second).toBe("No changes since last check.")
+  })
+
   test("returns normal status after 30s (manipulate lastCallTime)", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
     deps.registry.register("t1", "alice", "sess-alice")
@@ -197,5 +229,58 @@ describe("team_status", () => {
 
     const result = await executeTeamStatus(deps, "lead-sess")
     expect(result).toContain("2 total")
+  })
+
+  test("Fix 1: annotates a nudged member's existing status rather than replacing it", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.db.run("UPDATE team_member SET last_nudged_at = ? WHERE team_id = ? AND name = ?", [Date.now() - 47_000, "t1", "alice"])
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("working") // status label unchanged
+    expect(result).toContain("nudged 47s ago")
+  })
+
+  test("Fix 1: does not annotate a member who has never been nudged", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).not.toContain("nudged")
+  })
+
+  test("Fix 4: annotates a retrying member's existing status with attempt/remaining time, generically labeled", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.db.run(
+      "UPDATE team_member SET retry_until = ?, retry_attempt = ? WHERE team_id = ? AND name = ?",
+      [Date.now() + 45_000, 2, "t1", "alice"]
+    )
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("working") // status label unchanged, not replaced
+    expect(result).toContain("retrying (attempt 2")
+    // Generic label only — never rate-limit-specific wording (Fix 2).
+    expect(result).not.toMatch(/rate.?limit/i)
+  })
+
+  test("Fix 4/Fix 3: does not annotate a member once retry_until has elapsed (derived TTL, no clear-write)", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+    deps.db.run(
+      "UPDATE team_member SET retry_until = ?, retry_attempt = ? WHERE team_id = ? AND name = ?",
+      [Date.now() - 5_000, 1, "t1", "alice"]
+    )
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).not.toContain("retrying")
+  })
+
+  test("Fix 4: does not annotate a member who has never retried", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
+    deps.registry.register("t1", "alice", "sess-alice")
+
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).not.toContain("retrying")
   })
 })

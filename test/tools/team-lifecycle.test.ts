@@ -102,6 +102,47 @@ describe("team_shutdown", () => {
     expect(row.status).toBe("shutdown")
   })
 
+  test("releases the member's in_progress tasks back to the pool when aborted", async () => {
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()],
+    )
+    deps.client.session.status = async () => ({ data: { "sess-alice": { type: "idle" } } })
+
+    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess", undefined, noopPreserve)
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
+  })
+
+  test("does not release the member's in_progress tasks on graceful shutdown request", async () => {
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()],
+    )
+    deps.client.session.status = async () => ({ data: { "sess-alice": { type: "busy" } } })
+
+    await executeTeamShutdown(deps, { member: "alice" }, "lead-sess", undefined, noopPreserve)
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("in_progress")
+    expect(row.assignee).toBe("alice")
+  })
+
+  test("releases the member's in_progress tasks on force shutdown", async () => {
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()],
+    )
+
+    await executeTeamShutdown(deps, { member: "alice", force: true }, "lead-sess", undefined, noopPreserve)
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
+  })
+
   test("rejects if caller is not the lead", async () => {
     insertMember(deps.db, "t1", "bob", "sess-bob")
     deps.registry.register("t1", "bob", "sess-bob")

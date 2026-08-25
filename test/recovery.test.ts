@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { applyMigrations } from "../src/schema"
-import { recoverStaleMembers, recoverUndeliveredMessages, rehydrateRegistry } from "../src/recovery"
+import { recoverStaleMembers, recoverUndeliveredMessages, rehydrateRegistry, recoverOrphanedTeams, isSessionAlive } from "../src/recovery"
 import type { PluginClient } from "../src/types"
 import { MemberRegistry } from "../src/state"
 import { sendMessage, broadcastMessage } from "../src/messaging"
@@ -72,6 +72,120 @@ function mockClient(): PluginClient & { calls: Array<{ method: string; args: unk
   }
 }
 
+describe("isSessionAlive", () => {
+  let client: ReturnType<typeof mockClient>
+
+  beforeEach(() => {
+    client = mockClient()
+  })
+
+  test("returns true when session.get resolves", async () => {
+    client.session.get = async () => ({ data: {} })
+    expect(await isSessionAlive(client, "sess-1", 50)).toBe(true)
+  })
+
+  test("returns false when session.get throws", async () => {
+    client.session.get = async () => { throw new Error("session not found") }
+    expect(await isSessionAlive(client, "sess-1", 50)).toBe(false)
+  })
+
+  // Regression: a session.get() call made from within this plugin's own init
+  // sequence, before the server has finished bootstrapping, was confirmed to
+  // hang indefinitely rather than resolve or reject -- a self-referential
+  // HTTP-call deadlock, the same class team-spawn.ts's withTimeout already
+  // guards against for worktree.create/session.create. Live-reproduced
+  // 2026-08-17: a real server never responded to ANY request (including
+  // unrelated ones) when a stale team from a prior run existed for the
+  // project. isSessionAlive must resolve within its bound regardless of
+  // whether the underlying call ever settles, and must treat "we genuinely
+  // don't know" as alive (don't archive on an inconclusive check) rather than
+  // as dead.
+  test("resolves within the timeout bound instead of hanging when session.get never settles", async () => {
+    client.session.get = () => new Promise(() => { /* never resolves or rejects */ })
+    const start = Date.now()
+    const result = await isSessionAlive(client, "sess-1", 50)
+    expect(Date.now() - start).toBeLessThan(1000)
+    expect(result).toBe(true)
+  })
+})
+
+describe("recoverOrphanedTeams", () => {
+  let db: Database
+  let client: ReturnType<typeof mockClient>
+
+  beforeEach(() => {
+    db = setupDb()
+    client = mockClient()
+  })
+
+  test("archives an active team whose lead session no longer exists", async () => {
+    insertTeam(db, "t1", "dead-team", "dead-lead-sess")
+    client.session.get = async (options) => {
+      if (options.sessionID === "dead-lead-sess") throw new Error("session not found")
+      return { data: {} }
+    }
+
+    const result = await recoverOrphanedTeams(db, client)
+    expect(result.archived).toBe(1)
+
+    const row = db.query("SELECT status FROM team WHERE id = ?").get("t1") as { status: string }
+    expect(row.status).toBe("archived")
+  })
+
+  test("leaves an active team alone when its lead session is genuinely alive", async () => {
+    insertTeam(db, "t1", "live-team", "live-lead-sess")
+    // Default mock client.session.get always resolves.
+
+    const result = await recoverOrphanedTeams(db, client)
+    expect(result.archived).toBe(0)
+
+    const row = db.query("SELECT status FROM team WHERE id = ?").get("t1") as { status: string }
+    expect(row.status).toBe("active")
+  })
+
+  test("does not touch teams already archived", async () => {
+    insertTeam(db, "t1", "old-team", "dead-lead-sess")
+    db.run("UPDATE team SET status = 'archived' WHERE id = ?", ["t1"])
+    client.session.get = async () => { throw new Error("session not found") }
+
+    const result = await recoverOrphanedTeams(db, client)
+    expect(result.archived).toBe(0)
+  })
+
+  test("unregisters an archived team from the in-memory registry", async () => {
+    insertTeam(db, "t1", "dead-team", "dead-lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    client.session.get = async (options) => {
+      if (options.sessionID === "dead-lead-sess") throw new Error("session not found")
+      return { data: {} }
+    }
+    const registry = new MemberRegistry()
+    registry.register("t1", "alice", "sess-1")
+
+    await recoverOrphanedTeams(db, client, undefined, registry)
+
+    expect(registry.getBySession("sess-1")).toBeUndefined()
+  })
+
+  test("scopes to the given project when cwd is provided", async () => {
+    db.run(
+      "INSERT INTO project (id, name, path, status, time_created, time_updated) VALUES (?, ?, ?, 'active', ?, ?)",
+      ["/tmp/other-project", "other-project", "/tmp/other-project", Date.now(), Date.now()]
+    )
+    db.run(
+      "INSERT INTO team (id, name, project_id, lead_session_id, status, delegate, time_created, time_updated) VALUES (?, ?, ?, ?, 'active', 0, ?, ?)",
+      ["t2", "other-team", "/tmp/other-project", "dead-lead-sess-2", Date.now(), Date.now()]
+    )
+    client.session.get = async () => { throw new Error("session not found") }
+
+    const result = await recoverOrphanedTeams(db, client, "/tmp/other-project")
+    expect(result.archived).toBe(1)
+
+    const row = db.query("SELECT status FROM team WHERE id = ?").get("t2") as { status: string }
+    expect(row.status).toBe("archived")
+  })
+})
+
 describe("recoverStaleMembers", () => {
   let db: Database
   let client: ReturnType<typeof mockClient>
@@ -109,6 +223,21 @@ describe("recoverStaleMembers", () => {
     expect(abortCalls).toHaveLength(2)
   })
 
+  test("releases in_progress tasks of stale members back to the pool", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()]
+    )
+
+    await recoverStaleMembers(db, client)
+
+    const row = db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
+  })
+
   test("continues recovery even if abort fails", async () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "busy", "running")
@@ -123,6 +252,35 @@ describe("recoverStaleMembers", () => {
     const bob = db.query("SELECT status FROM team_member WHERE name = ?").get("bob") as Record<string, string>
     expect(alice.status).toBe("error")
     expect(bob.status).toBe("error")
+  })
+
+  // Regression: client.session.abort() is the same self-referential-HTTP-call
+  // shape as isSessionAlive()'s client.session.get() (recoverOrphanedTeams'
+  // deadlock, fixed 2026-08-17) -- a call back to this same server, made
+  // synchronously from within plugin init before the server has finished
+  // bootstrapping. recoverStaleMembers is awaited synchronously in index.ts
+  // (unlike recoverOrphanedTeams, which is now fire-and-forget) specifically
+  // because rehydrateRegistry depends on it completing first -- so the fix
+  // here is a bounded timeout on the abort call itself, not fire-and-forget.
+  // Confirmed via source review this is a live latent bug, not exercised by
+  // any test data so far only because it requires a genuinely 'busy' member
+  // at restart time, a query-filter coincidence rather than a structural
+  // guard against the underlying deadlock class.
+  test("does not hang forever if session.abort never settles", async () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    client.session.abort = () => new Promise(() => { /* never resolves or rejects */ })
+
+    const start = Date.now()
+    const result = await recoverStaleMembers(db, client, undefined, 50)
+    expect(Date.now() - start).toBeLessThan(1000)
+
+    // The DB-only work (marking busy members as error) must still have
+    // completed and be reflected in the returned count, independent of
+    // whether the network-side abort ever settles.
+    expect(result.interrupted).toBe(1)
+    const alice = db.query("SELECT status FROM team_member WHERE name = ?").get("alice") as Record<string, string>
+    expect(alice.status).toBe("error")
   })
 
   test("does not touch non-busy members", async () => {
@@ -263,6 +421,27 @@ describe("recoverUndeliveredMessages", () => {
     // No promptAsync calls for lead messages
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(0)
+  })
+
+  test("redelivers on the recipient's configured model when set", async () => {
+    db.run("UPDATE team_member SET model = 'anthropic/claude-sonnet' WHERE team_id = 't1' AND name = 'bob'")
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
+
+    await recoverUndeliveredMessages(db, client, registry)
+
+    const promptCall = client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { model?: { providerID: string; modelID: string } }
+    expect(opts.model).toEqual({ providerID: "anthropic", modelID: "claude-sonnet" })
+  })
+
+  test("redelivers without a model when the recipient has none set", async () => {
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
+
+    await recoverUndeliveredMessages(db, client, registry)
+
+    const promptCall = client.calls.find(c => c.method === "session.promptAsync")
+    const opts = promptCall!.args[0] as { model?: unknown }
+    expect(opts.model).toBeUndefined()
   })
 
   test("skips already-delivered messages", async () => {

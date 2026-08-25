@@ -6,6 +6,7 @@ import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
 import { sendMessage } from "../src/messaging"
+import { mockClient } from "./helpers"
 
 function setupDb(): Database {
   const db = new Database(":memory:")
@@ -62,6 +63,38 @@ describe("handleSessionStatusEvent", () => {
     expect(row.execution_status).toBe("idle")
   })
 
+  test("releases in_progress tasks when a shutdown_requested member finally goes idle", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "shutdown_requested", "running")
+    registry.register("t1", "alice", "sess-1")
+    db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()]
+    )
+
+    handleSessionStatusEvent(db, registry, "sess-1", "idle")
+
+    const row = db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
+  })
+
+  test("does not release in_progress tasks when a busy member merely goes idle (still ready)", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+    db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_a', 't1', 'work', 'in_progress', 'medium', 'alice', ?, ?)",
+      [Date.now(), Date.now()]
+    )
+
+    handleSessionStatusEvent(db, registry, "sess-1", "idle")
+
+    const row = db.query("SELECT status, assignee FROM team_task WHERE id = 'task_a'").get() as { status: string; assignee: string | null }
+    expect(row.status).toBe("in_progress")
+    expect(row.assignee).toBe("alice")
+  })
+
   test("transitions ready member to busy when session becomes busy", () => {
     insertTeam(db, "t1", "my-team", "lead-sess")
     insertMember(db, "t1", "alice", "sess-1", "ready", "idle")
@@ -72,6 +105,24 @@ describe("handleSessionStatusEvent", () => {
     const row = db.query("SELECT status, execution_status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
     expect(row.status).toBe("busy")
     expect(row.execution_status).toBe("running")
+  })
+
+  test("advances a freshly-spawned member (busy/starting) to running on its first busy event", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    // Spawn inserts members as busy/starting before the session's first busy event
+    insertMember(db, "t1", "alice", "sess-1", "busy", "starting")
+    registry.register("t1", "alice", "sess-1")
+    const spawnTime = (db.query("SELECT time_updated FROM team_member WHERE session_id = ?").get("sess-1") as { time_updated: number }).time_updated
+
+    const result = handleSessionStatusEvent(db, registry, "sess-1", "busy")
+
+    const row = db.query("SELECT status, execution_status, time_updated FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, number | string>
+    expect(row.status).toBe("busy")
+    expect(row.execution_status).toBe("running")
+    expect(row.time_updated as number).toBeGreaterThanOrEqual(spawnTime)
+    // A transition should be reported so the dashboard/toasts update
+    expect(result).toBeTruthy()
+    expect(result!.to).toBe("busy")
   })
 
   test("ignores events for unknown sessions", () => {
@@ -186,6 +237,92 @@ describe("handleSessionStatusEvent", () => {
     const row = db.query("SELECT status, execution_status FROM team_member WHERE session_id = ?").get("sess-1") as Record<string, string>
     expect(row.status).toBe("busy")
     expect(row.execution_status).toBe("running")
+  })
+
+  test("Fix 2: persists retry_* columns from the retry payload without touching status", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const nextAt = Date.now() + 30_000
+    handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+      attempt: 3,
+      message: "upstream error: 429 too many requests",
+      action: {
+        reason: "provider_overloaded",
+        provider: "anthropic",
+        title: "Provider busy",
+        message: "Anthropic is currently overloaded",
+        label: "Retry",
+      },
+      next: nextAt,
+    })
+
+    const row = db.query(
+      "SELECT status, execution_status, retry_until, retry_attempt, retry_provider, retry_message FROM team_member WHERE session_id = ?"
+    ).get("sess-1") as {
+      status: string; execution_status: string
+      retry_until: number | null; retry_attempt: number | null; retry_provider: string | null; retry_message: string | null
+    }
+
+    // Fix 1's non-goal: status/execution_status are completely untouched.
+    expect(row.status).toBe("busy")
+    expect(row.execution_status).toBe("running")
+
+    // Fix 2: the four retry columns get written from the payload.
+    expect(row.retry_until).toBe(nextAt)
+    expect(row.retry_attempt).toBe(3)
+    expect(row.retry_provider).toBe("anthropic")
+    // action.message wins over the generic status.message when present.
+    expect(row.retry_message).toBe("Anthropic is currently overloaded")
+  })
+
+  test("Fix 2: falls back to status.message when action is absent, and never hardcodes throttle language", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+      attempt: 1,
+      message: "transient network error, retrying",
+      next: Date.now() + 5_000,
+    })
+
+    const row = db.query(
+      "SELECT retry_provider, retry_message FROM team_member WHERE session_id = ?"
+    ).get("sess-1") as { retry_provider: string | null; retry_message: string | null }
+
+    expect(row.retry_provider).toBeNull()
+    expect(row.retry_message).toBe("transient network error, retrying")
+    // Guard against regressions that hardcode rate-limit-specific language —
+    // the persisted message must be exactly what the SDK reported, no relabeling.
+    expect(row.retry_message).not.toMatch(/rate.?limit/i)
+  })
+
+  test("Fix 3: retry_until is a TTL — the derived isRetrying boolean flips false once it elapses, with no clear-write", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    registry.register("t1", "alice", "sess-1")
+
+    const nextAt = Date.now() + 50
+    handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+      attempt: 1,
+      message: "retrying",
+      next: nextAt,
+    })
+
+    const before = db.query("SELECT retry_until FROM team_member WHERE session_id = ?").get("sess-1") as { retry_until: number | null }
+    expect(before.retry_until).toBe(nextAt)
+    expect(before.retry_until !== null && before.retry_until > Date.now()).toBe(true)
+
+    // No explicit clear-write happens anywhere — wait for the TTL to actually elapse.
+    Bun.sleepSync(100)
+
+    const after = db.query("SELECT retry_until FROM team_member WHERE session_id = ?").get("sess-1") as { retry_until: number | null }
+    // The stored value itself is untouched (no clear-write)...
+    expect(after.retry_until).toBe(nextAt)
+    // ...but the read-time derived boolean now reads false, purely from time passing.
+    expect(after.retry_until !== null && after.retry_until > Date.now()).toBe(false)
   })
 
   test("returns StatusTransition on successful idle transition", () => {
@@ -608,17 +745,19 @@ describe("buildTeamCompactionContext — completion requirement", () => {
 describe("handleSessionErrorEvent", () => {
   let db: Database
   let registry: MemberRegistry
+  let client: ReturnType<typeof mockClient>
 
   beforeEach(() => {
     db = setupDb()
     registry = new MemberRegistry()
+    client = mockClient()
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
     registry.register("t1", "scout", "scout-sess")
   })
 
   test("posts a system message to the lead when a known member errors", () => {
-    handleSessionErrorEvent(db, registry, "scout-sess", {
+    handleSessionErrorEvent(db, registry, client, "scout-sess", {
       name: "UnknownError",
       data: { message: "Tool team_message failed: This session is not in a team." },
     })
@@ -633,8 +772,19 @@ describe("handleSessionErrorEvent", () => {
     expect(msgs[0]?.content).toContain("Tool team_message failed")
   })
 
+  test("actively wakes the lead so the error message is delivered", () => {
+    handleSessionErrorEvent(db, registry, client, "scout-sess", {
+      name: "UnknownError",
+      data: { message: "boom" },
+    })
+
+    const wakes = client.calls.filter(c => c.method === "session.promptAsync")
+    expect(wakes).toHaveLength(1)
+    expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
+  })
+
   test("uses error.name as fallback when data.message is missing", () => {
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "ProviderAuthError" })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "ProviderAuthError" })
 
     const msgs = db.query("SELECT content FROM team_message WHERE team_id = ?")
       .all("t1") as Array<{ content: string }>
@@ -642,7 +792,7 @@ describe("handleSessionErrorEvent", () => {
   })
 
   test("uses 'unknown error' when error is undefined", () => {
-    handleSessionErrorEvent(db, registry, "scout-sess", undefined)
+    handleSessionErrorEvent(db, registry, client, "scout-sess", undefined)
 
     const msgs = db.query("SELECT content FROM team_message WHERE team_id = ?")
       .all("t1") as Array<{ content: string }>
@@ -650,7 +800,7 @@ describe("handleSessionErrorEvent", () => {
   })
 
   test("ignores errors for unknown sessions (not in registry)", () => {
-    handleSessionErrorEvent(db, registry, "stranger-sess", {
+    handleSessionErrorEvent(db, registry, client, "stranger-sess", {
       name: "UnknownError",
       data: { message: "boom" },
     })
@@ -660,7 +810,7 @@ describe("handleSessionErrorEvent", () => {
   })
 
   test("ignores undefined sessionID", () => {
-    handleSessionErrorEvent(db, registry, undefined, { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, undefined, { name: "UnknownError", data: { message: "boom" } })
 
     const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
     expect(msgs).toHaveLength(0)
@@ -669,7 +819,7 @@ describe("handleSessionErrorEvent", () => {
   test("does not post a duplicate message for the lead — leads are not in registry", () => {
     // The lead's session is NOT in the registry (leads are looked up via SQLite).
     // A session.error for the lead's session should not produce a teammate-error message.
-    handleSessionErrorEvent(db, registry, "lead-sess", {
+    handleSessionErrorEvent(db, registry, client, "lead-sess", {
       name: "UnknownError",
       data: { message: "boom" },
     })
@@ -880,10 +1030,12 @@ describe("checkToolIsolation — SQLite fallback for multi-instance scenarios", 
 describe("handleSessionErrorEvent — SQLite fallback when registry is empty", () => {
   let db: Database
   let registry: MemberRegistry
+  let client: ReturnType<typeof mockClient>
 
   beforeEach(() => {
     db = setupDb()
     registry = new MemberRegistry()
+    client = mockClient()
   })
 
   test("posts a system message via SQLite fallback when registry is empty", () => {
@@ -892,7 +1044,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", {
+    handleSessionErrorEvent(db, registry, client, "scout-sess", {
       name: "UnknownError",
       data: { message: "Tool team_message failed" },
     })
@@ -910,7 +1062,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "busy", "running")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
 
     expect(registry.getBySession("scout-sess")?.memberName).toBe("scout")
   })
@@ -919,7 +1071,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "shutdown", "completed")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
 
     const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
     expect(msgs).toHaveLength(0)
@@ -929,7 +1081,7 @@ describe("handleSessionErrorEvent — SQLite fallback when registry is empty", (
     insertTeam(db, "t1", "smoke", "lead-sess")
     insertMember(db, "t1", "scout", "scout-sess", "error", "failed")
 
-    handleSessionErrorEvent(db, registry, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
+    handleSessionErrorEvent(db, registry, client, "scout-sess", { name: "UnknownError", data: { message: "boom" } })
 
     const msgs = db.query("SELECT id FROM team_message").all() as unknown[]
     expect(msgs).toHaveLength(0)

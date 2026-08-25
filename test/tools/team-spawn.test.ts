@@ -70,6 +70,22 @@ describe("team_spawn", () => {
     expect(row.agent).toBe("build")
   })
 
+  test("records a busy-start baseline on spawn (regression: fresh member inserted directly as busy, never fires a ready->busy transition event)", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+    }, "lead-sess")
+    expect(result).toContain("spawned")
+
+    const row = deps.db.query("SELECT session_id FROM team_member WHERE name = ?").get("alice") as { session_id: string }
+    // team-spawn.ts inserts the row with status='busy' directly -- there is no
+    // status-event transition for the watchdog to hook. isTimeStalled must still
+    // see a baseline from the moment of spawn, or a teammate stalled on its very
+    // first action (the exact pattern this checklist item tests) is invisible.
+    expect(deps.progressTracker.isTimeStalled(row.session_id, 0)).toBe(true)
+  })
+
   test("rejects if caller is not the lead", async () => {
     insertMember(deps.db, "t1", "bob", "bob-sess")
     deps.registry.register("t1", "bob", "bob-sess")
@@ -173,6 +189,76 @@ describe("team_spawn", () => {
     const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
 
     expect(text).not.toContain("You have been assigned task")
+  })
+
+  test("claim_task actually claims the task in the DB for the spawned teammate", async () => {
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES ('task_real', 't1', 'Do work', 'pending', 'medium', ?, ?)",
+      [Date.now(), Date.now()],
+    )
+
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      claim_task: "task_real",
+    }, "lead-sess")
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get("task_real") as { status: string; assignee: string | null }
+    expect(row.status).toBe("in_progress")
+    expect(row.assignee).toBe("alice")
+  })
+
+  test("claim_task on a nonexistent task does not fail the spawn", async () => {
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      claim_task: "task-123",
+    }, "lead-sess")
+
+    expect(result).toContain("alice")
+    expect(result).toContain("spawned")
+  })
+
+  test("claim_task on an already-claimed task does not steal it or fail the spawn", async () => {
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, assignee, time_created, time_updated) VALUES ('task_taken', 't1', 'Do work', 'in_progress', 'medium', 'bob', ?, ?)",
+      [Date.now(), Date.now()],
+    )
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      claim_task: "task_taken",
+    }, "lead-sess")
+
+    expect(result).toContain("spawned")
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get("task_taken") as { status: string; assignee: string | null }
+    expect(row.assignee).toBe("bob")
+  })
+
+  test("releases the claimed task if the spawn rolls back on delivery failure", async () => {
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES ('task_real', 't1', 'Do work', 'pending', 'medium', ?, ?)",
+      [Date.now(), Date.now()],
+    )
+    deps.client.session.promptAsync = async () => { throw new Error("delivery failed") }
+
+    await executeTeamSpawn(deps, {
+      name: "alice",
+      agent: "build",
+      prompt: "Fix the tests",
+      claim_task: "task_real",
+    }, "lead-sess")
+
+    // Give the microtask queue time to process the async .catch() rollback
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    const row = deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get("task_real") as { status: string; assignee: string | null }
+    expect(row.status).toBe("pending")
+    expect(row.assignee).toBeNull()
   })
 
   test("response includes task summary without LLM instructions", async () => {

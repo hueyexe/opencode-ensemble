@@ -2,20 +2,15 @@ import type { ToolDeps, PermissionRule } from "../types"
 import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
-import { sendMessage } from "../messaging"
+import { notifyLead } from "../notify"
+import { releaseMemberTasks } from "../tasks"
+import { parseModelId } from "../member-model"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
-
-/** Parse "provider/model" string into { providerID, modelID } for the SDK. */
-function parseModelId(model: string): { providerID: string; modelID: string } | undefined {
-  const slash = model.indexOf("/")
-  if (slash <= 0 || slash === model.length - 1) return undefined
-  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
-}
 
 /**
  * Resolve which model to use for a spawned agent.
@@ -231,6 +226,12 @@ export async function executeTeamSpawn(
     [teamInfo.teamId, args.name, childSessionId, agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
   )
 
+  // Row is inserted as 'busy' directly -- there is no ready->busy status-event
+  // transition for a fresh spawn, so the watchdog's usual hook point never fires.
+  // Record the baseline here instead, or a member stalled on its first action
+  // is invisible to checkStalled() until its first step-finish event lands.
+  deps.progressTracker.recordBusyStart(childSessionId)
+
   // Register in memory
   deps.registry.register(teamInfo.teamId, args.name, childSessionId)
 
@@ -414,12 +415,12 @@ export async function executeTeamSpawn(
         variant: "error",
         duration: 8000,
       }).catch(() => { /* TUI may not be available */ })
-      sendMessage(deps.db, {
-        teamId: teamInfo.teamId,
-        from: "system",
-        to: "lead",
-        content: `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
-      })
+      notifyLead(
+        deps.client,
+        deps.db,
+        teamInfo.teamId,
+        `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
+      )
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })
 

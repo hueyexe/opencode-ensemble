@@ -157,4 +157,36 @@ describe("issue #3: completion loop prevention", () => {
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
   })
+
+  test("lead can force-deliver to a completed teammate via force:true", async () => {
+    const { teamId, memberSession } = await spawnAndComplete("force-team", "henry")
+    deps.client.calls.length = 0
+
+    expect(hasReportedCompletion(deps.db, teamId, "henry")).toBe(true)
+
+    // Without force, existing guard behavior still holds (regression check)
+    const blocked = await executeTeamMessage(deps, { to: "henry", text: "round 2 debate prompt" }, leadSession)
+    expect(blocked).toContain("completed")
+    expect(deps.client.calls.filter(c => c.method === "session.promptAsync")).toHaveLength(0)
+
+    // With force:true, delivery proceeds despite the completion flag
+    const forced = await executeTeamMessage(deps, { to: "henry", text: "round 2 debate prompt", force: true }, leadSession)
+    expect(forced).toBe("Message sent to henry.")
+    const promptCalls = deps.client.calls.filter(c => {
+      if (c.method !== "session.promptAsync") return false
+      const args = c.args[0] as { sessionID: string }
+      return args.sessionID === memberSession
+    })
+    expect(promptCalls).toHaveLength(1)
+  })
+
+  test("force:true is rejected when the sender is not the lead", async () => {
+    await spawnAndComplete("force-guard-team", "ivan")
+    await executeTeamSpawn(deps, { name: "jill", agent: "build", prompt: "task", worktree: false }, leadSession)
+    const jillSession = (deps.db.query("SELECT session_id FROM team_member WHERE name = 'jill'").get() as { session_id: string }).session_id
+
+    await expect(
+      executeTeamMessage(deps, { to: "ivan", text: "hey", force: true }, jillSession),
+    ).rejects.toThrow(/lead/i)
+  })
 })

@@ -5,12 +5,13 @@ import path from "node:path"
 import { mkdirSync } from "node:fs"
 import { createDb, getDbPath } from "./db"
 import { wrapThrowingClient } from "./client"
-import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees, recoverOrphanedBranches, rehydrateRegistry } from "./recovery"
+import { recoverStaleMembers, recoverUndeliveredMessages, recoverOrphanedWorktrees, recoverOrphanedBranches, recoverOrphanedTeams, rehydrateRegistry } from "./recovery"
 import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "./hooks"
-import { notifyTeamEvent, notifyWorkingProgress } from "./notify"
-import { sendMessage, hasReportedCompletion } from "./messaging"
+import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "./notify"
+import { hasReportedCompletion } from "./messaging"
+import { getMemberModel } from "./member-model"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -72,13 +73,35 @@ const plugin: Plugin = async (input) => {
   const rawClient = new OpencodeClient({ client: pluginTransport })
   initLog(rawClient)
   const client = wrapThrowingClient(rawClient)
-  const deps: ToolDeps = { db, registry, tracker, purgeApprovals, client, directory: input.directory, config }
+  const deps: ToolDeps = { db, registry, tracker, purgeApprovals, client, directory: input.directory, config, progressTracker }
 
   // Recovery only runs for the main project instance — NOT for teammate worktree instances.
   // Worktree instances are created during session.create. Running recovery there makes HTTP
   // calls back to the server, which deadlocks because the server is still handling session.create.
   if (!isWorktreeInstance(input.directory)) {
     log("init:recovery:start (main instance)")
+
+    // Reconciles teams whose lead session was deleted externally (not via
+    // team_cleanup) -- otherwise they stay 'active' forever, blocking
+    // team_create/team_cleanup for that name across restarts. See
+    // recoverOrphanedTeams' own doc comment for the full mechanism.
+    //
+    // Fire-and-forget, NOT awaited: isSessionAlive() calls client.session.get(),
+    // an HTTP call back to this same server. Awaiting it synchronously here --
+    // before the server has finished bootstrapping -- reproduced a real,
+    // confirmed deadlock (server never responds to ANY request, including
+    // unrelated ones like /config) when a stale team from a prior run exists
+    // for this project. Matches the existing pattern for the other three
+    // non-critical recovery passes below, and the documented reason
+    // recoverStaleMembers is skipped entirely for worktree instances two lines
+    // up ("makes HTTP calls back to the server, which deadlocks"). isSessionAlive
+    // itself also carries a bounded timeout as defense in depth.
+    recoverOrphanedTeams(db, client, input.directory, registry).then((result) => {
+      if (result.archived > 0) log(`init:recovery:orphaned-teams-archived=${result.archived}`)
+    }).catch((err) => {
+      log(`init:recover-orphaned-teams:failed err=${err instanceof Error ? err.message : String(err)}`)
+    })
+
     const recovery = await recoverStaleMembers(db, client, input.directory)
     if (recovery.interrupted > 0) {
       log(`init:recovery:interrupted=${recovery.interrupted}`)
@@ -142,7 +165,10 @@ const plugin: Plugin = async (input) => {
       if (event.type === "session.status") {
         const { sessionID, status } = event.properties
         const statusType = status.type as "idle" | "busy" | "retry"
-        const transition = handleSessionStatusEvent(db, registry, sessionID, statusType)
+        const retryPayload = statusType === "retry"
+          ? (status as { attempt: number; message: string; action?: { reason: string; provider: string; title: string; message: string; label: string; link?: string }; next: number })
+          : undefined
+        const transition = handleSessionStatusEvent(db, registry, sessionID, statusType, retryPayload)
 
         // Fire toast notifications for meaningful transitions
         if (transition) {
@@ -167,12 +193,12 @@ const plugin: Plugin = async (input) => {
                   nudgedMembers.add(fastIdleKey)
                   const modelInfo = memberInfo.model ? ` (model: ${memberInfo.model})` : ""
                   log(`fast-idle: ${transition.memberName} went idle ${Math.round(spawnAge / 1000)}s after spawn with 0 messages${modelInfo}`)
-                  sendMessage(db, {
-                    teamId: transition.teamId,
-                    from: "system",
-                    to: "lead",
-                    content: `Warning: Teammate "${transition.memberName}" went idle immediately after spawning with no output${modelInfo}. This usually means the model failed to start (authentication error, invalid model, or provider issue). Check your API key and model configuration, then retry the spawn.`,
-                  })
+                  notifyLead(
+                    client,
+                    db,
+                    transition.teamId,
+                    `Warning: Teammate "${transition.memberName}" went idle immediately after spawning with no output${modelInfo}. This usually means the model failed to start (authentication error, invalid model, or provider issue). Check your API key and model configuration, then retry the spawn.`,
+                  )
                   client.tui.showToast({
                     title: "Team",
                     message: `${transition.memberName} failed to produce output${modelInfo}`,
@@ -189,13 +215,23 @@ const plugin: Plugin = async (input) => {
             if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
               nudgedMembers.add(nudgeKey)
               log(`nudge:idle-without-report name=${transition.memberName}`)
+              const nudgeModel = getMemberModel(db, transition.teamId, transition.memberName)
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now." }],
-              }).catch(() => { /* best effort */ })
+                ...(nudgeModel ? { model: nudgeModel } : {}),
+              }).catch((err) => {
+                log(`nudge:idle-without-report:failed name=${transition.memberName} team=${transition.teamId} err=${err instanceof Error ? err.message : String(err)}`)
+              })
             }
           } else if (transition.to === "error") {
             notifyTeamEvent(client, "error", { memberName: transition.memberName })
+          } else if (transition.to === "busy") {
+            // Fresh busy period (ready/error -> busy) — give checkStalled a baseline
+            // that doesn't depend on a step-finish event having landed yet. Without
+            // this, a member whose first action is one long-running tool call is
+            // never detected as stalled until that call itself returns.
+            progressTracker.recordBusyStart(sessionID)
           } else if (transition.to === "retry") {
             // Teammate is being rate-limited — notify user
             try {
@@ -270,9 +306,11 @@ const plugin: Plugin = async (input) => {
             ).get(member.team_id, member.name, staleThreshold) as { c: number }
             if (peerMsgs.c > 0) {
               log(`wake-peer: ${member.name} has ${peerMsgs.c} pending peer messages`)
+              const peerModel = getMemberModel(db, member.team_id, member.name)
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: `[System: ${peerMsgs.c} new message(s) from teammates]` }],
+                ...(peerModel ? { model: peerModel } : {}),
               }).catch((err) => {
                 log(`wake-peer:failed err=${err instanceof Error ? err.message : String(err)}`)
               })
@@ -294,7 +332,7 @@ const plugin: Plugin = async (input) => {
       // teammate just appears stuck.
       if (event.type === "session.error") {
         const props = event.properties as { sessionID?: string; error?: { name?: string; data?: { message?: string } } }
-        handleSessionErrorEvent(db, registry, props.sessionID, props.error)
+        handleSessionErrorEvent(db, registry, client, props.sessionID, props.error)
       }
 
       // Track per-step output tokens for stall detection
@@ -415,12 +453,16 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_message: tool({
-        description: "Send a message to a specific teammate or to the lead. Use 'lead' to message the team lead.",
+        description: "Send a message to a specific teammate or to the lead. Use 'lead' to message the team lead. " +
+          "Lead only: pass 'model' (provider/model) to update a teammate's model in-place — it applies on their next turn. " +
+          "When updating a model, 'text' is optional; omit it to change the model without sending a message.",
         args: {
           to: tool.schema.string().describe("Recipient name ('lead' or teammate name)"),
-          text: tool.schema.string().describe("Message content (max 10KB)"),
+          text: tool.schema.string().optional().describe("Message content (max 10KB). Optional only when 'model' is provided."),
           approve: tool.schema.boolean().optional().describe("Approve a teammate's plan (only when recipient has plan_approval='pending')"),
           reject: tool.schema.string().optional().describe("Reject a teammate's plan with reason (only when recipient has plan_approval='pending')"),
+          force: tool.schema.boolean().optional().describe("Lead only. Re-activate a teammate who already reported task completion (normally their session won't be woken again). Use for legitimate follow-on work — e.g. the next round of a multi-round debate — not for courtesy replies."),
+          model: tool.schema.string().optional().describe("Lead only: update the recipient teammate's model in-place, in 'provider/model' format (e.g. 'anthropic/claude-sonnet')."),
         },
         async execute(args, ctx) {
           const result = await executeTeamMessage(deps, args, ctx.sessionID)
@@ -428,7 +470,7 @@ const plugin: Plugin = async (input) => {
           progressTracker.recordMessage(ctx.sessionID)
           // Track peer messages for chatty detection
           if (args.to !== "lead") progressTracker.recordPeerMessage(ctx.sessionID)
-          ctx.metadata({ title: `Message → ${args.to}` })
+          ctx.metadata({ title: args.model ? `Set ${args.to} model → ${args.model}` : `Message → ${args.to}` })
           return result
         },
       }),
@@ -440,8 +482,13 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamBroadcast(deps, args, ctx.sessionID)
-          // Track broadcast activity for stall detection
+          // Track broadcast activity for stall detection AND chatty detection --
+          // a broadcast reaches every teammate at once, arguably the most
+          // "chatty" action possible, and was previously invisible to
+          // checkChatty()'s peer-message rate limit (recordPeerMessage was never
+          // called here, only recordMessage).
           progressTracker.recordMessage(ctx.sessionID)
+          progressTracker.recordPeerMessage(ctx.sessionID)
           ctx.metadata({ title: "Broadcast to team" })
           return result
         },

@@ -3,6 +3,7 @@ import { requireLead, checkWorktreeDirty, countBranchCommits } from "./shared"
 import type { IsDirtyFn, CommitCountFn } from "./shared"
 import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
 import type { PreserveBranchFn } from "./merge-helper"
+import { releaseMemberTasks } from "../tasks"
 import { log } from "../log"
 
 /**
@@ -127,6 +128,11 @@ async function preserveAndAbort(
     "UPDATE team_member SET status = 'shutdown', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ?",
     [Date.now(), teamId, memberName],
   )
+
+  // Release any tasks this member was working — they are gone now, so their
+  // in_progress work must return to the pool for another teammate (issue #27).
+  const released = releaseMemberTasks(deps.db, teamId, memberName)
+  if (released > 0) log(`shutdown:tasks:released name=${memberName} count=${released}`)
 }
 
 /** Build a status line describing the teammate's work: commit count, dirty state, next step. */

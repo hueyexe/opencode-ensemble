@@ -16,6 +16,7 @@ interface TeamRow {
   id: string
   name: string
   project_id: string
+  lead_session_id: string
   status: string
   lead_agent: string | null
   time_created: number
@@ -43,6 +44,11 @@ interface MemberRow {
   plan_approval: string
   time_created: number
   time_updated: number
+  last_nudged_at: number | null
+  retry_until: number | null
+  retry_attempt: number | null
+  retry_provider: string | null
+  retry_message: string | null
 }
 
 interface TaskRow {
@@ -81,10 +87,31 @@ function parseDependsOn(value: string | null): string[] {
   return []
 }
 
-function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
+/**
+ * Bare-integer version of the `/api/state` response shape. Bump on any
+ * breaking change to the payload (field removed/renamed/retyped, not
+ * additive fields). Consumers outside this repo compare this field with
+ * strict equality — no semver ranges. Currently consumed externally by the
+ * OpenCode sidebar TUI plugin that renders Team status from this endpoint.
+ */
+export const ENSEMBLE_STATE_VERSION = 1
+
+/**
+ * `/api/state` response shape. Exported and versioned because at least one
+ * consumer outside this repo (an OpenCode sidebar TUI plugin) polls this
+ * endpoint and depends on its shape. Treat additive-only changes as safe;
+ * bump {@link ENSEMBLE_STATE_VERSION} for anything else.
+ */
+export interface EnsembleDashboardState {
+  version: number
+  projects: unknown[]
+  teams: unknown[]
+}
+
+function buildState(db: Database): EnsembleDashboardState {
   const projects = db.query("SELECT id, name, path, status, time_created, time_updated FROM project ORDER BY time_updated DESC").all() as ProjectRow[]
-  const teams = db.query("SELECT id, name, project_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
-  const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, prompt, model, plan_approval, time_created, time_updated FROM team_member WHERE team_id = ?")
+  const teams = db.query("SELECT id, name, project_id, lead_session_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
+  const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, prompt, model, plan_approval, time_created, time_updated, last_nudged_at, retry_until, retry_attempt, retry_provider, retry_message FROM team_member WHERE team_id = ?")
   const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
   const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT 50")
 
@@ -101,11 +128,21 @@ function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
       planApproval: m.plan_approval,
       timeCreated: m.time_created,
       timeUpdated: m.time_updated,
+      lastNudgedAt: m.last_nudged_at,
+      // Fix 4: derived, read-time TTL boolean (Fix 3) — never a stored enum.
+      // Additive fields; existing consumers that don't know about them simply
+      // don't render them.
+      isRetrying: m.retry_until !== null && m.retry_until > Date.now(),
+      retryUntil: m.retry_until,
+      retryAttempt: m.retry_attempt,
+      retryProvider: m.retry_provider,
+      retryMessage: m.retry_message,
     }))
     return {
       id: t.id,
       name: t.name,
       projectId: t.project_id,
+      leadSessionId: t.lead_session_id,
       status: t.status,
       leadAgent: t.lead_agent,
       timeCreated: t.time_created,
@@ -140,6 +177,7 @@ function buildState(db: Database): { projects: unknown[]; teams: unknown[] } {
   })
 
   return {
+    version: ENSEMBLE_STATE_VERSION,
     projects: projects.flatMap(project => {
       const projectTeams = teamsByProject.get(project.id) ?? []
       if (projectTeams.length === 0) return []
@@ -183,11 +221,30 @@ function sendJson(res: ServerResponse, data: unknown): void {
   res.end(JSON.stringify(data))
 }
 
+/**
+ * Resolve a message's creation timestamp (Unix ms) from an SDK message's
+ * `info.time`. The SDK shape is an object `{ created: number }`; older/other
+ * shapes (a numeric epoch or an ISO string) are tolerated. Falls back to
+ * `Date.now()` when the value is missing or unparseable — never returns NaN.
+ */
+export function parseMessageTime(time: unknown): number {
+  if (typeof time === "object" && time !== null) {
+    const created = (time as { created?: unknown }).created
+    if (typeof created === "number" && Number.isFinite(created)) return created
+  }
+  if (typeof time === "number" && Number.isFinite(time)) return time
+  if (typeof time === "string") {
+    const ms = new Date(time).getTime()
+    if (!Number.isNaN(ms)) return ms
+  }
+  return Date.now()
+}
+
 /** Parse SDK message parts into ActivityEntry format for the fallback path. */
 export function parseMessageParts(parts: unknown[], msgInfo: unknown): ActivityEntry[] {
   const entries: ActivityEntry[] = []
-  const info = (msgInfo ?? {}) as { time?: string; role?: string; tokens?: { input?: number; output?: number } }
-  const timestamp = info.time ? new Date(info.time).getTime() : Date.now()
+  const info = (msgInfo ?? {}) as { time?: unknown; role?: string; tokens?: { input?: number; output?: number } }
+  const timestamp = parseMessageTime(info.time)
 
   for (const part of parts) {
     if (typeof part !== "object" || part === null) continue
