@@ -449,6 +449,37 @@ describe("team_spawn", () => {
     expect(result).toContain("branch:")
   })
 
+  // issue #40: worktree.create failing was downgraded to a TUI toast, so the
+  // tool said only "spawned" while the teammate worked in the shared directory.
+  test("reports in the tool result when worktree creation failed (issue #40)", async () => {
+    deps.client.worktree.create = async () => { throw new Error("no worktree strategy configured") }
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice", agent: "build", prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("worktree")
+    expect(result).toMatch(/failed|shared/i)
+
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?")
+      .get("alice") as Record<string, string | null>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+  })
+
+  test("says the teammate is isolated only when a worktree really exists (issue #40)", async () => {
+    const ok = await executeTeamSpawn(deps, {
+      name: "alice", agent: "build", prompt: "Fix the tests",
+    }, "lead-sess")
+    expect(ok).toContain("branch:")
+
+    deps.client.worktree.create = async () => { throw new Error("nope") }
+    const degraded = await executeTeamSpawn(deps, {
+      name: "bob", agent: "build", prompt: "Fix the tests",
+    }, "lead-sess")
+    expect(degraded).not.toContain("branch:")
+  })
+
   test("uses team id for worktree names so same-name teams in different projects do not collide", async () => {
     deps.db.run(
       "INSERT OR IGNORE INTO project (id, name, path, status, time_created, time_updated) VALUES (?, ?, ?, 'active', ?, ?)",
