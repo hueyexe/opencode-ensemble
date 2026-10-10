@@ -25,6 +25,9 @@
     "orchestration"
   ],
   "files": [
+    "index.ts",
+    "tui.tsx",
+    "rpc.ts",
     "dist",
     "src",
     "LICENSE",

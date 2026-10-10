@@ -26,6 +26,6 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["index.ts", "rpc.ts", "tui.tsx", "src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "docs", "dist"]
 }

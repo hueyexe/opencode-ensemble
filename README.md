@@ -249,7 +249,7 @@ This is required. Without it, you'll see "Permission required — Access externa
 
 ### Local development
 
-Configure the worktree as a local plugin (v2 loads the source entry; v1 uses the `server()` export from the same file):
+Configure the checkout as a local plugin in your project's `opencode.json` or `.opencode/opencode.json`:
 
 ```jsonc
 {
@@ -257,7 +257,13 @@ Configure the worktree as a local plugin (v2 loads the source entry; v1 uses the
 }
 ```
 
-No build step needed for local testing — but run `bun run typecheck && bun test && bun run build` before committing. Restart OpenCode (or wait for hot-reload) to pick up changes.
+For a local directory, OpenCode resolves `index.ts`, `tui.tsx`, and `rpc.ts`
+at the checkout root. These files forward to the implementations in `src/`;
+the npm package continues to use its `package.json` exports. Do not remove
+the root entrypoints: a checkout containing only `src/index.ts` can be skipped
+by the local-directory loader without a plugin setup error.
+
+No build step is needed for local testing — but run `bun run typecheck && bun test && bun run build` before committing. Local plugins can appear in `opencode plugin list`; inspect their `state` with `opencode api plugin.list` from the test project. The dashboard starts during plugin setup (not only after `team_create`). Configuration and watched source changes may reload automatically. Do not restart a shared service without the user's approval.
 
 ## Tools
 
