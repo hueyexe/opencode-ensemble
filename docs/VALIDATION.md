@@ -73,3 +73,29 @@ tests, zero failures, successful typecheck, and successful build.
 
 **Runtime verdict:** local server activation and dashboard endpoints work as
 specified in the isolated host. This is not a claim of 100% V2 compatibility.
+
+## TUI team lookup correction
+
+The terminal companion called `teamContext` without RPC `options.location`.
+On the live host, the same lead session returned HTTP 400 `rpc.unavailable`
+without location, while a request scoped to `testes/01` returned the active
+`calculadora-custo-beneficio` team. The sidebar swallowed the failed request
+and retained its empty initial state, displaying `Ensemble: no active team`.
+
+`src/tui-context.ts` now resolves the displayed session's cached location,
+then the companion location, then the client's default location. It supplies
+that location as RPC call options, separate from the `sessionID` input.
+The TUI delegates its sidebar fetch to this helper; server and web behavior
+are unchanged.
+
+- Regression: 4 failures and 1 passing test before implementation; 6 passing
+  tests after implementation, including missing-session, actual no-team, and
+  RPC failure cases.
+- Full validation: typecheck and build passed; 874 tests passed, zero failed.
+- The corrected helper was exercised against the live server using the
+  existing lead session. It returned the team, 7 members, and 3 completed
+  tasks. An unrelated session ID returned `team: null`, as expected.
+- No server restart, team mutation, or global configuration change was needed.
+- Terminal rendering has not been visually verified; the corrected fetch path
+  is verified against the live RPC. Fable 5.1 review remains pending because
+  no subagents were authorized.
