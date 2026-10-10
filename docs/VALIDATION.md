@@ -47,6 +47,19 @@ The server implementation, TUI implementation, and RPC contract stay in `src/`.
   `14747/api/health` returned HTTP 200 and the old `4747` listener closed.
   The user's shared OpenCode service was not restarted or stopped.
 
+## Verification in the user's test project
+
+After merging the correction into `feat/vfeitoza`, discovery was refreshed
+through the test project's watched plugin directory (a temporary symlink was
+created and then removed). The shared server was not restarted or stopped.
+No symlink remains, and configuration still points to the original checkout.
+
+`opencode plugin list` in `testes/01` now lists `ensemble` at the checkout's
+`index.ts`. The API confirms exactly one Ensemble instance, with state `active`
+and server/TUI/RPC features. The dashboard on port `4747` returned HTTP 200 for
+health, state, and HTML. A fresh aggregate verification reported 868 passing
+tests, zero failures, successful typecheck, and successful build.
+
 ## Not covered
 
 - Terminal rendering and navigation of the TUI companion; discovery of its
