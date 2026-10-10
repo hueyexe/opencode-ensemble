@@ -110,6 +110,8 @@ export async function setupEnsemble(
 
   /** Send the idle-without-report nudge once per member. */
   const nudgeMember = (teamId: string, memberName: string, sessionId: string): void => {
+    const teamRow = db.query("SELECT status FROM team WHERE id = ?").get(teamId) as { status: string } | null
+    if (!teamRow || teamRow.status !== "active") return
     const nudgeKey = `${teamId}:${memberName}`
     if (nudgedMembers.has(nudgeKey)) return
     if (!shouldNudgeIdleMember(db, teamId, memberName)) return
