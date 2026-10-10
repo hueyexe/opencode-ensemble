@@ -512,6 +512,37 @@ describe("team_spawn", () => {
     expect(toasts.length).toBeGreaterThan(0)
   })
 
+  // issue #40 Bug 2: worktree.create failing was downgraded to a TUI toast, so the
+  // tool said only "spawned" while the teammate worked in the shared directory.
+  test("reports in the tool result when worktree creation failed (issue #40)", async () => {
+    deps.client.worktree.create = async () => { throw new Error("no worktree strategy configured") }
+
+    const result = await executeTeamSpawn(deps, {
+      name: "alice", agent: "build", prompt: "Fix the tests",
+    }, "lead-sess")
+
+    expect(result).toContain("worktree")
+    expect(result).toMatch(/failed|shared/i)
+
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?")
+      .get("alice") as Record<string, string | null>
+    expect(row.worktree_dir).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+  })
+
+  test("says the teammate is isolated only when a worktree really exists (issue #40)", async () => {
+    const ok = await executeTeamSpawn(deps, {
+      name: "alice", agent: "build", prompt: "Fix the tests",
+    }, "lead-sess")
+    expect(ok).toContain("branch:")
+
+    deps.client.worktree.create = async () => { throw new Error("nope") }
+    const degraded = await executeTeamSpawn(deps, {
+      name: "bob", agent: "build", prompt: "Fix the tests",
+    }, "lead-sess")
+    expect(degraded).not.toContain("branch:")
+  })
+
   test("rolls back member asynchronously if promptAsync fails (fire-and-forget)", async () => {
     deps.client.session.promptAsync = async () => { throw new Error("promptAsync failed") }
 

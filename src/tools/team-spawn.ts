@@ -445,6 +445,11 @@ export async function executeTeamSpawn(
   })
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
+  // Isolation is a claim the lead relies on, so say plainly when it did not
+  // happen. The toast alone left "spawned" as the only signal (issue #40).
+  const isolationInfo = useWorktree && !worktreeBranch
+    ? ` (WARNING: worktree creation failed — ${args.name} shares your working directory, so edits can collide)`
+    : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
   const claimInfo = claimedTaskContent
     ? ` (claimed task: ${args.claim_task})`
@@ -452,5 +457,5 @@ export async function executeTeamSpawn(
   // Reset circuit breaker on success
   spawnFailures.delete(teamInfo.teamId)
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
-  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
+  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${isolationInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }
