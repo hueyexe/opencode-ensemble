@@ -310,7 +310,7 @@ What you get:
 - **Teammate messages** arriving in the lead's session as labeled blocks with the sender's name.
 - **Rich tool titles** in the sidebar (e.g. "Spawned alice (build)", "Message -> bob", "Task board (3 tasks)").
 - **Status checks** via `team_status` for a snapshot of the whole team.
-- **Terminal extras** (terminal only): a sidebar widget with live member status and task counts via the bundled `./tui` companion, loaded automatically with the plugin. `team_view` reports the teammate session by default; ask for it and `navigate: true` switches the TUI there (ctrl+p to return).
+- **Terminal extras** (terminal only): a sidebar widget with live member status, task counts, and an open-task section via the bundled `./tui` companion, loaded automatically with the plugin. Open tasks show their description, state (`pending`, `in_progress`, or `blocked`), and owner, including unassigned work. Completed and cancelled tasks are excluded from this section; cancelled tasks do not count as open. `team_view` reports the teammate session by default; ask for it and `navigate: true` switches the TUI there (ctrl+p to return).
 
 ## Architecture
 

@@ -99,3 +99,24 @@ are unchanged.
 - Terminal rendering has not been visually verified; the corrected fetch path
   is verified against the live RPC. Fable 5.1 review remains pending because
   no subagents were authorized.
+
+## TUI open-task listing
+
+The `teamContext` RPC now includes optional `openTasks` with task ID,
+description, state, and nullable assignee. It selects only `pending`,
+`in_progress`, and `blocked` rows scoped to the current team; the open counter
+uses the same states and no longer includes cancelled rows. Making the new
+field optional preserves compatibility with older companion/server contracts.
+
+The sidebar renders `Tarefas abertas:` below member status, then each task's
+description/state and `responsável`, falling back to `não atribuído`.
+Existing counters and heartbeat behavior remain. With no open tasks, the
+section is hidden rather than showing completed tasks as pending work.
+
+Tests cover all open states, assignment, excluded completed/cancelled rows,
+team isolation, unknown sessions, and all-open-work-completed behavior.
+On the separate OpenCode host under `/tmp/opencode`, the real RPC returned
+HTTP 200 with one pending unassigned task and counters `1 open / 1 done`,
+excluding a cancelled task. A session outside the team returned an empty list.
+No user team data was modified or shared server restarted. Visual terminal
+rendering and Fable 5.1 review remain unverified/pending.

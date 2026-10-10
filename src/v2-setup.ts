@@ -204,12 +204,12 @@ export async function setupEnsemble(
       teamContext: async (input) => {
         const sessionID = (input as { sessionID?: string }).sessionID ?? ""
         const teamInfo = findTeamBySession(db, registry, sessionID)
-        if (!teamInfo) return { team: null, members: [], tasks: { pending: 0, done: 0 } }
+        if (!teamInfo) return { team: null, members: [], tasks: { pending: 0, done: 0 }, openTasks: [] }
         const members = db.query("SELECT name, status FROM team_member WHERE team_id = ?").all(
           teamInfo.teamId,
         ) as Array<{ name: string; status: string }>
         const pending = (
-          db.query("SELECT COUNT(*) as c FROM team_task WHERE team_id = ? AND status != 'completed'").get(
+          db.query("SELECT COUNT(*) as c FROM team_task WHERE team_id = ? AND status IN ('pending', 'in_progress', 'blocked')").get(
             teamInfo.teamId,
           ) as { c: number }
         ).c
@@ -218,7 +218,10 @@ export async function setupEnsemble(
             teamInfo.teamId,
           ) as { c: number }
         ).c
-        return { team: teamInfo.teamName, members, tasks: { pending, done } }
+        const openTasks = db.query(
+          "SELECT id, content, status, assignee FROM team_task WHERE team_id = ? AND status IN ('pending', 'in_progress', 'blocked') ORDER BY time_created ASC, id ASC",
+        ).all(teamInfo.teamId)
+        return { team: teamInfo.teamName, members, tasks: { pending, done }, openTasks }
       },
     })
   } catch (err) {

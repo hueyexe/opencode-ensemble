@@ -2,11 +2,21 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { RpcClient } from "@opencode/client"
 import type { EnsembleRpc } from "./rpc"
 
+/** Open task shown in the sidebar, including unassigned work. */
+export interface SidebarTask {
+  id: string
+  content: string
+  status: "pending" | "in_progress" | "blocked"
+  assignee: string | null
+}
+
 /** Team state returned by the server's location-scoped RPC. */
 export interface TeamContextData {
   team: string | null
   members: Array<{ name: string; status: string }>
   tasks: { pending: number; done: number }
+  /** Optional for compatibility with servers exposing the earlier RPC contract. */
+  openTasks?: SidebarTask[]
 }
 
 type Context = Plugin.Context

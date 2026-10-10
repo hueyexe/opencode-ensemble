@@ -4,6 +4,7 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { EnsembleRpc } from "./rpc"
 import { fetchTeamContext, type TeamContextData } from "./tui-context"
+import { formatSidebarTask } from "./tui-view"
 
 /** Sidebar widget: team members with status plus task counts. */
 function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null>; onEvent: (cb: () => void) => () => void }) {
@@ -33,6 +34,14 @@ function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null
             {member.status === "busy" ? "●" : member.status === "ready" ? "○" : "■"} {member.name} ({member.status})
           </text>
         ))}
+        <Show when={(state()?.openTasks?.length ?? 0) > 0}>
+          <text>Tarefas abertas:</text>
+          {(state()?.openTasks ?? []).map((task) => (
+            <box flexDirection="column">
+              {formatSidebarTask(task).map((line) => <text>{line}</text>)}
+            </box>
+          ))}
+        </Show>
         <text>
           tasks: {(state()?.tasks.pending ?? 0)} open / {(state()?.tasks.done ?? 0)} done
         </text>

@@ -52,6 +52,20 @@ export const EnsembleRpc = Rpc.define({
             required: ["pending", "done"],
             additionalProperties: false,
           },
+          openTasks: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                content: { type: "string" },
+                status: { type: "string", enum: ["pending", "in_progress", "blocked"] },
+                assignee: { type: ["string", "null"] },
+              },
+              required: ["id", "content", "status", "assignee"],
+              additionalProperties: false,
+            },
+          },
         },
         required: ["team", "members", "tasks"],
         additionalProperties: false,

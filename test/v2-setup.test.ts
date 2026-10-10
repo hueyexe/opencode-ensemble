@@ -62,6 +62,53 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
 }
 
 describe("v2-setup (issue #36)", () => {
+  test("teamContext includes only this team's open tasks with assignment and state", async () => {
+    const { ctx } = mockSetupCtx()
+    let handlers: Record<string, (input: unknown, context: unknown) => Promise<unknown>> = {}
+    ctx.rpc = {
+      register: async (_definition, registered) => {
+        handlers = registered
+        return { events: { emit: async () => undefined } }
+      },
+    }
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      const tasks = [
+        ["pending", "Greeting", null],
+        ["in_progress", "Build", "alice"],
+        ["blocked", "Review", null],
+        ["completed", "Done", "alice"],
+        ["cancelled", "Cancelled", null],
+      ] as const
+      tasks.forEach(([status, content, assignee], index) => handle.db.run(
+        "INSERT INTO team_task (id,team_id,content,status,priority,assignee,time_created,time_updated) VALUES (?, 'team1', ?, ?, 'medium', ?, ?, ?)",
+        [`task-${index}`, content, status, assignee, index, index],
+      ))
+      handle.db.run("INSERT INTO team(id,name,lead_session_id,status,delegate,time_created,time_updated) VALUES ('team2','other','ses-other','active',0,0,0)")
+      handle.db.run("INSERT INTO team_task(id,team_id,content,status,priority,time_created,time_updated) VALUES ('foreign-task','team2','Other team work','pending','high',0,0)")
+      const result = await handlers.teamContext?.({ sessionID: "ses_lead" }, {})
+      expect(result).toMatchObject({
+        tasks: { pending: 3, done: 1 },
+        openTasks: [
+          { id: "task-0", content: "Greeting", status: "pending", assignee: null },
+          { id: "task-1", content: "Build", status: "in_progress", assignee: "alice" },
+          { id: "task-2", content: "Review", status: "blocked", assignee: null },
+        ],
+      })
+      expect(await handlers.teamContext?.({ sessionID: "ses-not-in-team" }, {})).toMatchObject({
+        team: null, openTasks: [], tasks: { pending: 0, done: 0 },
+      })
+      handle.db.run("UPDATE team_task SET status='completed' WHERE team_id='team1' AND status IN ('pending','in_progress','blocked')")
+      expect(await handlers.teamContext?.({ sessionID: "ses_lead" }, {})).toMatchObject({
+        openTasks: [], tasks: { pending: 0, done: 4 },
+      })
+    } finally {
+      await handle.dispose()
+      handle.db.close()
+    }
+  })
+
   test("dispatched status events flow to member state", async () => {
     const { ctx } = mockSetupCtx()
     const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })

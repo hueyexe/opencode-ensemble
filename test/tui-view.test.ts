@@ -1,11 +1,24 @@
 import { describe, expect, test } from "bun:test"
-import { summarizeMembers, type SidebarMember } from "../src/tui-view"
+import { summarizeMembers, formatSidebarTask, type SidebarMember } from "../src/tui-view"
 
 function member(name: string, status: string): SidebarMember {
   return { name, status }
 }
 
 describe("tui-view helpers (issue #36)", () => {
+  test("open task shows pending description and unassigned owner", () => {
+    expect(formatSidebarTask({ id: "task1", content: "Criar src/greeting.ts", status: "pending", assignee: null })).toEqual([
+      "□ [pending] Criar src/greeting.ts", "  responsável: não atribuído",
+    ])
+  })
+
+  test("open task shows its state and assigned owner", () => {
+    expect(formatSidebarTask({ id: "task2", content: "Implementar", status: "in_progress", assignee: "calc-dev" })).toEqual([
+      "□ [in_progress] Implementar", "  responsável: calc-dev",
+    ])
+    expect(formatSidebarTask({ id: "task3", content: "Revisar", status: "blocked", assignee: null })[0]).toBe("□ [blocked] Revisar")
+  })
+
   test("summarizeMembers counts by status and lists names", () => {
     const summary = summarizeMembers("alpha", [
       member("alice", "busy"),

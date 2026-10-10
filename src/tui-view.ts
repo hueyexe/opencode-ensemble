@@ -1,3 +1,13 @@
+import type { SidebarTask } from "./tui-context"
+
+/** Format an open task's state, description, and assignment for the sidebar. */
+export function formatSidebarTask(task: SidebarTask): string[] {
+  return [
+    `□ [${task.status}] ${task.content}`,
+    `  responsável: ${task.assignee ?? "não atribuído"}`,
+  ]
+}
+
 /** Minimal member shape for sidebar rendering. */
 export interface SidebarMember {
   name: string
