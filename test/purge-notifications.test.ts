@@ -107,4 +107,36 @@ describe("purge notification leak (issue #40 Bug 4)", () => {
     expect(transition).toBeUndefined()
     expect(deps.registry.getBySession("ses-alpha")).toBeUndefined()
   })
+
+  test("archived team with undelivered peer message does not wake via nudge-like path", async () => {
+    const deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "bob", "ses-bob", "busy", "running")
+    deps.registry.register("t1", "bob", "ses-bob")
+    // Peer message to bob that is undelivered
+    deps.db.run(
+      "INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["msg_peer", "t1", "alice", "bob", "hello bob", Date.now()],
+    )
+    // Archive team before any redelivery attempt
+    deps.db.run("UPDATE team SET status = 'archived' WHERE id = ?", ["t1"])
+
+    // Status transition should be ignored (already covered) and no notifyLead wake
+    const transition = dispatchV2Event(deps.db, deps.registry, deps.tracker, {
+      type: "session.execution.succeeded",
+      data: { sessionID: "ses-bob" },
+    })
+    expect(transition).toBeUndefined()
+
+    // Direct notifyLead must also be suppressed for archived team
+    const id = notifyLead(deps.client, deps.db, "t1", "stalled bob")
+    expect(id).toBe("")
+    await new Promise(r => setTimeout(r, 10))
+    expect(deps.client.calls.filter(c => c.method === "session.promptAsync")).toHaveLength(0)
+
+    // Undelivered peer message stays but is irrelevant — table not auto-purged for archived (only for deleted)
+    // This proves the defense layers: archived teams don't get wakes even with pending messages
+    const pending = deps.db.query("SELECT id FROM team_message WHERE team_id = ? AND delivered = 0").all("t1") as unknown[]
+    expect(pending).toHaveLength(1)
+  })
 })
