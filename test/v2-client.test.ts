@@ -80,6 +80,28 @@ function mockGit(map: Record<string, string | null>) {
 }
 
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
+  test("session.create survives opencode 2.x where ctx.permission.rules is gone (issue #40)", async () => {
+    // opencode >= 2.0.4 removed the permission.rules plugin API. Calling it
+    // unconditionally made every team_spawn throw "ctx.permission.rules is not a function".
+    const { calls, ctx } = mockCtx()
+    delete (ctx as unknown as { permission?: Record<string, unknown> }).permission?.rules
+    expect((ctx as unknown as { permission?: { rules?: unknown } }).permission?.rules).toBeUndefined()
+
+    const client = createV2Client(ctx as never)
+    const result = await client.session.create({
+      parentID: "ses_lead",
+      title: "alice (@build teammate)",
+      permission: [{ permission: "team_message", pattern: "*", action: "allow" }],
+    })
+
+    expect(result.data?.id).toBe("ses_new123")
+    // Permissions still travel on session.create; only the re-assert is skipped.
+    expect(calls[0]?.input).toMatchObject({
+      permissions: [{ action: "team_message", resource: "*", effect: "allow" }],
+    })
+    expect(calls.some((c) => c.method === "rules")).toBe(false)
+  })
+
   test("session.create re-asserts permissions via rules() so agent denies cannot bury them", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never)

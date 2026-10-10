@@ -20,8 +20,10 @@ export interface V2Context {
     list(): Promise<Array<{ directory: string }>>
     refresh(): Promise<unknown>
   }
+  // OQ-V2-rules: host 2.0.4 removes permission.rules; the adapter
+  // feature-detects it at runtime, so the type is optional here.
   permission: {
-    rules(input: Record<string, unknown>): Promise<unknown>
+    rules?(input: Record<string, unknown>): Promise<unknown>
   }
 }
 
@@ -119,7 +121,22 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           // and agent rules apply later), which strips team tools from
           // read-only agents. Re-assert here: rules() evaluates after the
           // agent's rules, restoring the tools. OQ-V2-rules.
-          await ctx.permission.rules({ sessionID: created.id, permissions })
+          //
+          // opencode >= 2.0.4 removed ctx.permission.rules, so the call is
+          // feature-detected. Without the guard every team_spawn died with
+          // "ctx.permission.rules is not a function" (issue #40). The re-assert
+          // is skipped, not replaced: agent rules still win on 2.x, which
+          // costs read-only agents their team tools.
+          if (typeof ctx.permission.rules === "function") {
+            await ctx.permission.rules({ sessionID: created.id, permissions })
+          } else {
+            // v2 host without permission.rules: session.create permissions
+            // are last to win vs agent rules, so read-only agents may lose
+            // their team tools. Log explicitly so it is never silent.
+            console.warn(
+              "[ensemble] ctx.permission.rules unavailable on this host; skipped permission re-assert — read-only agents may lose team tools. Requires host with permission.rules support."
+            )
+          }
         }
         return { data: { id: created.id } }
       },
