@@ -109,17 +109,24 @@ export function notifyLead(
   teamId: string,
   content: string,
 ): string {
+  // Do not persist or wake for archived/purged teams — only active teams
+  // should generate lead notifications. Without this, a teammate in `shutdown`
+  // whose team was purged keeps redelivering via stalled/stall nudge paths
+  // (issue #40 Bug 4). team_message is already empty after purge, so the
+  // DB wake backstop is harmless; the active wake here is the leak.
+  const teamStatus = db.query("SELECT status, lead_session_id FROM team WHERE id = ?")
+    .get(teamId) as { status: string; lead_session_id: string } | null
+  if (!teamStatus || teamStatus.status !== "active") return ""
+
   const id = sendMessage(db, { teamId, from: "system", to: "lead", content })
 
-  const team = db.query("SELECT lead_session_id FROM team WHERE id = ?")
-    .get(teamId) as { lead_session_id: string } | null
-  if (!team?.lead_session_id) return id
+  if (!teamStatus.lead_session_id) return id
 
   // Fire-and-forget wake — the system prompt transform delivers the actual
   // content on the lead's next turn. Synthetic: renders as a persistent
   // system entry, not a fake user turn.
   client.session.promptAsync({
-    sessionID: team.lead_session_id,
+    sessionID: teamStatus.lead_session_id,
     parts: [{ type: "text", text: "[System: New team message from system]" }],
     synthetic: true,
   }).catch((err) => {
