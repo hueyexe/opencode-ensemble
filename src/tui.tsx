@@ -3,13 +3,7 @@ import "@opentui/solid"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { EnsembleRpc } from "./rpc"
-
-/** Team context shape from the server bridge. */
-interface TeamContextData {
-  team: string | null
-  members: Array<{ name: string; status: string }>
-  tasks: { pending: number; done: number }
-}
+import { fetchTeamContext, type TeamContextData } from "./tui-context"
 
 /** Sidebar widget: team members with status plus task counts. */
 function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null>; onEvent: (cb: () => void) => () => void }) {
@@ -84,10 +78,7 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (panel: { sessionID?: string }) => (
         <TeamSidebar
-          fetchContext={async () => {
-            if (!panel.sessionID) return null
-            return (await rpc.teamContext({ sessionID: panel.sessionID })) as TeamContextData
-          }}
+          fetchContext={() => fetchTeamContext(context, rpc, panel.sessionID)}
           onEvent={onEvent}
         />
       ),
