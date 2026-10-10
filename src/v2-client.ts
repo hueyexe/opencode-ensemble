@@ -20,8 +20,10 @@ export interface V2Context {
     list(): Promise<Array<{ directory: string }>>
     refresh(): Promise<unknown>
   }
+  // OQ-V2-rules: host 2.0.4 removes permission.rules; the adapter
+  // feature-detects it at runtime, so the type is optional here.
   permission: {
-    rules(input: Record<string, unknown>): Promise<unknown>
+    rules?(input: Record<string, unknown>): Promise<unknown>
   }
 }
 
@@ -125,9 +127,15 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           // "ctx.permission.rules is not a function" (issue #40). The re-assert
           // is skipped, not replaced: agent rules still win on 2.x, which
           // costs read-only agents their team tools.
-          const permDomain = ctx.permission as unknown as { rules?: (input: Record<string, unknown>) => Promise<unknown> }
-          if (typeof permDomain?.rules === "function") {
-            await permDomain.rules({ sessionID: created.id, permissions })
+          if (typeof ctx.permission.rules === "function") {
+            await ctx.permission.rules({ sessionID: created.id, permissions })
+          } else {
+            // v2 host without permission.rules: session.create permissions
+            // are last to win vs agent rules, so read-only agents may lose
+            // their team tools. Log explicitly so it is never silent.
+            console.warn(
+              "[ensemble] ctx.permission.rules unavailable on this host; skipped permission re-assert — read-only agents may lose team tools. Requires host with permission.rules support."
+            )
           }
         }
         return { data: { id: created.id } }
