@@ -88,6 +88,46 @@ describe("team_tasks_add", () => {
     ] }, "lead-sess")
     expect(result).toContain("Added 1 task")
   })
+
+  // issue #40 Bug 3: a typo in depends_on used to create a task that was blocked,
+  // unclaimable, and uncompletable — dead until the team was purged.
+  test("rejects depends_on ids that match no task in the team", async () => {
+    await expect(executeTeamTasksAdd(deps, { tasks: [
+      { content: "Task B", priority: "medium", depends_on: ["t1"] },
+    ] }, "sess-alice")).rejects.toThrow("t1")
+    const rows = deps.db.query("SELECT * FROM team_task WHERE team_id = ?").all("t1")
+    expect(rows).toHaveLength(0)
+  })
+
+  test("rejects the whole call when any task has an unknown dependency, inserting nothing", async () => {
+    const result1 = await executeTeamTasksAdd(deps, { tasks: [
+      { content: "Task A", priority: "high" },
+    ] }, "sess-alice")
+    const taskAId = result1.match(/task_\S+/)![0]!
+
+    await expect(executeTeamTasksAdd(deps, { tasks: [
+      { content: "Good", priority: "low", depends_on: [taskAId] },
+      { content: "Bad", priority: "low", depends_on: ["task_nope"] },
+    ] }, "sess-alice")).rejects.toThrow("task_nope")
+
+    const rows = deps.db.query("SELECT content FROM team_task WHERE team_id = ?").all("t1") as Array<{ content: string }>
+    expect(rows.map(r => r.content)).toEqual(["Task A"])
+  })
+
+  test("rejects a dependency that exists only in another team", async () => {
+    insertTeam(deps.db, "t2", "other-team", "lead2-sess")
+    insertMember(deps.db, "t2", "bob", "sess-bob")
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES (?, ?, ?, 'pending', 'low', ?, ?)",
+      ["task_foreign", "t2", "Foreign task", Date.now(), Date.now()],
+    )
+
+    await expect(executeTeamTasksAdd(deps, { tasks: [
+      { content: "Borrowed", priority: "low", depends_on: ["task_foreign"] },
+    ] }, "sess-alice")).rejects.toThrow("task_foreign")
+    const rows = deps.db.query("SELECT * FROM team_task WHERE team_id = ?").all("t1")
+    expect(rows).toHaveLength(0)
+  })
 })
 
 describe("team_tasks_complete", () => {
