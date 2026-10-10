@@ -19,6 +19,24 @@ export async function executeTeamTasksAdd(
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
 
+  // Validate every dependency before inserting anything. A typo'd id used to
+  // create a task that was blocked, unclaimable, and uncompletable — dead
+  // until the team was purged, because no tool edits depends_on (issue #40).
+  const unknown: string[] = []
+  for (const task of args.tasks) {
+    for (const depId of task.depends_on ?? []) {
+      const dep = deps.db.query("SELECT id FROM team_task WHERE id = ? AND team_id = ?")
+        .get(depId, teamInfo.teamId)
+      if (!dep) unknown.push(depId)
+    }
+  }
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown depends_on id${unknown.length !== 1 ? "s" : ""}: ${[...new Set(unknown)].join(", ")}. ` +
+      `Use team_tasks_list to get real task ids (they look like task_xxx). Nothing was added.`
+    )
+  }
+
   const ids: string[] = []
   const now = Date.now()
 
