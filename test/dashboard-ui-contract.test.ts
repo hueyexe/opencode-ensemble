@@ -20,6 +20,16 @@ function contrastRatio(foreground: string, background: string): number {
 }
 
 describe("dashboard UI contract", () => {
+  test("dashboard exposes accessible overview and dependency graph tabs", () => {
+    expect(DASHBOARD_HEAD).toContain('role="tablist"')
+    expect(DASHBOARD_HEAD).toContain('id="tab-overview"')
+    expect(DASHBOARD_HEAD).toContain('id="tab-dependencies"')
+    expect(DASHBOARD_HEAD).toContain('aria-controls="panel-dependencies"')
+    expect(DASHBOARD_HEAD).toContain('id="panel-dependencies" role="tabpanel"')
+    expect(DASHBOARD_HEAD).toContain('id="graph-scroll"')
+    expect(DASHBOARD_HEAD).toContain('id="graph-content"')
+    expect(DASHBOARD_HEAD).toContain(".dashboard-panel[hidden]")
+  })
   test("HTML shell exposes triage cockpit regions", () => {
     expect(DASHBOARD_HEAD).toContain('id="attention"')
     expect(DASHBOARD_HEAD).toContain('aria-label="Team attention"')

@@ -32,6 +32,27 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 #content.nav-collapsed{grid-template-columns:2rem minmax(0,1fr)}
 #projects[hidden]{display:none!important}
 #project-rail[hidden]{display:none!important}
+.dashboard-panel[hidden]{display:none!important}
+.dashboard-tabs{display:flex;gap:24px;border-bottom:1px solid #2a3144;margin-bottom:16px}
+.dashboard-tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 0 10px;color:#8a96aa;font-size:12px}
+.dashboard-tab[aria-selected="true"]{color:#e2e8f0;border-bottom-color:#60a5fa}
+.graph-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.graph-scroll{overflow:auto;max-height:65vh;border:1px solid #1e2433;border-radius:8px;background:#0f131c}
+.graph-canvas{position:relative;background-image:radial-gradient(#2a314480 1px,transparent 1px);background-size:22px 22px}
+.graph-edges{position:absolute;inset:0;pointer-events:none}
+.graph-card{position:absolute;width:280px;height:172px;background:#141822;border:1px solid #2a3144;border-radius:8px;padding:12px;text-align:left;color:#e2e8f0;font-size:12px;cursor:pointer}
+.graph-card:hover{border-color:#60a5fa}.graph-card[aria-pressed="true"]{outline:2px solid #60a5fa;outline-offset:1px}
+.graph-card.graph-running{border-color:#3b82f680}.graph-card.graph-done{border-color:#22c55e60}.graph-card.graph-blocked{border-color:#f59e0b60}
+.graph-card-head{display:flex;align-items:center;gap:6px;min-width:0}.graph-card-name{font-family:monospace;font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.graph-card-task{font-size:13px;line-height:18px;height:54px;margin:8px 0 4px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.graph-card-meta{color:#8a96aa;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}
+.graph-card-foot{display:flex;align-items:center;gap:6px;margin-top:5px;white-space:nowrap}
+.graph-warning{border:1px solid #f59e0b60;background:#f59e0b0d;color:#fbbf24;padding:10px 12px;margin-bottom:10px;border-radius:6px;font-size:12px;overflow-wrap:anywhere}
+.graph-detail{border:1px solid #1e2433;background:#141822;border-radius:8px;padding:14px;margin-top:12px;font-size:12px;overflow-wrap:anywhere}
+.graph-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:12px}
+.graph-detail-link{display:block;text-align:left;color:#c1c9d9;margin-top:6px;text-decoration:underline;text-underline-offset:3px}
+.graph-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;color:#8a96aa;font-size:11px}
+@media(max-width:640px){.graph-detail-grid{grid-template-columns:1fr}.graph-scroll{max-height:55vh}}
 .xp{max-height:0;overflow:hidden;transition:max-height .3s ease-out}.xp-open{max-height:3000px;transition:max-height .5s ease-in}
 .card-sel{outline:2px solid rgba(59,130,246,.4);outline-offset:1px}
 .md pre{background:#1a1f2e;border:1px solid #1e2433;border-radius:6px;padding:8px 12px;overflow-x:auto;margin:6px 0;font-size:12px;line-height:1.5}
@@ -76,13 +97,25 @@ select{-webkit-appearance:none;appearance:none;background-image:url("data:image/
 <aside id="projects" aria-label="Project navigation" class="bg-base-950/60 border-r border-base-800/70 pr-3 lg:sticky lg:top-[88px]"></aside>
 <div class="min-w-0">
 <section id="attention" aria-label="Team attention" class="mb-3"></section>
-<div class="grid grid-cols-1 xl:grid-cols-[minmax(360px,1.35fr)_minmax(320px,.8fr)] gap-4 items-start">
+<div role="tablist" aria-label="Dashboard views" class="dashboard-tabs">
+<button id="tab-overview" type="button" role="tab" aria-selected="true" aria-controls="panel-overview" class="dashboard-tab" data-dashboard-tab="overview">Overview</button>
+<button id="tab-dependencies" type="button" role="tab" aria-selected="false" aria-controls="panel-dependencies" tabindex="-1" class="dashboard-tab" data-dashboard-tab="dependencies">Dependency graph</button>
+</div>
+<div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" class="dashboard-panel grid grid-cols-1 xl:grid-cols-[minmax(360px,1.35fr)_minmax(320px,.8fr)] gap-4 items-start">
 <section aria-label="Agent roster"><div id="agents" class="grid gap-2" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))"></div></section>
 <div class="grid grid-cols-1 gap-4">
 <section aria-label="Task board"><div id="tasks" class="bg-base-900 rounded-lg p-3 border border-base-800/50"></div></section>
 <section aria-label="Activity feed"><div id="activity" class="bg-base-900 rounded-lg p-3 border border-base-800/50"></div></section>
 </div>
 </div>
+<section id="panel-dependencies" role="tabpanel" aria-labelledby="tab-dependencies" class="dashboard-panel" hidden>
+<div class="graph-toolbar"><div><h2 class="text-[14px] font-semibold">Task dependencies</h2><p id="graph-description" class="text-[11px] text-txt-400 mt-1">Prerequisite → dependent · Select a task to inspect its agent and dependencies</p></div><button type="button" id="graph-reset" class="text-[11px] text-txt-300 border border-base-700 rounded px-2 py-1">Reset view</button></div>
+<div id="graph-content">
+<div id="graph-scroll" class="graph-scroll scroll" tabindex="0" aria-label="Task dependency graph" aria-describedby="graph-description"></div>
+<div class="graph-legend"><span class="text-emerald-400">✓ Completed prerequisite</span><span class="text-blue-400">● In progress</span><span class="text-amber-400">○ Blocked</span><span>→ Dependency direction</span></div>
+<div id="graph-detail" class="graph-detail" aria-live="polite"></div>
+</div>
+</section>
 </div>
 </div>
 </main>

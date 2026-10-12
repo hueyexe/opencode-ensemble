@@ -4,13 +4,15 @@ import type { Database } from "./db"
 import { DASHBOARD_HEAD } from "./dashboard-html"
 import { DASHBOARD_JS_CORE } from "./dashboard-js-core"
 import { DASHBOARD_JS_EVENTS } from "./dashboard-js-events"
+import { DASHBOARD_JS_GRAPH_LAYOUT } from "./dashboard-js-graph-layout"
+import { DASHBOARD_JS_GRAPH } from "./dashboard-js-graph"
 import { DASHBOARD_JS_RENDER } from "./dashboard-js-render"
 import { log } from "./log"
 import type { ActivityBuffer, ActivityEntry } from "./activity"
 import type { PluginClient } from "./types"
 
 /** Assemble the full dashboard HTML from parts. */
-const DASHBOARD_HTML = DASHBOARD_HEAD + "\n<script>" + DASHBOARD_JS_CORE + DASHBOARD_JS_RENDER + DASHBOARD_JS_EVENTS + "<\/script>\n</body></html>"
+const DASHBOARD_HTML = DASHBOARD_HEAD + "\n<script>" + DASHBOARD_JS_CORE + DASHBOARD_JS_GRAPH_LAYOUT + DASHBOARD_JS_RENDER + DASHBOARD_JS_GRAPH + DASHBOARD_JS_EVENTS + "<\/script>\n</body></html>"
 
 interface TeamRow {
   id: string

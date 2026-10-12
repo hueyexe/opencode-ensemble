@@ -4,6 +4,34 @@
 
 # OpenCode Ensemble
 
+## Dependency graph fork
+
+This fork adds a **Dependency graph** tab beside **Overview** in the dashboard.
+Task cards show the assigned agent, agent status/type/model, task status, and
+unfinished prerequisites. Arrows flow from prerequisite to dependent. Select a
+card to inspect its dependencies and open the assigned agent's existing drawer.
+Unassigned tasks remain visible; missing prerequisites and cycles show warnings.
+The graph updates with live dashboard state and supports keyboard navigation.
+
+Install this fork in OpenCode V2:
+
+```bash
+opencode plugin add 'github:Andrii-Hladkyi-Masedko/opencode-ensemble#feature/dependency-graph'
+```
+
+Replace any existing upstream Ensemble plugin entry rather than loading both.
+Check global and project configuration, restart OpenCode, and open the dashboard
+at `http://localhost:4747`. No new runtime dependencies or database changes.
+
+For local development, point the `plugins` entry at your clone/worktree:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{ "package": "/absolute/path/to/opencode-ensemble" }]
+}
+```
+
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![CI](https://github.com/hueyexe/opencode-ensemble/actions/workflows/ci.yml/badge.svg)](https://github.com/hueyexe/opencode-ensemble/actions/workflows/ci.yml)
@@ -148,6 +176,8 @@ A real-time mission control dashboard runs at `http://localhost:4747` while Open
 - **Agent cards** — status, current task, activity sparklines, timing. Click to open detail drawer
 - **Agent drawer** — full prompt, model, execution status, chat-style message history with markdown rendering
 - **Task board** — progress bar, collapsible status groups, dependency arrows
+- **Dependency graph tab** — task cards with agent ownership, prerequisite arrows,
+  dependency inspection, live updates, and missing/cyclic dependency warnings
 - **Activity feed** — chat-style message bubbles with avatars, expandable with full markdown
 - **Timeline** — horizontal event strip showing spawns, messages, completions, shutdowns
 - **Keyboard shortcuts** — `j/k` navigate agents, `Enter` opens drawer, `Esc` closes, `?` shows help

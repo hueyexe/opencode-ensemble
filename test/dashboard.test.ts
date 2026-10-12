@@ -263,6 +263,15 @@ describe("dashboard", () => {
   })
 
   describe("GET /", () => {
+    test("served dashboard script includes executable graph layout and rendering", async () => {
+      server = await startDashboard(db, port)
+      const html = await (await fetch(`http://localhost:${port}/`)).text()
+      const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)![1]!
+      const available = new Function("document", "setInterval", "fetch", `${script};return {layout:typeof graphLayout,markup:typeof graphMarkup}`)(
+        { addEventListener() {} }, () => {}, () => new Promise(() => {}),
+      ) as { layout: string; markup: string }
+      expect(available).toEqual({ layout: "function", markup: "function" })
+    })
     test("returns HTML content-type", async () => {
       server = await startDashboard(db, port)
       const res = await fetch(`http://localhost:${port}/`)

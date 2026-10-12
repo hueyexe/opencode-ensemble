@@ -47,6 +47,7 @@ function render(){
   applyNavCollapse();
   const p=curProject();document.getElementById('crumb').textContent=p?' / '+projectLabel(p)+' / '+t.name:'';
   rHealth(t);rSum(t);rAttention(t);rAgents(t);rTasks(t);rActivity(t);rTimeline(t);
+  rGraph(t);
 }
 
 function selectProject(id){selProjectId=id;const p=S?.projects?.find(p=>p.id===id);const t=(p?.teams||[]).filter(t=>t.status==='active').sort((a,b)=>b.timeUpdated-a.timeUpdated)[0]||(p?.teams||[])[0];if(t)selId=t.id;selCard=-1;render()}
@@ -99,6 +100,12 @@ setInterval(function(){var t=cur();if(t)rClock(t);if(fails<3)conn(true)},1000);
 setInterval(poll,2500);
 
 document.addEventListener('click',function(e){
+  const button=e.target.closest?.('button');
+  if(button?.dataset.dashboardTab){selectDashboardTab(button.dataset.dashboardTab);return}
+  if(button?.id==='graph-reset'){resetGraphView();return}
+  if(button?.dataset.graphTask!==undefined){selectGraphTask(button.dataset.graphTask);return}
+  if(button?.dataset.graphSelect!==undefined){selectGraphTask(button.dataset.graphSelect);return}
+  if(button?.dataset.graphAgent!==undefined){openDrawer(button.dataset.graphAgent);return}
   const id=e.target&&e.target.id;
   if(id!=='nav-toggle'&&id!=='nav-expand')return;
   navCollapsed=id==='nav-toggle';
@@ -115,6 +122,8 @@ document.addEventListener('keydown',function(e){
   if(drawerOpen&&e.key==='Escape'){e.preventDefault();closeDrawer();return}
   if(drawerOpen&&e.key==='?'){e.preventDefault();return}
   if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA')return;
+  if(e.target.closest?.('[role="tablist"]')){graphTabKeydown(e);return}
+  if(e.target.closest?.('#panel-dependencies')&&e.key!=='Escape'&&e.key!=='?')return;
   var t=cur();if(!t)return;
   var mm=[...(t.members||[])].sort((a,b)=>rankAgent(a,b,t));
   if(e.key==='?'){e.preventDefault();shortcutsOpen?closeShortcuts():openShortcuts();return}
