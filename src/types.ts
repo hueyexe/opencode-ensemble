@@ -35,6 +35,10 @@ export interface PermissionRule {
  * Makes mocking trivial in tests.
  */
 export interface PluginClient {
+  /** Optional agent introspection (V2). Undefined answers fall back to name checks. */
+  agent?: {
+    readOnly(agent: string): Promise<boolean | undefined>
+  }
   session: {
     create(options: {
       parentID?: string

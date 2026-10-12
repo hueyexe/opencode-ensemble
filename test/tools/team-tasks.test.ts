@@ -32,6 +32,17 @@ describe("team_tasks_list", () => {
     expect(result).toContain("pending")
   })
 
+  test("rejects unknown depends_on IDs without adding any task (issue #40)", async () => {
+    await executeTeamTasksAdd(deps, { tasks: [{ content: "Task A", priority: "high" }] }, "sess-alice")
+    const before = (deps.db.query("SELECT COUNT(*) as c FROM team_task").get() as { c: number }).c
+    await expect(executeTeamTasksAdd(deps, { tasks: [
+      { content: "Task B", priority: "medium" },
+      { content: "Task C", priority: "medium", depends_on: ["task_does_not_exist"] },
+    ] }, "sess-alice")).rejects.toThrow(/Unknown task ID in depends_on: task_does_not_exist/)
+    const after = (deps.db.query("SELECT COUNT(*) as c FROM team_task").get() as { c: number }).c
+    expect(after).toBe(before)
+  })
+
   test("rejects if not in a team", async () => {
     await expect(executeTeamTasksList(deps, "random-sess"))
       .rejects.toThrow("not in a team")

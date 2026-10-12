@@ -87,7 +87,11 @@ export async function executeTeamSpawn(
     .get(teamInfo.teamId, args.name)
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
-  const isReadOnly = agent === "plan" || agent === "explore"
+  // Prefer the agent's own permission rules (V2) so any agent that denies
+  // edits — not only the built-in plan/explore — is treated as read-only and
+  // never gets a worktree or a shell allow. Fall back to the built-in names.
+  const isReadOnly = (await deps.client.agent?.readOnly(agent).catch(() => undefined))
+    ?? (agent === "plan" || agent === "explore")
   const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
   const usePlanApproval = args.plan_approval === true
 
@@ -167,6 +171,11 @@ export async function executeTeamSpawn(
   if (worktreeDir) {
     permission.push(
       { permission: "edit", pattern: `${worktreeDir}/**`, action: "allow" },
+      // V2 checks files inside the session's location as paths relative to
+      // it (the teammate's location is the worktree), so the absolute pattern
+      // above never matches there and edits fell back to an unanswerable ask.
+      // Files outside the worktree remain gated by external_directory.
+      { permission: "edit", pattern: "*", action: "allow" },
     )
     if (!isReadOnly) {
       permission.push({ permission: "bash", pattern: "*", action: "allow" })
