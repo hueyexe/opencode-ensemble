@@ -52,12 +52,30 @@ describe("dependency graph rendering", () => {
     expect(t.tasks[1]!.status).toBe("pending")
   })
 
+  test("cancelled prerequisites are resolved just as they are in the scheduler", () => {
+    const t = team([{ ...task("a"), status: "cancelled" }, task("b", ["a"])])
+    const html = markup(t)
+    expect(html).not.toContain("Blocked by 1 prerequisite")
+    expect(html).not.toContain("graph-card graph-blocked")
+    expect(html).toContain("Prerequisites satisfied")
+  })
+
   test("cycles and missing tasks produce visible warnings and retain cards", () => {
     const html = markup(team([task("a", ["b"]), task("b", ["a", "gone"])]), "b")
     expect(html).toContain("Cyclic dependencies")
     expect(html).toContain("Missing prerequisite")
     expect(html).toContain("gone")
     expect(html.match(/data-graph-task=/g)).toHaveLength(2)
+  })
+
+  test("direct dependencies that skip a column route below intervening cards", () => {
+    const html = markup(team([task("a"), task("b", ["a"]), task("c", ["a", "b"])]))
+    const path = html.match(/data-edge-from="a" data-edge-to="c" d="([^"]+)"/)![1]!
+    expect(path).toContain(" V ")
+    const routeY = Number(path.match(/ V (\d+)/)?.[1])
+    expect(routeY).toBeGreaterThan(196)
+    const height = Number(html.match(/class="graph-edges" width="\d+" height="(\d+)"/)![1])
+    expect(height).toBeGreaterThan(routeY)
   })
 
   test("empty teams show a useful task creation hint", () => {
@@ -88,12 +106,17 @@ describe("dependency graph rendering", () => {
 
 describe("dependency graph view state", () => {
   function harness(initial: Team) {
-    const elements = new Map<string, { hidden: boolean; innerHTML: string; scrollLeft: number; scrollTop: number; tabIndex: number; attrs: Record<string, string>; setAttribute(key: string, value: string): void; focus(): void; contains(): boolean; querySelectorAll(): [] }>()
+    const elements = new Map<string, { hidden: boolean; innerHTML: string; writes: number; scrollLeft: number; scrollTop: number; tabIndex: number; attrs: Record<string, string>; setAttribute(key: string, value: string): void; focus(): void; contains(): boolean; querySelectorAll(): [] }>()
     const get = (id: string) => {
-      if (!elements.has(id)) elements.set(id, {
-        hidden: false, innerHTML: "", scrollLeft: 0, scrollTop: 0, tabIndex: 0, attrs: {},
-        setAttribute(key, value) { this.attrs[key] = value }, focus() {}, contains() { return false }, querySelectorAll() { return [] },
-      })
+      if (!elements.has(id)) {
+        let serialized = ""
+        elements.set(id, {
+          hidden: false, writes: 0, scrollLeft: 0, scrollTop: 0, tabIndex: 0, attrs: {},
+          get innerHTML() { return serialized },
+          set innerHTML(html) { this.writes++; serialized = html.replace(/<path([^>]*)\/>/g, "<path$1></path>") },
+          setAttribute(key, value) { this.attrs[key] = value }, focus() {}, contains() { return false }, querySelectorAll() { return [] },
+        })
+      }
       return elements.get(id)!
     }
     const document = { getElementById: get, activeElement: null }
@@ -121,6 +144,16 @@ describe("dependency graph view state", () => {
     expect(api.view()).toBe("dependencies")
     api.selectDashboardTab("overview")
     expect(get("panel-dependencies").hidden).toBe(true)
+  })
+
+  test("unchanged refresh does not replace graph controls after browser SVG serialization", () => {
+    const t = team([task("a"), task("b", ["a"])]), { api, get } = harness(t)
+    api.selectDashboardTab("dependencies")
+    expect(get("graph-content").writes).toBe(1)
+    api.update(t)
+    expect(get("graph-content").writes).toBe(1)
+    api.update({ ...t, tasks: [{ ...t.tasks[0]!, status: "completed" }, t.tasks[1]!] })
+    expect(get("graph-content").writes).toBe(2)
   })
 
   test("live updates preserve graph scroll and clear disappeared task selection", () => {

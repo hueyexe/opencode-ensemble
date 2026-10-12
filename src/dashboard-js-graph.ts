@@ -1,6 +1,6 @@
 /** Dashboard JS — dependency graph view, task inspection, and tab interactions. */
 export const DASHBOARD_JS_GRAPH = `
-let dashboardTab='overview',graphSelectedId=null,graphTeamId=null;
+let dashboardTab='overview',graphSelectedId=null,graphTeamId=null,graphRenderedMarkup=null;
 function selectDashboardTab(view){
   dashboardTab=view==='dependencies'?'dependencies':'overview';
   ['overview','dependencies'].forEach(name=>{
@@ -18,15 +18,16 @@ function graphTabKeydown(e){
 }
 function rGraph(team){
   const switched=graphTeamId!==team.id;
-  if(switched){graphTeamId=team.id;graphSelectedId=null;resetGraphView()}
+  if(switched){graphTeamId=team.id;graphSelectedId=null;graphRenderedMarkup=null;resetGraphView()}
   if(graphSelectedId!==null&&!(team.tasks||[]).some(task=>task.id===graphSelectedId))graphSelectedId=null;
   if(dashboardTab!=='dependencies')return;
   const root=document.getElementById('graph-content'),scroll=document.getElementById('graph-scroll');
   const left=scroll.scrollLeft,top=scroll.scrollTop,focused=document.activeElement;
   const focusData=root.contains(focused)?{task:focused.dataset?.graphTask,select:focused.dataset?.graphSelect,agent:focused.dataset?.graphAgent,scroll:focused.id==='graph-scroll'}:null;
   const html=graphMarkup(team,graphLayout(team.tasks||[]),graphSelectedId);
-  if(root.innerHTML===html)return;
-  patch(root,html);
+  // SVG serialization expands self-closing paths; compare generated markup, not DOM HTML.
+  if(graphRenderedMarkup===html)return;
+  patch(root,html);graphRenderedMarkup=html;
   if(focusData){
     const target=focusData.scroll?document.getElementById('graph-scroll'):[...root.querySelectorAll('button')].find(button=>
       (focusData.task!==undefined&&button.dataset.graphTask===focusData.task)||
@@ -39,7 +40,7 @@ function rGraph(team){
 function selectGraphTask(id){const team=cur();if(!team||!(team.tasks||[]).some(task=>task.id===id))return;rGraph(team);graphSelectedId=id;rGraph(team)}
 function resetGraphView(){const scroll=document.getElementById('graph-scroll');if(scroll){scroll.scrollLeft=0;scroll.scrollTop=0}}
 function graphTaskInfo(task,byId){
-  const deps=graphDependencies(task),waiting=deps.filter(id=>byId.get(id)?.status!=='completed');
+  const deps=graphDependencies(task),waiting=deps.filter(id=>!['completed','cancelled'].includes(byId.get(id)?.status));
   const terminal=task.status==='completed'||task.status==='cancelled',blocked=!terminal&&(task.status==='blocked'||waiting.length>0);
   const color=task.status==='completed'?'green':blocked?'amber':task.status==='in_progress'?'blue':'muted';
   return {deps,waiting,blocked,color,hint:terminal?'':waiting.length?'Blocked by '+waiting.length+' prerequisite'+(waiting.length===1?'':'s'):deps.length?'Prerequisites satisfied':'No prerequisites'};
@@ -75,17 +76,24 @@ function graphMarkup(team,layout,selectedId){
   let warning='';
   if(layout.cyclic.length)warning+='<div class="graph-warning">Cyclic dependencies: '+layout.cyclic.length+' task'+(layout.cyclic.length===1?'':'s')+' affected. Cycle-affected tasks are shown in the last column.</div>';
   if(layout.missing.length)warning+='<div class="graph-warning">Missing prerequisite'+(layout.missing.length===1?'':'s')+': '+layout.missing.map(item=>E(byId.get(item.taskId).content)+' → '+E(item.dependencyId)).join('; ')+'</div>';
+  const skipped=layout.edges.filter(edge=>nodes.get(edge.to).x-nodes.get(edge.from).x>GRAPH_CARD_WIDTH+GRAPH_GAP_X).length;
+  const height=layout.height+(skipped?16+skipped*12:0);
+  let lane=0;
   const edges=layout.edges.map(edge=>{
     const from=nodes.get(edge.from),to=nodes.get(edge.to),done=from.task.status==='completed';
     const x1=from.x+GRAPH_CARD_WIDTH,y1=from.y+GRAPH_CARD_HEIGHT/2;
     const forward=to.x>from.x,x2=forward?to.x:to.x+GRAPH_CARD_WIDTH,y2=forward?to.y+GRAPH_CARD_HEIGHT/2:to.y+16;
     const bend=forward?(x1+x2)/2:x1+20;
-    const path='M '+x1+' '+y1+' C '+bend+' '+y1+', '+bend+' '+y2+', '+x2+' '+y2;
+    const skipsColumn=to.x-from.x>GRAPH_CARD_WIDTH+GRAPH_GAP_X;
+    const routeY=layout.height+8+lane*12;
+    if(skipsColumn)lane++;
+    const path=skipsColumn?'M '+x1+' '+y1+' H '+(x1+24)+' V '+routeY+' H '+(x2-24)+' V '+y2+' H '+x2:
+      'M '+x1+' '+y1+' C '+bend+' '+y1+', '+bend+' '+y2+', '+x2+' '+y2;
     return '<path data-edge-from="'+E(edge.from)+'" data-edge-to="'+E(edge.to)+'" d="'+path+'" fill="none" stroke="'+(done?'#4ade80':'#64748b')+'" stroke-width="2" marker-end="url(#graph-arrow-'+(done?'done':'pending')+')"/>';
   }).join('');
-  const svg='<svg class="graph-edges" width="'+layout.width+'" height="'+layout.height+'" aria-hidden="true"><defs>'+['done','pending'].map(name=>'<marker id="graph-arrow-'+name+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="'+(name==='done'?'#4ade80':'#64748b')+'"/></marker>').join('')+'</defs>'+edges+'</svg>';
+  const svg='<svg class="graph-edges" width="'+layout.width+'" height="'+height+'" aria-hidden="true"><defs>'+['done','pending'].map(name=>'<marker id="graph-arrow-'+name+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="'+(name==='done'?'#4ade80':'#64748b')+'"/></marker>').join('')+'</defs>'+edges+'</svg>';
   const cyclic=new Set(layout.cyclic),cards=layout.nodes.map(node=>graphCard(node,team,byId,selectedId,cyclic.has(node.task.id))).join('');
-  return warning+'<div id="graph-scroll" class="graph-scroll scroll" tabindex="0" aria-label="Task dependency graph" aria-describedby="graph-description"><div class="graph-canvas" style="width:'+layout.width+'px;height:'+layout.height+'px">'+svg+cards+'</div></div>'+
+  return warning+'<div id="graph-scroll" class="graph-scroll scroll" tabindex="0" aria-label="Task dependency graph" aria-describedby="graph-description"><div class="graph-canvas" style="width:'+layout.width+'px;height:'+height+'px">'+svg+cards+'</div></div>'+
     '<div class="graph-legend"><span class="text-emerald-400">✓ Completed prerequisite</span><span class="text-blue-400">● In progress</span><span class="text-amber-400">○ Blocked</span><span>→ Dependency direction</span></div>'+graphDetail(team,byId,selectedId);
 }
 `;
