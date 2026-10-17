@@ -61,6 +61,8 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 export interface V2ClientDeps {
   /** Current branch checked out in a directory, or null when unknown. */
   gitBranch?: (directory: string) => Promise<string | null>
+  /** Create and check out a branch in a directory (best-effort). */
+  gitCreateBranch?: (directory: string, branch: string) => Promise<void>
   /** Worktree directory currently on a branch, or null when none. */
   gitDir?: (branch: string) => Promise<string | null>
   /** RPC emitter for companion events (team_view navigation). */
@@ -75,6 +77,15 @@ async function gitBranchDefault(directory: string): Promise<string | null> {
     return result.exitCode === 0 && branch ? branch : null
   } catch {
     return null
+  }
+}
+
+/** Create and check out a branch in a directory via git. */
+async function gitCreateBranchDefault(directory: string, branch: string): Promise<void> {
+  try {
+    await runCommand(["git", "switch", "-c", branch], { cwd: directory })
+  } catch {
+    // Merge reports the missing branch; spawning must not fail here.
   }
 }
 
@@ -117,6 +128,7 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
   const gitBranch = deps.gitBranch ?? gitBranchDefault
+  const gitCreateBranch = deps.gitCreateBranch ?? gitCreateBranchDefault
   // 2.0.19+ worktree endpoints require the project; older hosts ignore it.
   const project = (): Record<string, unknown> => {
     const projectID = ctx.location?.project?.id
@@ -224,7 +236,12 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
         const created = await ctx.worktree.create({ ...project(), name })
-        const branch = (await gitBranch(created.directory)) ?? name
+        let branch = await gitBranch(created.directory)
+        if (!branch) {
+          // 2.0.32+ creates worktrees detached; team_merge needs a named branch.
+          await gitCreateBranch(created.directory, name)
+          branch = name
+        }
         return { data: { name, branch, directory: created.directory } }
       },
       remove: async (options) => {

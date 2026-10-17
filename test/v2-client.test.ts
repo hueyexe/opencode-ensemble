@@ -218,11 +218,32 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     })
   })
 
-  test("worktree.create falls back to the requested name when git lookup fails", async () => {
+  test("worktree.create names a detached worktree after the requested name", async () => {
     const { ctx } = mockCtx()
-    const client = createV2Client(ctx as never, { gitBranch: mockGit({}) })
+    const created: Array<[string, string]> = []
+    const client = createV2Client(ctx as never, {
+      gitBranch: mockGit({}),
+      gitCreateBranch: async (directory, branch) => {
+        created.push([directory, branch])
+      },
+    })
     const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
     expect(result.data?.branch).toBe("ensemble-x")
+    expect(created).toEqual([["/wt/ensemble-proj-team-alice", "ensemble-x"]])
+  })
+
+  test("worktree.create leaves a worktree that is already on a branch alone", async () => {
+    const { ctx } = mockCtx()
+    let createCalls = 0
+    const client = createV2Client(ctx as never, {
+      gitBranch: async () => "existing",
+      gitCreateBranch: async () => {
+        createCalls++
+      },
+    })
+    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
+    expect(result.data?.branch).toBe("existing")
+    expect(createCalls).toBe(0)
   })
 
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {
