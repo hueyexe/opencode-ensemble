@@ -14,7 +14,7 @@
         "@opentui/core": "0.5.10",
         "@opentui/solid": "0.5.10",
         "@types/bun": "latest",
-        "solid-js": "1.9.0",
+        "solid-js": "1.9.4",
       },
       "peerDependencies": {
         "@opentui/core": ">=0.5.10",
@@ -691,7 +691,7 @@
 
     "socks-proxy-agent": ["socks-proxy-agent@8.0.5", "", { "dependencies": { "agent-base": "^7.1.2", "debug": "^4.3.4", "socks": "^2.8.3" } }, "sha512-HehCEsotFqbPW9sJ8WVYB6UbmIMv7kUUORIF2Nncq4VQvBfNBLibW9YZR5dlYCSUhwcD628pRllm7n+E+YTzJw=="],
 
-    "solid-js": ["solid-js@1.9.0", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "^1.1.0", "seroval-plugins": "^1.1.0" } }, "sha512-MDRx9+mtTBYfaY+Xy+F+GI57U04uYXj/I7jWQISzDUTvDXKOiPltOzoCSLXn0vk5mhs/OPZlG0UoWBaKPvlWBQ=="],
+    "solid-js": ["solid-js@1.9.4", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "^1.1.0", "seroval-plugins": "^1.1.0" } }, "sha512-ipQl8FJ31bFUoBNScDQTG3BjN6+9Rg+Q+f10bUbnO6EOTTf5NGerJeHc7wyu5I4RMHEl/WwZwUmy/PTRgxxZ8g=="],
 
     "spdx-exceptions": ["spdx-exceptions@2.5.0", "", {}, "sha512-PiU42r+xO4UbUS1buo3LPJkjlO7430Xn5SVAhdpzzsPHsjbYVflnnFdATgabnLude+Cqu25p6N+g2lw/PFsa4w=="],
 
