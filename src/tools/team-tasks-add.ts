@@ -19,6 +19,23 @@ export async function executeTeamTasksAdd(
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
 
+  // Reject unknown dependency IDs before inserting anything: a task blocked on
+  // an ID that never existed can never unblock (issue #40). IDs are generated
+  // here, so new tasks can only depend on existing ones and no cycle can form.
+  const unknown = new Set<string>()
+  for (const task of args.tasks) {
+    for (const depId of task.depends_on ?? []) {
+      const exists = deps.db.query("SELECT 1 FROM team_task WHERE id = ? AND team_id = ?").get(depId, teamInfo.teamId)
+      if (!exists) unknown.add(depId)
+    }
+  }
+  if (unknown.size > 0) {
+    throw new Error(
+      `Unknown task ID${unknown.size > 1 ? "s" : ""} in depends_on: ${[...unknown].join(", ")}. ` +
+        "Use IDs from team_tasks_list, or add the prerequisite tasks first and reference the IDs they return.",
+    )
+  }
+
   const ids: string[] = []
   const now = Date.now()
 

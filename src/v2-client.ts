@@ -3,6 +3,8 @@ import { runCommand } from "./process"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
+  /** Plugin location; `project.id` is required by the 2.0.19+ worktree API. */
+  location?: { directory?: string; project?: { id?: string } }
   session: {
     create(input: Record<string, unknown>): Promise<{ id: string }>
     prompt(input: Record<string, unknown>): Promise<unknown>
@@ -17,12 +19,39 @@ export interface V2Context {
   worktree: {
     create(input: Record<string, unknown>): Promise<{ directory: string }>
     remove(input: Record<string, unknown>): Promise<unknown>
-    list(): Promise<Array<{ directory: string }>>
-    refresh(): Promise<unknown>
+    list(input?: Record<string, unknown>): Promise<Array<{ directory: string }>>
+    refresh(input?: Record<string, unknown>): Promise<unknown>
   }
   permission: {
-    rules(input: Record<string, unknown>): Promise<unknown>
+    /** Present on 2.0.3–2.0.18 only; removed in 2.0.19 (see issue #40). */
+    rules?(input: Record<string, unknown>): Promise<unknown>
   }
+  /** Agent lookup (2.0.19+): exposes each agent's resolved permission rules. */
+  agent?: {
+    get(input: Record<string, unknown>): Promise<unknown>
+  }
+}
+
+type PermissionRuleV2 = { action?: unknown; resource?: unknown; effect?: unknown }
+
+/** OpenCode wildcard match: `*` matches any run of characters. */
+function wildcardMatch(value: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
+  return new RegExp(`^${escaped}$`).test(value)
+}
+
+/**
+ * True when an agent's own rules deny editing everywhere. OpenCode evaluates
+ * the last matching rule, so this mirrors `evaluate("edit", "*")` over the
+ * agent ruleset. Undefined when the rules carry no edit decision.
+ */
+export function agentRulesAreReadOnly(rules: unknown): boolean | undefined {
+  if (!Array.isArray(rules)) return undefined
+  const match = [...(rules as PermissionRuleV2[])].reverse().find((rule) =>
+    typeof rule?.action === "string" && typeof rule?.resource === "string"
+    && wildcardMatch("edit", rule.action) && (rule.resource === "*" || rule.resource === "**"))
+  if (!match) return undefined
+  return match.effect === "deny"
 }
 
 /** Prefix marking a workspace id that is really a local directory (see below). */
@@ -32,6 +61,8 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 export interface V2ClientDeps {
   /** Current branch checked out in a directory, or null when unknown. */
   gitBranch?: (directory: string) => Promise<string | null>
+  /** Create and check out a branch in a directory (best-effort). */
+  gitCreateBranch?: (directory: string, branch: string) => Promise<void>
   /** Worktree directory currently on a branch, or null when none. */
   gitDir?: (branch: string) => Promise<string | null>
   /** RPC emitter for companion events (team_view navigation). */
@@ -46,6 +77,15 @@ async function gitBranchDefault(directory: string): Promise<string | null> {
     return result.exitCode === 0 && branch ? branch : null
   } catch {
     return null
+  }
+}
+
+/** Create and check out a branch in a directory via git. */
+async function gitCreateBranchDefault(directory: string, branch: string): Promise<void> {
+  try {
+    await runCommand(["git", "switch", "-c", branch], { cwd: directory })
+  } catch {
+    // Merge reports the missing branch; spawning must not fail here.
   }
 }
 
@@ -88,7 +128,24 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
   const gitBranch = deps.gitBranch ?? gitBranchDefault
+  const gitCreateBranch = deps.gitCreateBranch ?? gitCreateBranchDefault
+  // 2.0.19+ worktree endpoints require the project; older hosts ignore it.
+  const project = (): Record<string, unknown> => {
+    const projectID = ctx.location?.project?.id
+    return projectID ? { projectID } : {}
+  }
   return {
+    agent: {
+      readOnly: async (agent: string) => {
+        if (!ctx.agent) return undefined
+        try {
+          const info = (await ctx.agent.get({ agentID: agent })) as { permissions?: unknown; data?: { permissions?: unknown } } | undefined
+          return agentRulesAreReadOnly(info?.permissions ?? info?.data?.permissions)
+        } catch {
+          return undefined
+        }
+      },
+    },
     session: {
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }
@@ -114,11 +171,12 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           }
         }
         const created = await ctx.session.create(input)
-        if (permissions) {
-          // Session.create permissions lose to agent rules (last match wins
-          // and agent rules apply later), which strips team tools from
-          // read-only agents. Re-assert here: rules() evaluates after the
-          // agent's rules, restoring the tools. OQ-V2-rules.
+        if (permissions && typeof ctx.permission.rules === "function") {
+          // 2.0.3–2.0.18 merged agent rules after session rules, so create()
+          // permissions lost to the agent's and had to be re-asserted. From
+          // 2.0.19 the session ruleset merges last (core permission.ts
+          // `merge(agent.permissions, session.permissions)` with last-match
+          // evaluation) and rules() no longer exists, so create() is enough.
           await ctx.permission.rules({ sessionID: created.id, permissions })
         }
         return { data: { id: created.id } }
@@ -177,16 +235,21 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
     worktree: {
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
-        const created = await ctx.worktree.create({ name })
-        const branch = (await gitBranch(created.directory)) ?? name
+        const created = await ctx.worktree.create({ ...project(), name })
+        let branch = await gitBranch(created.directory)
+        if (!branch) {
+          // 2.0.32+ creates worktrees detached; team_merge needs a named branch.
+          await gitCreateBranch(created.directory, name)
+          branch = name
+        }
         return { data: { name, branch, directory: created.directory } }
       },
       remove: async (options) => {
         const directory = (options.worktreeRemoveInput as { directory: string }).directory
-        return ctx.worktree.remove({ directory, force: false })
+        return ctx.worktree.remove({ ...project(), directory, force: false })
       },
       list: async () => {
-        const entries = await ctx.worktree.list()
+        const entries = await ctx.worktree.list(project())
         return {
           data: entries.map((entry) => ({
             name: entry.directory.split("/").pop() ?? entry.directory,
@@ -195,7 +258,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           })),
         }
       },
-      reset: async () => ctx.worktree.refresh(),
+      reset: async () => ctx.worktree.refresh(project()),
     },
     workspace: {
       create: async (options) => {

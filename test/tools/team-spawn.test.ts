@@ -830,9 +830,28 @@ describe("team_spawn — agent mode enforcement", () => {
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
     expect(opts.permission).toEqual([
       { permission: "edit", pattern: "/tmp/worktree-ensemble-test-project-my-team#t1-builder/**", action: "allow" },
+      { permission: "edit", pattern: "*", action: "allow" },
       { permission: "bash", pattern: "*", action: "allow" },
       ...TEAM_TOOL_PERMISSIONS,
     ])
+  })
+
+  test("an agent whose own rules deny edits is spawned read-only without a worktree", async () => {
+    const client = deps.client as unknown as { agent?: { readOnly(agent: string): Promise<boolean | undefined> } }
+    client.agent = { readOnly: async (agent) => agent === "code-reviewer" }
+    try {
+      await executeTeamSpawn(deps, { name: "reviewer", agent: "code-reviewer", prompt: "Review it" }, "lead-sess")
+      expect(deps.client.calls.some(c => c.method === "worktree.create")).toBe(false)
+      const createCall = deps.client.calls.find(c => c.method === "session.create")
+      const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
+      expect(opts.permission).toEqual([
+        { permission: "edit", pattern: "*", action: "deny" },
+        { permission: "bash", pattern: "*", action: "deny" },
+        ...TEAM_TOOL_PERMISSIONS,
+      ])
+    } finally {
+      delete client.agent
+    }
   })
 
   test("plan agent gets agent type on promptAsync without deprecated tools field", async () => {
