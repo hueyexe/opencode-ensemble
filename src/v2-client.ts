@@ -1,4 +1,5 @@
 import type { PluginClient } from "./types"
+import { log } from "./log"
 import { runCommand } from "./process"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
@@ -61,8 +62,10 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 export interface V2ClientDeps {
   /** Current branch checked out in a directory, or null when unknown. */
   gitBranch?: (directory: string) => Promise<string | null>
-  /** Create and check out a branch in a directory (best-effort). */
-  gitCreateBranch?: (directory: string, branch: string) => Promise<void>
+  /** Create and check out a branch in a directory. Returns the effective
+   * branch name, or null when the branch could not be created or checked
+   * out — never record the requested name without this confirmation. */
+  gitCreateBranch?: (directory: string, branch: string) => Promise<string | null>
   /** Worktree directory currently on a branch, or null when none. */
   gitDir?: (branch: string) => Promise<string | null>
   /** RPC emitter for companion events (team_view navigation). */
@@ -80,12 +83,28 @@ async function gitBranchDefault(directory: string): Promise<string | null> {
   }
 }
 
-/** Create and check out a branch in a directory via git. */
-async function gitCreateBranchDefault(directory: string, branch: string): Promise<void> {
+/** Create and check out a branch in a directory via git. Returns the
+ * effective branch name, or null when neither create nor switch worked —
+ * callers must record the return value, not the requested name, so a
+ * failed create can never be recorded as a live branch. */
+async function gitCreateBranchDefault(directory: string, branch: string): Promise<string | null> {
   try {
     await runCommand(["git", "switch", "-c", branch], { cwd: directory })
-  } catch {
-    // Merge reports the missing branch; spawning must not fail here.
+    return branch
+  } catch (err) {
+    // The branch may already exist (re-spawn after the abort-cleanup race
+    // documented in AGENTS.md) — switch to it instead of recording a name
+    // with no ref behind it. Log both attempts; swallowing failures silently
+    // made team_merge squash a stale branch and silently lose new work
+    // (PR #46 review).
+    log(`v2-client:gitCreateBranch:create-failed directory=${directory} branch=${branch} err=${err instanceof Error ? err.message : String(err)} — trying existing branch`)
+    try {
+      await runCommand(["git", "switch", branch], { cwd: directory })
+      return branch
+    } catch (err2) {
+      log(`v2-client:gitCreateBranch:switch-failed directory=${directory} branch=${branch} err=${err2 instanceof Error ? err2.message : String(err2)}`)
+      return null
+    }
   }
 }
 
@@ -171,7 +190,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           }
         }
         const created = await ctx.session.create(input)
-        if (permissions && typeof ctx.permission.rules === "function") {
+        if (permissions && typeof ctx.permission?.rules === "function") {
           // 2.0.3–2.0.18 merged agent rules after session rules, so create()
           // permissions lost to the agent's and had to be re-asserted. From
           // 2.0.19 the session ruleset merges last (core permission.ts
@@ -238,9 +257,12 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const created = await ctx.worktree.create({ ...project(), name })
         let branch = await gitBranch(created.directory)
         if (!branch) {
-          // 2.0.32+ creates worktrees detached; team_merge needs a named branch.
-          await gitCreateBranch(created.directory, name)
-          branch = name
+          // 2.0.32+ creates worktrees detached; team_merge needs a named
+          // branch. Record the effective branch only — never the requested
+          // name — so a failed create cannot point team_merge at a stale
+          // same-named branch whose commits would silently shadow new work
+          // (PR #46 review).
+          branch = (await gitCreateBranch(created.directory, name)) ?? ""
         }
         return { data: { name, branch, directory: created.directory } }
       },

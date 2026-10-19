@@ -93,6 +93,24 @@ describe("team_tasks_add", () => {
       .rejects.toThrow("not in a team")
   })
 
+  test("rejects a dependency that exists only in another team (PR #41)", async () => {
+    // Task ids are team-scoped: an id matching another team's board must be
+    // treated as unknown, or the new task is born permanently blocked and
+    // neither claim nor complete can ever unblock it (issue #40 bug 3).
+    insertTeam(deps.db, "t2", "other-team", "lead2-sess")
+    insertMember(deps.db, "t2", "bob", "sess-bob")
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES (?, ?, ?, 'pending', 'low', ?, ?)",
+      ["task_foreign", "t2", "Foreign task", Date.now(), Date.now()],
+    )
+
+    await expect(executeTeamTasksAdd(deps, { tasks: [
+      { content: "Borrowed", priority: "low", depends_on: ["task_foreign"] },
+    ] }, "sess-alice")).rejects.toThrow("task_foreign")
+    const rows = deps.db.query("SELECT * FROM team_task WHERE team_id = ?").all("t1")
+    expect(rows).toHaveLength(0)
+  })
+
   test("lead can add tasks", async () => {
     const result = await executeTeamTasksAdd(deps, { tasks: [
       { content: "Lead task", priority: "high" },

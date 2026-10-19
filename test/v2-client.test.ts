@@ -225,6 +225,7 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
       gitBranch: mockGit({}),
       gitCreateBranch: async (directory, branch) => {
         created.push([directory, branch])
+        return branch
       },
     })
     const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
@@ -239,11 +240,26 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
       gitBranch: async () => "existing",
       gitCreateBranch: async () => {
         createCalls++
+        return null
       },
     })
     const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
     expect(result.data?.branch).toBe("existing")
     expect(createCalls).toBe(0)
+  })
+
+  test("worktree.create records no branch when branch creation fails entirely (PR #46 review)", async () => {
+    const { ctx } = mockCtx()
+    const client = createV2Client(ctx as never, {
+      gitBranch: mockGit({}),
+      gitCreateBranch: async () => null,
+    })
+    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
+    // Empty string, not "ensemble-x": recording the requested name when no
+    // ref exists made team_merge squash a stale same-named branch and
+    // silently lose the teammate's new work.
+    expect(result.data?.branch).toBe("")
+    expect(result.data?.directory).toBe("/wt/ensemble-proj-team-alice")
   })
 
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {

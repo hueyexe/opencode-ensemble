@@ -172,9 +172,10 @@ export async function executeTeamSpawn(
     permission.push(
       { permission: "edit", pattern: `${worktreeDir}/**`, action: "allow" },
       // V2 checks files inside the session's location as paths relative to
-      // it (the teammate's location is the worktree), so the absolute pattern
-      // above never matches there and edits fell back to an unanswerable ask.
-      // Files outside the worktree remain gated by external_directory.
+      // it. session.create above binds the location to the worktree (via
+      // workspaceID, or directory as fallback), so this rule scopes edits
+      // to the worktree. Files outside the worktree remain gated by
+      // external_directory.
       { permission: "edit", pattern: "*", action: "allow" },
     )
     if (!isReadOnly) {
@@ -209,7 +210,14 @@ export async function executeTeamSpawn(
         parentID: sessionId,
         title: `${args.name} (@${agent} teammate)`,
         permission,
-        ...(workspaceId ? { workspaceID: workspaceId } : {}),
+        ...(workspaceId
+          ? { workspaceID: workspaceId }
+          // Workspace binding is preferred; when it is unavailable, bind the
+          // session to the worktree directory directly. Without a location,
+          // the teammate's location is the project root, edit paths are
+          // evaluated relative to it, and the `edit * allow` rule below
+          // would grant edits to the whole shared tree (PR #46 review).
+          : worktreeDir ? { directory: worktreeDir } : {}),
       }),
       getSpawnTimeout(), `session.create for "${args.name}"`
     )
@@ -454,6 +462,13 @@ export async function executeTeamSpawn(
   })
 
   const branchInfo = worktreeBranch ? ` (branch: ${worktreeBranch})` : ""
+  // Isolation is a claim the lead relies on, so say plainly when it did not
+  // complete. The toast alone left "spawned" as the only signal (issue #40).
+  // Covers both failure modes: no worktree at all (shared directory) or a
+  // worktree whose branch could not be created (unmergeable detached HEAD).
+  const isolationInfo = useWorktree && !worktreeBranch
+    ? ` (WARNING: worktree isolation did not complete — ${args.name} may share your working directory or lack a mergeable branch; edits can collide and team_merge may fail)`
+    : ""
   const planInfo = usePlanApproval ? " [plan mode — will send plan for approval]" : ""
   const claimInfo = claimedTaskContent
     ? ` (claimed task: ${args.claim_task})`
@@ -461,5 +476,5 @@ export async function executeTeamSpawn(
   // Reset circuit breaker on success
   spawnFailures.delete(teamInfo.teamId)
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
-  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
+  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${isolationInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
 }
