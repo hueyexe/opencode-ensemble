@@ -131,7 +131,7 @@ const plugin: Plugin = async (input) => {
 
     // Start dashboard server (main instance only, not worktree instances)
     if (config.dashboardPort !== 0) {
-      startDashboard(db, config.dashboardPort, { activityBuffer, client }).catch((err) => {
+      startDashboard(db, config.dashboardPort, { activityBuffer, client, host: config.dashboardHost }).catch((err) => {
         log(`init:dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
       })
     }

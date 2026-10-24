@@ -207,6 +207,8 @@ export interface DashboardServer {
 
 /** Optional dependencies for the dashboard server. */
 export interface DashboardOptions {
+  /** Network interface to bind (defaults to loopback). */
+  host?: string
   /** In-memory activity buffer for real-time per-session events. */
   activityBuffer?: ActivityBuffer
   /** SDK client for on-demand session message retrieval. */
@@ -216,7 +218,6 @@ export interface DashboardOptions {
 function sendJson(res: ServerResponse, data: unknown): void {
   res.writeHead(200, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
   })
   res.end(JSON.stringify(data))
 }
@@ -424,7 +425,7 @@ export async function startDashboard(db: Database, port: number, options?: Dashb
       resolve(null)
     })
 
-    server.listen(port, () => {
+    server.listen(port, options?.host ?? "127.0.0.1", () => {
       log(`dashboard:started port=${port} url=http://localhost:${port}`)
       resolve(toDashboardServer(server))
     })

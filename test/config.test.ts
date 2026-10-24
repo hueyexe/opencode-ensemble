@@ -63,6 +63,14 @@ describe("config", () => {
     expect(config.stallThresholdMs).toBe(300_000) // default preserved
   })
 
+  test("defaults dashboardHost to loopback and loads configured host", () => {
+    expect(DEFAULT_CONFIG.dashboardHost).toBe("127.0.0.1")
+    const configDir = path.join(tmpDir, ".opencode")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ dashboardHost: "0.0.0.0" }))
+    expect(loadConfig(tmpDir).dashboardHost).toBe("0.0.0.0")
+  })
+
   test("invalid JSON logs warning and returns defaults", () => {
     const configDir = path.join(tmpDir, ".opencode")
     mkdirSync(configDir, { recursive: true })

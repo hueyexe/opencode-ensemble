@@ -17,6 +17,8 @@ export interface EnsembleConfig {
   rateLimitCapacity?: number
   /** Dashboard server port (default: 4747, 0 to disable) */
   dashboardPort?: number
+  /** Dashboard bind address (default: 127.0.0.1) */
+  dashboardHost?: string
   /** Max peer messages per agent per window before nudge (default: 5, 0 to disable) */
   peerMessageLimit?: number
   /** Time window for peer message rate limiting in ms (default: 300000 = 5 min) */
@@ -42,6 +44,7 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   timeoutMs: 30 * 60 * 1000,
   rateLimitCapacity: 10,
   dashboardPort: 4747,
+  dashboardHost: "127.0.0.1",
   peerMessageLimit: 5,
   peerMessageWindowMs: 300_000,
   defaultModel: "",
@@ -65,6 +68,7 @@ function readConfigFile(filePath: string): Partial<EnsembleConfig> {
     if (typeof raw.timeoutMs === "number") result.timeoutMs = raw.timeoutMs
     if (typeof raw.rateLimitCapacity === "number") result.rateLimitCapacity = raw.rateLimitCapacity
     if (typeof raw.dashboardPort === "number") result.dashboardPort = raw.dashboardPort
+    if (typeof raw.dashboardHost === "string") result.dashboardHost = raw.dashboardHost
     if (typeof raw.peerMessageLimit === "number") result.peerMessageLimit = raw.peerMessageLimit
     if (typeof raw.peerMessageWindowMs === "number") result.peerMessageWindowMs = raw.peerMessageWindowMs
     if (typeof raw.defaultModel === "string") result.defaultModel = raw.defaultModel

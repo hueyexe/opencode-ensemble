@@ -343,7 +343,7 @@ export async function setupEnsemble(
   let dashboard: DashboardServer | null = null
   const dashboardPort = options.dashboardPort ?? config.dashboardPort
   if (dashboardPort !== 0 && !isWorktreeInstance(ctx.location.directory)) {
-    dashboard = await startDashboard(db, dashboardPort, { activityBuffer, client }).catch((err) => {
+    dashboard = await startDashboard(db, dashboardPort, { activityBuffer, client, host: config.dashboardHost }).catch((err) => {
       vlog(`init:dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
       return null
     })
