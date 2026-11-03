@@ -4,17 +4,26 @@ import type { Database } from "./db"
 export interface ParsedModel {
   providerID: string
   modelID: string
+  variant?: string
 }
 
 /**
  * Parse a "provider/model" string into { providerID, modelID } for the SDK.
  * Returns undefined if the string is not in "provider/model" form (empty
  * provider or empty model). The model portion may itself contain slashes.
+ * A trailing "#variant" selects a model variant, e.g. "openai/gpt-6.1-terra#max".
  */
 export function parseModelId(model: string): ParsedModel | undefined {
-  const slash = model.indexOf("/")
-  if (slash <= 0 || slash === model.length - 1) return undefined
-  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
+  const hash = model.indexOf("#")
+  const variant = hash === -1 ? undefined : model.slice(hash + 1) || undefined
+  const base = hash === -1 ? model : model.slice(0, hash)
+  const slash = base.indexOf("/")
+  if (slash <= 0 || slash === base.length - 1) return undefined
+  return {
+    providerID: base.slice(0, slash),
+    modelID: base.slice(slash + 1),
+    ...(variant ? { variant } : {}),
+  }
 }
 
 /**

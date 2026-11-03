@@ -11,6 +11,14 @@ describe("parseModelId", () => {
     })
   })
 
+  test("parses a trailing variant", () => {
+    expect(parseModelId("openai/gpt-6.1-terra#max")).toEqual({
+      providerID: "openai",
+      modelID: "gpt-6.1-terra",
+      variant: "max",
+    })
+  })
+
   test("keeps additional slashes in the model portion", () => {
     expect(parseModelId("openrouter/anthropic/claude")).toEqual({
       providerID: "openrouter",
@@ -41,6 +49,17 @@ describe("getMemberModel", () => {
     expect(getMemberModel(db, "t1", "alice")).toEqual({
       providerID: "anthropic",
       modelID: "claude-sonnet",
+    })
+  })
+
+  test("returns the parsed variant when the member has one set", () => {
+    insertMember(db, "t1", "alice", "sess-alice")
+    db.run("UPDATE team_member SET model = 'openai/gpt-6.1-terra#max' WHERE team_id = 't1' AND name = 'alice'")
+
+    expect(getMemberModel(db, "t1", "alice")).toEqual({
+      providerID: "openai",
+      modelID: "gpt-6.1-terra",
+      variant: "max",
     })
   })
 
