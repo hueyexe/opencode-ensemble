@@ -158,11 +158,12 @@ Configure the port in `.opencode/ensemble.json`:
 
 ```json
 {
-  "dashboardPort": 4747
+  "dashboardPort": 4747,
+  "dashboardHost": "127.0.0.1"
 }
 ```
 
-Set to `0` to disable. The dashboard starts automatically when OpenCode loads the plugin.
+Set `dashboardPort` to `0` to disable. The dashboard starts automatically when OpenCode loads the plugin. `dashboardHost` defaults to loopback; changing it can expose dashboard data to other machines on your network.
 
 ## Install
 
@@ -393,6 +394,7 @@ Configure via JSON files, environment variables, or both. Project config overrid
   "timeoutMs": 1800000,
   "rateLimitCapacity": 10,
   "dashboardPort": 4747,
+  "dashboardHost": "127.0.0.1",
   "defaultModel": "anthropic/claude-sonnet-4-6",
   "modelPool": ["anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
   "modelsByAgent": {},
@@ -414,6 +416,7 @@ All fields are optional. Missing fields use defaults.
 | `timeoutMs` | `1800000` (30 min) | Hard timeout for busy teammates. `0` disables. |
 | `rateLimitCapacity` | `10` | Token bucket capacity for team tool calls. `0` disables. |
 | `dashboardPort` | `4747` | Dashboard server port. `0` disables. |
+| `dashboardHost` | `127.0.0.1` | Dashboard network interface to bind. Keep the loopback default unless you intend to expose the dashboard on your network. |
 | `defaultModel` | `""` | Default model for all agents (e.g. `"anthropic/claude-sonnet-4-6"`). Empty = OpenCode's default. |
 | `modelPool` | `[]` | List of models for rotation/random assignment. |
 | `modelsByAgent` | `{}` | Map agent type to model (e.g. `{"build": "anthropic/claude-opus-4-7"}`). |

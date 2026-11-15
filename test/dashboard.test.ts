@@ -49,10 +49,16 @@ describe("dashboard", () => {
       const res = await fetch(`http://localhost:${port}/api/health`)
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toContain("application/json")
-      expect(res.headers.get("access-control-allow-origin")).toBe("*")
+      expect(res.headers.get("access-control-allow-origin")).toBeNull()
       const body = (await res.json()) as HealthResponse
       expect(body.ensemble).toBe(true)
       expect(typeof body.pid).toBe("number")
+    })
+
+    test("binds to the configured interface", async () => {
+      server = await startDashboard(db, port, { host: "127.0.0.2" })
+      const response = await fetch(`http://127.0.0.2:${port}/api/health`)
+      expect(response.status).toBe(200)
     })
   })
 
@@ -61,7 +67,7 @@ describe("dashboard", () => {
       server = await startDashboard(db, port)
       const res = await fetch(`http://localhost:${port}/api/state`)
       expect(res.status).toBe(200)
-      expect(res.headers.get("access-control-allow-origin")).toBe("*")
+      expect(res.headers.get("access-control-allow-origin")).toBeNull()
       const body = (await res.json()) as StateResponse
       expect(body).toEqual({ version: 1, projects: [], teams: [] })
     })
