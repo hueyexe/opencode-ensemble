@@ -1,0 +1,75 @@
+name: npm drift
+
+on:
+  schedule:
+    # Mondays 09:00 UTC — catch a silently failed publish within a week.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo
+
+            let tag
+            try {
+              const release = await github.rest.repos.getLatestRelease({ owner, repo })
+              tag = release.data.tag_name.replace(/^v/, "")
+            } catch (error) {
+              core.warning(`Could not read the latest GitHub release: ${error.message}`)
+              return
+            }
+
+            const { execFileSync } = require("node:child_process")
+            let npmVersion
+            try {
+              npmVersion = execFileSync(
+                "npm",
+                ["view", "@hueyexe/opencode-ensemble", "version"],
+                { encoding: "utf8" },
+              ).trim()
+            } catch (error) {
+              core.warning(`Could not read the npm latest version: ${error.message}`)
+              return
+            }
+
+            if (npmVersion === tag) {
+              core.info(`npm latest ${npmVersion} matches GitHub release ${tag}`)
+              return
+            }
+
+            const title = `npm drift: npm ${npmVersion} != GitHub ${tag}`
+            const existing = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            })
+            if (existing.data.some((issue) => issue.title === title)) {
+              core.info("A drift issue is already open")
+              return
+            }
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body: [
+                "The published npm package and the newest GitHub release have diverged.",
+                "",
+                `- npm \`latest\`: \`${npmVersion}\``,
+                `- GitHub latest release: \`${tag}\``,
+                "",
+                "This is the failure mode from #49: a publish can fail (expired token, missing 2FA bypass) while the GitHub release still goes out, so users install an older version.",
+                "",
+                "Fix: publish the missing version with `bun publish --access public`, verify with `npm view @hueyexe/opencode-ensemble version`, then close this issue.",
+              ].join("\n"),
+            })
