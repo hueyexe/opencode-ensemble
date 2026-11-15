@@ -80,6 +80,16 @@ export function markDelivered(db: Database, messageId: string): void {
 }
 
 /**
+ * Mark a message as not wake-eligible. Used for follow-up messages from a
+ * teammate that already reported completion: they still reach the system
+ * prompt and team_results, but must not queue a wake that can land after
+ * team_cleanup (#48).
+ */
+export function suppressMessageWake(db: Database, messageId: string): void {
+  db.run("UPDATE team_message SET wake_suppressed = 1 WHERE id = ?", [messageId])
+}
+
+/**
  * Check if a teammate has reported completion to the lead.
  * Returns true if the reported_to_lead flag is set on the member.
  */

@@ -53,7 +53,8 @@ function pendingLeadWake(db: Database, teamId: string): PendingLeadWake | undefi
   const row = db.query(
     `SELECT COUNT(*) as c, GROUP_CONCAT(DISTINCT from_name) as senders
      FROM team_message
-     WHERE team_id = ? AND to_name = 'lead' AND read = 0 AND delivered = 0`,
+     WHERE team_id = ? AND to_name = 'lead' AND read = 0 AND delivered = 0
+       AND wake_suppressed = 0`,
   ).get(teamId) as { c: number; senders: string | null }
   if (row.c === 0) return undefined
 

@@ -1,7 +1,7 @@
 import type { ToolDeps } from "../types"
 import { resolveRecipientSession } from "../types"
 import { requireTeamMember } from "./shared"
-import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
+import { sendMessage, markDelivered, hasReportedCompletion, suppressMessageWake } from "../messaging"
 import { parseModelId, getMemberModel } from "../member-model"
 import { wakeLeadIfPending } from "../wake"
 import { log } from "../log"
@@ -132,6 +132,9 @@ export async function executeTeamMessage(
           .get(teamInfo.teamId, senderName) as { status: string } | null)?.status
     const alreadyReported = teamInfo.role !== "lead" && hasReportedCompletion(deps.db, teamInfo.teamId, senderName)
     if (senderStatus === "shutdown_requested" || senderStatus === "shutdown" || alreadyReported) {
+      // Keep it out of the wake-eligibility count too: the idle backstop must
+      // not queue a wake for this message after the lead has moved on (#48).
+      suppressMessageWake(deps.db, msgId)
       log(`team_message:wake-lead:skip-followup from=${senderName} status=${senderStatus} reported=${alreadyReported}`)
       return `Message sent to ${args.to}.`
     }

@@ -118,6 +118,24 @@ describe("schema migrations", () => {
     expect(row.lead_status).toBe("idle")
   })
 
+  test("migration 13 adds wake_suppressed to team_message with default 0", () => {
+    applyMigrations(db)
+    const cols = db.query("PRAGMA table_info(team_message)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>
+    const col = cols.find(c => c.name === "wake_suppressed")
+    expect(col).toBeTruthy()
+    expect(col?.notnull).toBe(1)
+    expect(String(col?.dflt_value)).toBe("0")
+
+    db.run(
+      "INSERT INTO team (id, name, project_id, lead_session_id, status, delegate, time_created, time_updated) VALUES ('t1', 'team', 'default', 'lead', 'active', 0, 0, 0)"
+    )
+    db.run(
+      "INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES ('m1', 't1', 'alice', 'lead', 'hi', 0, 0)"
+    )
+    const row = db.query("SELECT wake_suppressed FROM team_message WHERE id = 'm1'").get() as { wake_suppressed: number }
+    expect(row.wake_suppressed).toBe(0)
+  })
+
   test("creates team_task table", () => {
     applyMigrations(db)
     const row = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='team_task'").get()

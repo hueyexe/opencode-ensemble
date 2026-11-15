@@ -213,6 +213,11 @@ export const MIGRATIONS: string[] = [
   // session.active() can report idle between steps. The shared DB gives them
   // a synchronous, reliable busy/idle signal (#57).
   `ALTER TABLE team ADD COLUMN lead_status TEXT NOT NULL DEFAULT 'idle';`,
+  // Migration 13: Mark follow-up messages whose immediate wake was suppressed
+  // (post-completion chatter / shutdown acknowledgements). They still reach the
+  // system prompt and team_results, but never count toward a wake, so the idle
+  // backstop cannot queue one that lands after cleanup (#48).
+  `ALTER TABLE team_message ADD COLUMN wake_suppressed INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 /**

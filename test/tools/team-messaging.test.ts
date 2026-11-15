@@ -329,8 +329,9 @@ describe("team_message — lead-bound messages wake the lead", () => {
     // after cleanup (#48).
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(0)
-    const row = deps.db.query("SELECT content FROM team_message WHERE team_id = 't1'").get() as { content: string }
+    const row = deps.db.query("SELECT content, wake_suppressed FROM team_message WHERE team_id = 't1'").get() as { content: string; wake_suppressed: number }
     expect(row.content).toBe("shutting down")
+    expect(row.wake_suppressed).toBe(1)
   })
 
   test("does not wake the lead for follow-up messages after the teammate reported", async () => {
@@ -342,8 +343,9 @@ describe("team_message — lead-bound messages wake the lead", () => {
 
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(0)
-    const row = deps.db.query("SELECT content FROM team_message WHERE team_id = 't1'").get() as { content: string }
+    const row = deps.db.query("SELECT content, wake_suppressed FROM team_message WHERE team_id = 't1'").get() as { content: string; wake_suppressed: number }
     expect(row.content).toBe("ack")
+    expect(row.wake_suppressed).toBe(1)
   })
 
   test("stores message in DB with delivered=0 (system prompt transform delivers content)", async () => {
