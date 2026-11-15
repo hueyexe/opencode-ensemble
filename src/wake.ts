@@ -1,5 +1,6 @@
 import type { Database } from "./db"
 import type { PluginClient } from "./types"
+import { getSessionSelection } from "./member-model"
 import { log } from "./log"
 
 /** Options for a lead wake. */
@@ -111,8 +112,15 @@ export async function wakeLeadIfPending(
       return false
     }
 
-    // Re-check after the async status lookup: the team may have been archived
-    // or purged, or the lead may have drained the inbox in the meantime.
+    // On V1 a wake is a normal user turn, so pass the lead's current agent and
+    // model explicitly to stop OpenCode falling back to Build/default (#37).
+    // V2 wakes are synthetic and ignore both, so skip the lookup there.
+    const selection = client.agent
+      ? {}
+      : await getSessionSelection(client, before.leadSessionID).catch(() => ({}))
+
+    // Re-check after the async lookups: the team may have been archived or
+    // purged, or the lead may have drained the inbox in the meantime.
     const after = pendingLeadWake(db, teamId)
     if (!after) {
       log(`wake:skip team=${teamId} reason=drained`)
@@ -125,6 +133,8 @@ export async function wakeLeadIfPending(
       sessionID: after.leadSessionID,
       parts: [{ type: "text", text: `[System: ${after.count} new team message(s)${senderText}] — use team_results to read them` }],
       synthetic: true,
+      ...(selection.agent ? { agent: selection.agent } : {}),
+      ...(selection.model ? { model: selection.model } : {}),
     }).catch((err) => {
       log(`wake:send:failed team=${teamId} err=${err instanceof Error ? err.message : String(err)}`)
     })

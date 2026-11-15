@@ -133,6 +133,22 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
     await expect(wakeLeadIfPending(deps.client, deps.db, "t1")).resolves.toBe(true)
     expect(wakes(deps)).toHaveLength(1)
   })
+
+  test("preserves the lead's current agent and model on V1 wakes (#37)", async () => {
+    sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
+    deps.client.session.messages = async () => ({
+      data: [{
+        info: { role: "user", agent: "plan", model: { providerID: "anthropic", modelID: "claude-sonnet" } },
+        parts: [{ type: "text", text: "stay in plan mode" }],
+      }],
+    })
+
+    await wakeLeadIfPending(deps.client, deps.db, "t1")
+
+    const call = wakes(deps)[0] as { agent?: string; model?: unknown }
+    expect(call.agent).toBe("plan")
+    expect(call.model).toEqual({ providerID: "anthropic", modelID: "claude-sonnet" })
+  })
 })
 
 describe("team_message wake coalescing (issue #57)", () => {

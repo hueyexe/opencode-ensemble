@@ -4,7 +4,7 @@ import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
 import { notifyLead } from "../notify"
 import { releaseMemberTasks } from "../tasks"
-import { parseModelId } from "../member-model"
+import { parseModelId, formatModelId, getSessionSelection } from "../member-model"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
 import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
@@ -14,13 +14,15 @@ export const spawnFailures = new Map<string, { count: number; lastError: string 
 
 /**
  * Resolve which model to use for a spawned agent.
- * Priority: explicit arg > modelsByAgent > rotation/random > defaultModel > undefined.
+ * Priority: explicit arg > modelsByAgent > rotation/random > defaultModel >
+ * the lead conversation's current model (fallbackModel) > undefined.
  */
 export function resolveModel(
   explicitModel: string | undefined,
   agentType: string,
   teamMemberCount: number,
   config: Required<EnsembleConfig>,
+  fallbackModel?: string,
 ): string | undefined {
   if (explicitModel) return explicitModel
   if (config.modelsByAgent[agentType]) return config.modelsByAgent[agentType]
@@ -31,7 +33,7 @@ export function resolveModel(
     return config.modelPool[Math.floor(Math.random() * config.modelPool.length)]
   }
   if (config.defaultModel) return config.defaultModel
-  return undefined
+  return fallbackModel
 }
 
 /** Timeout for worktree.create and session.create to prevent hanging on git lock contention. */
@@ -254,7 +256,21 @@ export async function executeTeamSpawn(
   const now = Date.now()
   // Resolve model before DB insert so the stored value matches what promptAsync uses
   const memberCount = (deps.db.query("SELECT COUNT(*) as c FROM team_member WHERE team_id = ?").get(teamInfo.teamId) as { c: number }).c
-  const resolvedModel = resolveModel(args.model, agent, memberCount, deps.config)
+  let resolvedModel = resolveModel(args.model, agent, memberCount, deps.config)
+  if (!resolvedModel) {
+    // No explicit/config model: inherit the lead conversation's current model
+    // (issue #55). Read at spawn time, bounded so a slow lookup cannot hang
+    // the spawn; unknown selection falls through to the host default.
+    const leadSelection = await withTimeout(
+      getSessionSelection(deps.client, sessionId),
+      5000,
+      "lead model lookup",
+    ).catch(() => undefined)
+    if (leadSelection?.model) {
+      resolvedModel = formatModelId(leadSelection.model)
+      log(`spawn:model:inherited name=${args.name} model=${resolvedModel}`)
+    }
+  }
   if (resolvedModel) log(`spawn:model name=${args.name} model=${resolvedModel}`)
 
   deps.db.run(

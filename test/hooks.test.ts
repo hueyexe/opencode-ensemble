@@ -6,7 +6,7 @@ import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
 import { sendMessage } from "../src/messaging"
-import { mockClient } from "./helpers"
+import { mockClient, flushWakes } from "./helpers"
 
 function setupDb(): Database {
   const db = new Database(":memory:")
@@ -800,11 +800,12 @@ describe("handleSessionErrorEvent", () => {
     expect(msgs[0]?.content).toContain("Tool team_message failed")
   })
 
-  test("actively wakes the lead so the error message is delivered", () => {
+  test("actively wakes the lead so the error message is delivered", async () => {
     handleSessionErrorEvent(db, registry, client, "scout-sess", {
       name: "UnknownError",
       data: { message: "boom" },
     })
+    await flushWakes()
 
     const wakes = client.calls.filter(c => c.method === "session.promptAsync")
     expect(wakes).toHaveLength(1)

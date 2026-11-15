@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { setupDeps, insertTeam, insertMember } from "./helpers"
+import { setupDeps, insertTeam, insertMember, flushWakes } from "./helpers"
 import { executeTeamCreate } from "../src/tools/team-create"
 import { executeTeamSpawn } from "../src/tools/team-spawn"
 import { spawnFailures } from "../src/tools/team-spawn"
@@ -266,6 +266,7 @@ describe("stress: stall detection via watchdog", () => {
 
     deps.client.calls.length = 0
     await watchdog.checkStalled()
+    await flushWakes()
 
     // Teammate was nudged via promptAsync
     const nudges = deps.client.calls.filter(c =>
@@ -313,10 +314,12 @@ describe("stress: stall detection via watchdog", () => {
     })
 
     await watchdog.checkStalled()
+    await flushWakes()
     deps.client.calls.length = 0
 
     // Second check — already reported, no new nudge
     await watchdog.checkStalled()
+    await flushWakes()
     const nudges = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(nudges).toHaveLength(0)
 
@@ -716,6 +719,41 @@ describe("stress: model resolution", () => {
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     const model = (promptCalls[0]!.args[0] as { model?: unknown }).model
     expect(model).toBeUndefined()
+  })
+
+  test("inherits the lead conversation's current model when nothing else matches (#55)", async () => {
+    deps.client.session.messages = async () => ({
+      data: [{
+        info: { role: "user", agent: "plan", model: { providerID: "anthropic", modelID: "claude-sonnet", variant: "max" } },
+        parts: [{ type: "text", text: "build me a thing" }],
+      }],
+    })
+    await executeTeamCreate(deps, { name: "model-inherit" }, lead)
+    await executeTeamSpawn(deps, { name: "a", agent: "build", prompt: "t", worktree: false }, lead)
+
+    const member = deps.db.query("SELECT model FROM team_member WHERE name = 'a'").get() as { model: string | null }
+    expect(member.model).toBe("anthropic/claude-sonnet#max")
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    const model = (promptCalls[0]!.args[0] as { model?: unknown }).model
+    expect(model).toEqual({ providerID: "anthropic", modelID: "claude-sonnet", variant: "max" })
+  })
+
+  test("explicit and configured models still win over the inherited model (#55)", async () => {
+    deps.client.session.messages = async () => ({
+      data: [{ info: { role: "user", agent: "plan", model: { providerID: "anthropic", modelID: "claude-sonnet" } }, parts: [] }],
+    })
+    deps.config = { ...deps.config, defaultModel: "opencode/zen-sonnet-4-6" }
+    await executeTeamCreate(deps, { name: "model-precedence" }, lead)
+
+    await executeTeamSpawn(deps, { name: "explicit", agent: "build", prompt: "t", model: "google/gemini-3.1-pro-preview", worktree: false }, lead)
+    await executeTeamSpawn(deps, { name: "configured", agent: "build", prompt: "t", worktree: false }, lead)
+
+    const members = deps.db.query("SELECT name, model FROM team_member ORDER BY name").all() as Array<{ name: string; model: string | null }>
+    expect(members).toEqual([
+      { name: "configured", model: "opencode/zen-sonnet-4-6" },
+      { name: "explicit", model: "google/gemini-3.1-pro-preview" },
+    ])
   })
 })
 

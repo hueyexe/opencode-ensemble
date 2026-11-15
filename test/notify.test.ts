@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { setupDeps, insertTeam, insertMember } from "./helpers"
+import { setupDeps, insertTeam, insertMember, flushWakes } from "./helpers"
 import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "../src/notify"
 
 describe("notifyTeamEvent", () => {
@@ -141,37 +141,41 @@ describe("notifyLead", () => {
     expect(msgs[0]!.content).toBe("alice failed")
   })
 
-  test("actively wakes the lead via promptAsync", () => {
+  test("actively wakes the lead via promptAsync", async () => {
     notifyLead(deps.client, deps.db, "t1", "alice failed")
+    await flushWakes()
     const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(wakes).toHaveLength(1)
     expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
   })
 
-  test("wakes the lead even when all teammates are terminal (the error/abort case)", () => {
+  test("wakes the lead even when all teammates are terminal (the error/abort case)", async () => {
     insertMember(deps.db, "t1", "alice", "sess-a", "error")
     notifyLead(deps.client, deps.db, "t1", "alice hit an error and aborted")
+    await flushWakes()
     const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(wakes).toHaveLength(1)
     expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess")
   })
 
-  test("wakes a second team's own lead (per-team lead lookup)", () => {
+  test("wakes a second team's own lead (per-team lead lookup)", async () => {
     // A valid teamId is required for persistence (FK); each team wakes its own
     // lead session.
     insertTeam(deps.db, "t2", "second-team", "lead-sess-2")
     notifyLead(deps.client, deps.db, "t2", "second team message")
+    await flushWakes()
     const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(wakes).toHaveLength(1)
     expect((wakes[0]!.args[0] as { sessionID: string }).sessionID).toBe("lead-sess-2")
   })
 
-  test("does not wake when the team has no lead session (persist still attempted)", () => {
+  test("does not wake when the team has no lead session (persist still attempted)", async () => {
     // Empty lead_session_id (e.g. lead row lost): the message is persisted but
     // notifyLead has nothing to wake.
     insertTeam(deps.db, "t2", "second-team", "lead-sess-2")
     deps.db.run("UPDATE team SET lead_session_id = '' WHERE id = 't2'")
     expect(() => notifyLead(deps.client, deps.db, "t2", "second team message")).not.toThrow()
+    await flushWakes()
     const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(wakes).toHaveLength(0)
     const msgs = deps.db.query("SELECT id FROM team_message WHERE team_id = 't2'").all() as unknown[]
