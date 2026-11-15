@@ -124,6 +124,13 @@ describe("getUndeliveredMessages", () => {
     expect(undelivered).toHaveLength(0)
   })
 
+  test("does not return messages already read via team_results", () => {
+    const id = sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "msg1" })
+    db.run("UPDATE team_message SET read = 1 WHERE id = ?", [id])
+    const undelivered = getUndeliveredMessages(db, "t1")
+    expect(undelivered).toHaveLength(0)
+  })
+
   test("returns empty array when no messages exist", () => {
     const undelivered = getUndeliveredMessages(db, "t1")
     expect(undelivered).toHaveLength(0)

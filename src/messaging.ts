@@ -62,11 +62,13 @@ export function broadcastMessage(db: Database, input: BroadcastMessageInput): st
 }
 
 /**
- * Get all undelivered messages for a team.
+ * Get all undelivered messages for a team. Messages already read via
+ * team_results are excluded — re-injecting or re-sending them would duplicate
+ * content the recipient has already seen.
  */
 export function getUndeliveredMessages(db: Database, teamId: string): MessageRow[] {
   return db.query(
-    "SELECT * FROM team_message WHERE team_id = ? AND delivered = 0 ORDER BY time_created ASC"
+    "SELECT * FROM team_message WHERE team_id = ? AND read = 0 AND delivered = 0 ORDER BY time_created ASC"
   ).all(teamId) as MessageRow[]
 }
 

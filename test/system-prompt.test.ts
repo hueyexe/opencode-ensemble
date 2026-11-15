@@ -124,6 +124,21 @@ describe("buildLeadSystemPrompt", () => {
     expect(result).not.toContain("Team Messages")
   })
 
+  test("does not re-inject messages already read via team_results", () => {
+    const db = setupDb()
+    insertTeam(db, "t7", "clean-team", "lead-sess")
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, read, time_created) VALUES (?, ?, ?, ?, ?, 0, 1, ?)",
+      ["m1", "t7", "alice", "lead", "already read", Date.now()])
+
+    const result = buildLeadSystemPrompt(db, "t7")
+
+    expect(result).not.toContain("already read")
+    expect(result).not.toContain("Team Messages")
+    // Read via team_results, so it must not be marked delivered again.
+    const row = db.query("SELECT delivered FROM team_message WHERE id = 'm1'").get() as { delivered: number }
+    expect(row.delivered).toBe(0)
+  })
+
   test("state-only omits message payloads but reports the unread count (#53)", () => {
     const db = setupDb()
     insertTeam(db, "t8", "cache-team", "lead-sess")

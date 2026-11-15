@@ -292,7 +292,7 @@ const plugin: Plugin = async (input) => {
           if (member && !hasReportedCompletion(db, member.team_id, member.name)) {
             const staleThreshold = Date.now() - 5000
             const peerMsgs = db.query(
-              "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = ? AND delivered = 0 AND time_created < ?"
+              "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = ? AND read = 0 AND delivered = 0 AND time_created < ?"
             ).get(member.team_id, member.name, staleThreshold) as { c: number }
             if (peerMsgs.c > 0) {
               log(`wake-peer: ${member.name} has ${peerMsgs.c} pending peer messages`)
