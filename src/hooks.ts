@@ -242,9 +242,9 @@ export interface SessionErrorPayload {
  * as a system message to the lead, so otherwise-silent failures are visible.
  *
  * The lead is actively woken via notifyLead so the message is delivered even
- * when the errored teammate was the last busy member (the "all done" gate in
- * the passive wake path would otherwise strand the message). The teammate
- * itself is NOT auto-resumed — recovery is left to the lead's judgement.
+ * when the errored teammate was the last busy member (the passive wake path
+ * only retries on the lead's next idle event). The teammate itself is NOT
+ * auto-resumed — recovery is left to the lead's judgement.
  *
  * Ignored when:
  * - sessionID is undefined

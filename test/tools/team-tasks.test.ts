@@ -144,6 +144,17 @@ describe("team_tasks_add", () => {
     expect(rows.map(row => row.content)).toEqual(["A", "B", "C"])
   })
 
+  test("completed prerequisites do not count toward taskDepthLimit", async () => {
+    deps.config = { ...deps.config, taskDepthLimit: 1 }
+    const a = (await executeTeamTasksAdd(deps, { tasks: [{ content: "A", priority: "low" }] }, "sess-alice")).match(/task_\S+/)![0]!
+    await executeTeamClaim(deps, { task_id: a }, "sess-alice")
+    await executeTeamTasksComplete(deps, { task_id: a }, "sess-alice")
+
+    // A is resolved, so B is immediately actionable at active depth 1.
+    await expect(executeTeamTasksAdd(deps, { tasks: [{ content: "B", priority: "low", depends_on: [a] }] }, "sess-alice"))
+      .resolves.toContain("Added 1 task")
+  })
+
   test("taskDepthLimit 0 (default) allows any depth", async () => {
     let parent: string | undefined
     for (const content of ["A", "B", "C", "D", "E"]) {

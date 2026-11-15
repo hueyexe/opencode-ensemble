@@ -204,6 +204,10 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE team_member ADD COLUMN retry_attempt INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_provider TEXT;
    ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+  // Migration 11: Persist the last lead-wake time on the team. Worktree
+  // teammate instances share the SQLite file but not module state, so an
+  // in-memory cooldown cannot coalesce wakes across instances (issue #57).
+  `ALTER TABLE team ADD COLUMN last_wake_at INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 /**

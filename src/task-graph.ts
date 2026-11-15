@@ -35,12 +35,23 @@ export function parseTaskDependencies(value: string | null): string[] {
   return []
 }
 
+/** Options for graph inspection. */
+export interface TaskGraphOptions {
+  /**
+   * Ignore edges whose prerequisite is already completed/cancelled. Use this
+   * for depth-limit enforcement so finished work does not accumulate into a
+   * lifetime chain that blocks follow-up tasks.
+   */
+  activeOnly?: boolean
+}
+
 /**
  * Inspect a task graph. Depth is the longest prerequisite path, with roots at
- * 1 (a four-task chain has depth 4). Cycles are reported and assigned depth 0
- * so callers can reject additions that would build on corrupt data.
+ * 1 (a four-task chain has depth 4). Cyclic/cycle-affected tasks are reported
+ * and omitted from depthByTask so callers can reject additions that would
+ * build on corrupt data.
  */
-export function inspectTaskGraph(tasks: TaskGraphNode[]): TaskGraphInfo {
+export function inspectTaskGraph(tasks: TaskGraphNode[], options: TaskGraphOptions = {}): TaskGraphInfo {
   const byId = new Map(tasks.map(task => [task.id, task]))
   const deps = new Map<string, string[]>()
   const children = new Map<string, string[]>()
@@ -55,10 +66,12 @@ export function inspectTaskGraph(tasks: TaskGraphNode[]): TaskGraphInfo {
   tasks.forEach(task => {
     const valid: string[] = []
     for (const depId of task.dependsOn) {
-      if (!byId.has(depId)) {
+      const dependency = byId.get(depId)
+      if (!dependency) {
         missing.add(depId)
         continue
       }
+      if (options.activeOnly && (dependency.status === "completed" || dependency.status === "cancelled")) continue
       if (valid.includes(depId)) continue
       valid.push(depId)
       children.get(depId)?.push(task.id)
@@ -74,8 +87,17 @@ export function inspectTaskGraph(tasks: TaskGraphNode[]): TaskGraphInfo {
     const id = queue[head]
     head++
     if (!id) continue
+    const task = byId.get(id)
     const parents = deps.get(id) ?? []
-    depthByTask.set(id, parents.length === 0 ? 1 : Math.max(...parents.map(parent => depthByTask.get(parent) ?? 1)) + 1)
+    const resolved = options.activeOnly && (task?.status === "completed" || task?.status === "cancelled")
+    depthByTask.set(
+      id,
+      resolved
+        ? 0
+        : parents.length === 0
+          ? 1
+          : Math.max(...parents.map(parent => depthByTask.get(parent) ?? 1)) + 1,
+    )
     for (const child of children.get(id) ?? []) {
       const next = (indegree.get(child) ?? 1) - 1
       indegree.set(child, next)

@@ -91,10 +91,10 @@ export async function notifyWorkingProgress(
  * so the message is delivered on the lead's next turn.
  *
  * This is the delivery path for system events (teammate errors, timeouts,
- * stalls, spawn failures). The wake is forced past the busy check so an
- * errored/aborted teammate is not stranded while the lead is working; the
- * wake itself is still guarded against archived/purged teams and coalesced
- * with normal wakes (#48, #57).
+ * stalls, spawn failures). The wake is forced past the busy check and the
+ * coalescing cooldown so an errored/aborted teammate is not stranded while
+ * the lead is working; the wake itself is still guarded against
+ * archived/purged teams (#48, #57).
  *
  * The message is persisted first; the wake is fire-and-forget (never awaited,
  * per the plugin's promptAsync invariant). If the wake fails, the message is

@@ -46,30 +46,31 @@ jobs:
               return
             }
 
-            const title = `npm drift: npm ${npmVersion} != GitHub ${tag}`
+            const title = "npm drift detected"
+            const body = [
+              "The published npm package and the newest GitHub release have diverged.",
+              "",
+              `- npm \`latest\`: \`${npmVersion}\``,
+              `- GitHub latest release: \`${tag}\``,
+              "",
+              "This is the failure mode from #49: a publish can fail (expired token, missing 2FA bypass) while the GitHub release still goes out, so users install an older version.",
+              "",
+              "Fix: publish the missing version with `bun publish --access public`, verify with `npm view @hueyexe/opencode-ensemble version`, then close this issue.",
+            ].join("\n")
+
             const existing = await github.rest.issues.listForRepo({
               owner,
               repo,
               state: "open",
               per_page: 100,
             })
-            if (existing.data.some((issue) => issue.title === title)) {
-              core.info("A drift issue is already open")
+            const open = existing.data.find((issue) => issue.title === title)
+            if (open) {
+              if (open.body !== body) {
+                await github.rest.issues.update({ owner, repo, issue_number: open.number, body })
+              }
+              core.info("Updated the existing drift issue")
               return
             }
 
-            await github.rest.issues.create({
-              owner,
-              repo,
-              title,
-              body: [
-                "The published npm package and the newest GitHub release have diverged.",
-                "",
-                `- npm \`latest\`: \`${npmVersion}\``,
-                `- GitHub latest release: \`${tag}\``,
-                "",
-                "This is the failure mode from #49: a publish can fail (expired token, missing 2FA bypass) while the GitHub release still goes out, so users install an older version.",
-                "",
-                "Fix: publish the missing version with `bun publish --access public`, verify with `npm view @hueyexe/opencode-ensemble version`, then close this issue.",
-              ].join("\n"),
-            })
+            await github.rest.issues.create({ owner, repo, title, body })

@@ -88,6 +88,21 @@ describe("schema migrations", () => {
     expect(row.retry_message).toBeNull()
   })
 
+  test("migration 11 adds persisted last_wake_at to team with default 0", () => {
+    applyMigrations(db)
+    const cols = db.query("PRAGMA table_info(team)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>
+    const col = cols.find(c => c.name === "last_wake_at")
+    expect(col).toBeTruthy()
+    expect(col?.notnull).toBe(1)
+    expect(String(col?.dflt_value)).toBe("0")
+
+    db.run(
+      "INSERT INTO team (id, name, project_id, lead_session_id, status, delegate, time_created, time_updated) VALUES ('t1', 'team', 'default', 'lead', 'active', 0, 0, 0)"
+    )
+    const row = db.query("SELECT last_wake_at FROM team WHERE id = 't1'").get() as { last_wake_at: number }
+    expect(row.last_wake_at).toBe(0)
+  })
+
   test("creates team_task table", () => {
     applyMigrations(db)
     const row = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='team_task'").get()

@@ -106,7 +106,9 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
         }
       }
       lines.push("--- End Messages ---")
-    } else if (teamStateMode === "state-only") {
+    } else {
+      // state-only and off both surface the count (not the payload) so a
+      // message arriving mid-turn cannot be silently consumed by the transform.
       lines.push("", `Unread messages: ${pendingMessages.length} — use team_results to read them.`)
     }
     // Mark delivered in every mode so the wake path does not re-fire for
@@ -217,7 +219,7 @@ export function buildTeammateSystemPrompt(
         }
       }
       lines.push("--- End Messages ---")
-    } else if (teamStateMode === "state-only") {
+    } else {
       lines.push("", `Unread messages: ${pendingMessages.length} — use team_results to read them.`)
     }
     for (const msg of pendingMessages) markDelivered(db, msg.id)

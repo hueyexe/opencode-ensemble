@@ -175,7 +175,7 @@ describe("buildLeadSystemPrompt", () => {
     expect(result).not.toContain("Tasks:")
   })
 
-  test("off output is stable across member/task/message changes (cache-safe)", () => {
+  test("off output is stable across member/task changes (cache-safe)", () => {
     const db = setupDb()
     insertTeam(db, "t10", "stable-team", "lead-sess")
     const config = { ...DEFAULT_CONFIG, systemPromptTeamState: "off" as const }
@@ -184,11 +184,23 @@ describe("buildLeadSystemPrompt", () => {
 
     insertMember(db, "t10", "alice", "sess-a", "busy")
     insertTask(db, "t10", "task-1", "in_progress")
-    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
-      ["m1", "t10", "alice", "lead", "new", Date.now()])
     const after = buildLeadSystemPrompt(db, "t10", config)
 
     expect(after).toBe(before)
+  })
+
+  test("off still surfaces an unread count when a message arrives mid-turn", () => {
+    const db = setupDb()
+    insertTeam(db, "t11", "stable-team", "lead-sess")
+    const config = { ...DEFAULT_CONFIG, systemPromptTeamState: "off" as const }
+
+    const before = buildLeadSystemPrompt(db, "t11", config)
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m1", "t11", "alice", "lead", "mid-turn-payload", Date.now()])
+    const after = buildLeadSystemPrompt(db, "t11", config)
+
+    expect(after).toContain("Unread messages: 1")
+    expect(after).not.toContain("mid-turn-payload")
   })
 })
 
@@ -230,7 +242,7 @@ describe("buildTeammateSystemPrompt", () => {
     db.run("UPDATE team_message SET delivered = 0 WHERE id = 'm1'")
     const off = buildTeammateSystemPrompt(db, "t1", "alice", { ...DEFAULT_CONFIG, systemPromptTeamState: "off" })
     expect(off).not.toContain("secret peer payload")
-    expect(off).not.toContain("Unread messages")
+    expect(off).toContain("Unread messages: 1")
     expect(off).toContain('"alice"')
   })
 })

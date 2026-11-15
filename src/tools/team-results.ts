@@ -11,8 +11,13 @@ interface UnreadMessageRow {
 }
 
 /**
- * Retrieve unread messages from the team message store.
+ * Retrieve unread messages from the caller's inbox.
  * Optionally filter by sender name. Marks returned messages as read.
+ *
+ * The query is recipient-scoped: a teammate calling team_results must not
+ * drain messages addressed to the lead (or to another teammate), or those
+ * messages would disappear from the recipient's system prompt and wake path.
+ * Broadcast rows (to_name IS NULL) are visible to every team member.
  */
 export async function executeTeamResults(
   deps: ToolDeps,
@@ -20,18 +25,23 @@ export async function executeTeamResults(
   sessionId: string,
 ): Promise<string> {
   const team = requireTeamMember(deps, sessionId)
+  const inbox = team.role === "lead" ? "lead" : (team.memberName ?? "")
 
   const rows = args.from
     ? (deps.db
         .query(
-          "SELECT id, from_name, content, time_created FROM team_message WHERE team_id = ? AND read = 0 AND from_name = ? ORDER BY time_created ASC",
+          `SELECT id, from_name, content, time_created FROM team_message
+           WHERE team_id = ? AND read = 0 AND (to_name = ? OR to_name IS NULL) AND from_name = ?
+           ORDER BY time_created ASC`,
         )
-        .all(team.teamId, args.from) as UnreadMessageRow[])
+        .all(team.teamId, inbox, args.from) as UnreadMessageRow[])
     : (deps.db
         .query(
-          "SELECT id, from_name, content, time_created FROM team_message WHERE team_id = ? AND read = 0 ORDER BY time_created ASC",
+          `SELECT id, from_name, content, time_created FROM team_message
+           WHERE team_id = ? AND read = 0 AND (to_name = ? OR to_name IS NULL)
+           ORDER BY time_created ASC`,
         )
-        .all(team.teamId) as UnreadMessageRow[])
+        .all(team.teamId, inbox) as UnreadMessageRow[])
 
   if (rows.length === 0) return "No unread messages."
 

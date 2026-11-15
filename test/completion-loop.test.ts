@@ -6,6 +6,7 @@ import { executeTeamMessage } from "../src/tools/team-message"
 import { handleSessionStatusEvent } from "../src/hooks"
 import { hasReportedCompletion } from "../src/messaging"
 import { sendMessage } from "../src/messaging"
+import { wakeLeadIfPending } from "../src/wake"
 
 type Deps = ReturnType<typeof setupDeps>
 
@@ -84,17 +85,13 @@ describe("issue #3: completion loop prevention", () => {
     expect(result).toContain("completed")
   })
 
-  test("wake-lead skips when all teammates are ready/shutdown", async () => {
+  test("wake-lead skips when the report was already delivered", async () => {
     const { teamId } = await spawnAndComplete("done-team", "dave")
 
-    // Insert another undelivered message to lead (simulating the loop)
-    sendMessage(deps.db, { teamId, from: "dave", to: "lead", content: "duplicate" })
-
-    // All members should be in a terminal state
-    const activeBusy = deps.db.query(
-      "SELECT COUNT(*) as c FROM team_member WHERE team_id = ? AND status NOT IN ('ready', 'shutdown', 'error')"
-    ).get(teamId) as { c: number }
-    expect(activeBusy.c).toBe(0)
+    // The system prompt would normally mark the report delivered. With no
+    // unseen messages left, the passive wake must not fire again.
+    deps.db.run("UPDATE team_message SET delivered = 1 WHERE team_id = ? AND to_name = 'lead'", [teamId])
+    expect(await wakeLeadIfPending(deps.client, deps.db, teamId)).toBe(false)
   })
 
   test("peer-flush skips for completed teammates", async () => {

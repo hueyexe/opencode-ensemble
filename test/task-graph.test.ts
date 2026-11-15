@@ -56,6 +56,22 @@ describe("inspectTaskGraph", () => {
     expect(graph.depthByTask.get("a")).toBe(1)
   })
 
+  test("activeOnly treats completed/cancelled prerequisites as resolved roots", () => {
+    const tasks = [
+      node("a", [], "completed"),
+      node("b", ["a"], "pending"),
+      node("c", ["b"], "cancelled"),
+      node("d", ["b", "c"], "pending"),
+    ]
+    expect(inspectTaskGraph(tasks).depthByTask.get("d")).toBe(4)
+    const active = inspectTaskGraph(tasks, { activeOnly: true })
+    // Resolved tasks contribute depth 0, so follow-up work starts at 1.
+    expect(active.depthByTask.get("a")).toBe(0)
+    expect(active.depthByTask.get("b")).toBe(1)
+    expect(active.depthByTask.get("c")).toBe(0)
+    expect(active.depthByTask.get("d")).toBe(2)
+  })
+
   test("handles a 1,000-node chain iteratively", () => {
     const nodes = Array.from({ length: 1000 }, (_, index) =>
       node(`t${index}`, index === 0 ? [] : [`t${index - 1}`]))

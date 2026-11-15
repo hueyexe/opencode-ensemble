@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamResults } from "../../src/tools/team-results"
-import { sendMessage } from "../../src/messaging"
+import { sendMessage, broadcastMessage } from "../../src/messaging"
 
 describe("team_results", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -54,6 +54,30 @@ describe("team_results", () => {
     expect(aliceRead.read).toBe(1)
     const bobRead = deps.db.query("SELECT read FROM team_message WHERE id = ?").get(msgId2) as { read: number }
     expect(bobRead.read).toBe(0)
+  })
+
+  test("a teammate cannot drain the lead's inbox", async () => {
+    const leadMsg = sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "for the lead" })
+    const bobMsg = sendMessage(deps.db, { teamId: "t1", from: "alice", to: "bob", content: "for bob" })
+
+    const result = await executeTeamResults(deps, {}, "sess-bob")
+
+    expect(result).toContain("for bob")
+    expect(result).not.toContain("for the lead")
+    const leadRow = deps.db.query("SELECT read FROM team_message WHERE id = ?").get(leadMsg) as { read: number }
+    expect(leadRow.read).toBe(0)
+    const bobRow = deps.db.query("SELECT read FROM team_message WHERE id = ?").get(bobMsg) as { read: number }
+    expect(bobRow.read).toBe(1)
+  })
+
+  test("broadcasts remain visible via team_results", async () => {
+    const id = broadcastMessage(deps.db, { teamId: "t1", from: "alice", content: "team-wide update" })
+
+    const bobResult = await executeTeamResults(deps, {}, "sess-bob")
+    expect(bobResult).toContain("team-wide update")
+
+    const row = deps.db.query("SELECT read FROM team_message WHERE id = ?").get(id) as { read: number }
+    expect(row.read).toBe(1)
   })
 
   test("does not return already-read messages", async () => {

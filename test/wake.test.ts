@@ -1,6 +1,11 @@
 import { describe, test, expect, beforeEach } from "bun:test"
+import { Database as BunDatabase } from "bun:sqlite"
+import { mkdtempSync, rmSync } from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
 import { sendMessage, markDelivered } from "../src/messaging"
+import { applyMigrations } from "../src/schema"
 import { executeTeamMessage } from "../src/tools/team-message"
 import { executeTeamResults } from "../src/tools/team-results"
 import { wakeLeadIfPending, resetWakeState } from "../src/wake"
@@ -101,6 +106,16 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
     expect(wakes(deps)).toHaveLength(0)
   })
 
+  test("queues a wake for a busy lead on V2 (synthetic queue delivery)", async () => {
+    sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
+    deps.client.agent = { readOnly: async () => undefined }
+    deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })
+
+    const sent = await wakeLeadIfPending(deps.client, deps.db, "t1")
+    expect(sent).toBe(true)
+    expect(wakes(deps)).toHaveLength(1)
+  })
+
   test("force sends even when the lead is busy (system/error notifications)", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "system", to: "lead", content: "alice failed" })
     deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })
@@ -119,6 +134,53 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
       wakeLeadIfPending(deps.client, deps.db, "t1"),
     ])
     expect(wakes(deps)).toHaveLength(1)
+  })
+
+  test("schedules a trailing retry after a cooldown skip", async () => {
+    sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "first" })
+    expect(await wakeLeadIfPending(deps.client, deps.db, "t1", { cooldownMs: 10 })).toBe(true)
+
+    sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "second" })
+    expect(await wakeLeadIfPending(deps.client, deps.db, "t1", { cooldownMs: 10 })).toBe(false)
+
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(wakes(deps)).toHaveLength(2)
+  })
+
+  test("force bypasses the cooldown for system/error notifications", async () => {
+    sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "first" })
+    expect(await wakeLeadIfPending(deps.client, deps.db, "t1")).toBe(true)
+
+    sendMessage(deps.db, { teamId: "t1", from: "system", to: "lead", content: "error" })
+    expect(await wakeLeadIfPending(deps.client, deps.db, "t1", { force: true })).toBe(true)
+    expect(wakes(deps)).toHaveLength(2)
+  })
+
+  test("cooldown is persisted across plugin instances sharing a DB file", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ensemble-wake-"))
+    const file = path.join(dir, "ensemble.db")
+    const db1 = new BunDatabase(file)
+    const db2 = new BunDatabase(file)
+    for (const db of [db1, db2]) {
+      db.exec("PRAGMA journal_mode=WAL")
+      db.exec("PRAGMA foreign_keys=ON")
+      applyMigrations(db)
+    }
+    try {
+      insertTeam(db1, "t1", "my-team", "lead-sess")
+      sendMessage(db1, { teamId: "t1", from: "alice", to: "lead", content: "first" })
+      expect(await wakeLeadIfPending(deps.client, db1, "t1")).toBe(true)
+
+      // A second connection represents another plugin instance (e.g. a
+      // teammate worktree). The cooldown lives in the DB, so it still applies.
+      sendMessage(db2, { teamId: "t1", from: "alice", to: "lead", content: "second" })
+      expect(await wakeLeadIfPending(deps.client, db2, "t1")).toBe(false)
+      expect(wakes(deps)).toHaveLength(1)
+    } finally {
+      db1.close()
+      db2.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("re-checks team state after the status lookup (cleanup between schedule and send)", async () => {

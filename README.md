@@ -210,11 +210,9 @@ This installs globally and writes the config entry for you. To update later: `op
 }
 ```
 
-OpenCode auto-installs npm plugins at startup. To update, bump the version number in your config and restart OpenCode.
+OpenCode auto-installs npm plugins at startup. To update, change the version spec in your config (or keep `@latest`) and restart OpenCode.
 
-**Why pin versions?** OpenCode has a [known bug](https://github.com/anomalyco/opencode/issues/6774) where unpinned plugins (e.g., `"@hueyexe/opencode-ensemble"`) get cached on first install and never auto-update, even after restarting. Pinning to a specific version avoids this — when you change the version string, OpenCode sees a new package spec and installs it fresh.
-
-If you're stuck on an old version, clear the cache manually:
+**If updates do not appear:** OpenCode has a [known bug](https://github.com/anomalyco/opencode/issues/6774) where unpinned plugins (e.g., `"@hueyexe/opencode-ensemble"`) get cached on first install and never auto-update, even after restarting. If you hit it, pin an exact version tag (for example, `@0.21.0`) and bump it when you upgrade, or clear the cache manually:
 
 ```bash
 rm -rf ~/.cache/opencode/packages/@hueyexe
@@ -333,7 +331,7 @@ What you get:
 
 ## Model Selection
 
-Control which AI models your agents use. By default, teammates inherit the lead conversation's current model (including its variant), read at spawn time. You can override this per-agent, per-agent-type, or with automatic rotation.
+Control which AI models your agents use. By default, teammates inherit the lead conversation's current model, read at spawn time (including its variant on v2). You can override this per-agent, per-agent-type, or with automatic rotation.
 
 **All agents use the same model:**
 ```json
@@ -375,7 +373,7 @@ When `promptForModels` is true, the lead uses the question tool to ask which mod
 2. `modelsByAgent` mapping for this agent type
 3. `modelAssignment` strategy (`rotate` or `random` from `modelPool`)
 4. `defaultModel`
-5. The lead conversation's current model at spawn time
+5. The lead conversation's current model at spawn time (including its variant on v2)
 6. OpenCode's default model
 
 The lead can always override by passing `model` directly on `team_spawn`, regardless of config.
@@ -431,7 +429,7 @@ All fields are optional. Missing fields use defaults.
 | `modelAssignment` | `"default"` | How to assign models: `"default"`, `"rotate"`, or `"random"`. |
 | `promptForModels` | `false` | Lead asks user about model preferences before spawning. |
 | `systemPromptTeamState` | `"full"` | Live team state in the system prompt: `"full"` (statuses, tasks, message payloads), `"state-only"` (no message payloads; use `team_results`), or `"off"` (stable role/workflow guidance only). Lower settings avoid provider prefix-cache invalidation on every state change. |
-| `taskDepthLimit` | `0` (unlimited) | Maximum task dependency depth, counting roots as depth 1. `team_tasks_add` rejects a batch that would exceed it, before writing anything. The issue #42 `depth_limit` alias is accepted. |
+| `taskDepthLimit` | `0` (unlimited) | Maximum active task dependency depth, counting unresolved roots as depth 1. Completed/cancelled prerequisites are treated as resolved and do not accumulate into a lifetime chain. `team_tasks_add` rejects a batch that would exceed it, before writing anything. The issue #42 `depth_limit` alias is accepted. |
 | `taskDepthLimitOverflowAction` | `"lead_resolve"` | `"lead_resolve"` tells the lead to split the work; `"user_resolve"` tells the lead to ask the user first. Both reject the over-limit batch. The issue #42 `depth_limit_overflow_action` alias is accepted. |
 
 ### Environment variables
@@ -471,6 +469,7 @@ STALL_THRESHOLD_MS=0
 ## Known limitations
 
 - **Lead agent/model preservation is best-effort (v1).** On v1, Ensemble reads the lead's current agent and model and passes them on teammate wake prompts, so a Plan lead normally stays in Plan. If OpenCode cannot report the selection, it may fall back to Build/default; pass an explicit `model` on `team_spawn` when this matters. V2 wakes are synthetic and do not switch the lead's agent/model.
+- **Model variants are v2-only.** A `provider/model#variant` reference is forwarded to v2's `session.switchModel`; v1 hosts do not have a variant field and ignore the suffix.
 - **Session switching is opt-in (v2).** `team_view` reports the teammate's session ID by default; it switches the user's client only when asked for with `navigate: true` — agents never hijack the client unprompted. The live sidebar (terminal only) shows member status on every client's dashboard at `http://localhost:4747`.
 - **Per-session shell env is unavailable (v2).** The v2 shell hook carries no session ID, so `ENSEMBLE_*` variables are not injected into teammate shells. Team identity travels in prompts and tool calls instead.
 

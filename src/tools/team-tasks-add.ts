@@ -51,7 +51,7 @@ export async function executeTeamTasksAdd(
       id: row.id,
       status: row.status,
       dependsOn: parseTaskDependencies(row.depends_on),
-    })))
+    })), { activeOnly: true })
 
     if (graph.cyclic.length > 0) {
       throw new Error(

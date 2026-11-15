@@ -1,6 +1,7 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
 import { broadcastMessage, markDelivered, hasReportedCompletion } from "../messaging"
+import { getSessionSelection } from "../member-model"
 import { log } from "../log"
 
 /**
@@ -24,11 +25,19 @@ export async function executeTeamBroadcast(
   // Collect all recipient session IDs (excluding sender)
   const recipients: Array<{ name: string; sessionId: string }> = []
 
-  // Add lead if sender is not lead
+  // Add lead if sender is not lead. Resolve from the DB fresh: the team may
+  // have been archived since requireTeamMember() ran.
+  let leadSelection: Awaited<ReturnType<typeof getSessionSelection>> = {}
   if (teamInfo.role !== "lead") {
-    const leadSession = deps.db.query("SELECT lead_session_id FROM team WHERE id = ?")
+    const leadSession = deps.db.query("SELECT lead_session_id FROM team WHERE id = ? AND status = 'active'")
       .get(teamInfo.teamId) as { lead_session_id: string } | null
-    if (leadSession) recipients.push({ name: "lead", sessionId: leadSession.lead_session_id })
+    if (leadSession?.lead_session_id) {
+      recipients.push({ name: "lead", sessionId: leadSession.lead_session_id })
+      // V1 broadcasts are normal user turns; preserve the lead's agent/model (#37).
+      if (!deps.client.agent) {
+        leadSelection = await getSessionSelection(deps.client, leadSession.lead_session_id).catch(() => ({}))
+      }
+    }
   }
 
   // Add all members except sender
@@ -48,9 +57,18 @@ export async function executeTeamBroadcast(
       skipped++
       continue
     }
+    if (recipient.name === "lead") {
+      const active = deps.db.query("SELECT 1 FROM team WHERE id = ? AND status = 'active'").get(teamInfo.teamId)
+      if (!active) {
+        skipped++
+        continue
+      }
+    }
     deps.client.session.promptAsync({
       sessionID: recipient.sessionId,
       parts: [{ type: "text", text: `[Team broadcast from ${senderName}]: ${args.text}` }],
+      ...(recipient.name === "lead" && leadSelection.agent ? { agent: leadSelection.agent } : {}),
+      ...(recipient.name === "lead" && leadSelection.model ? { model: leadSelection.model } : {}),
     }).then(() => {
       delivered++
       if (delivered === 1) markDelivered(deps.db, msgId)

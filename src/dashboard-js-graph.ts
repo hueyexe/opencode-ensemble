@@ -74,8 +74,8 @@ function graphMarkup(team,layout,selectedId){
   const tasks=team.tasks||[],byId=new Map(tasks.map(task=>[task.id,task])),nodes=new Map(layout.nodes.map(node=>[node.task.id,node]));
   if(!tasks.length)return '<div id="graph-scroll" class="graph-scroll scroll" tabindex="0" aria-label="Task dependency graph"><div class="text-center text-txt-400 text-[13px] py-12">No tasks yet<div class="text-[11px] text-txt-500 mt-2">Add tasks with <code class="font-mono">team_tasks_add</code> to see their dependencies.</div></div></div>'+graphDetail(team,byId,null);
   let warning='';
-  if(layout.cyclic.length)warning+='<div class="graph-warning">Cyclic dependencies: '+layout.cyclic.length+' task'+(layout.cyclic.length===1?'':'s')+' affected. Cycle-affected tasks are shown in the last column.</div>';
-  if(layout.missing.length)warning+='<div class="graph-warning">Missing prerequisite'+(layout.missing.length===1?'':'s')+': '+layout.missing.map(item=>E(byId.get(item.taskId).content)+' → '+E(item.dependencyId)).join('; ')+'</div>';
+  if(layout.cyclic.length)warning+='<div class="graph-warning">Cyclic dependencies: '+layout.cyclic.length+' task'+(layout.cyclic.length===1?'':'s')+' affected. Cycle-affected tasks are shown in a fallback column.</div>';
+  if(layout.missing.length)warning+='<div class="graph-warning">Missing prerequisite'+(layout.missing.length===1?'':'s')+': '+layout.missing.map(item=>E(byId.get(item.taskId)?.content||item.taskId)+' → '+E(item.dependencyId)).join('; ')+'</div>';
   const skipped=layout.edges.filter(edge=>nodes.get(edge.to).x-nodes.get(edge.from).x>GRAPH_CARD_WIDTH+GRAPH_GAP_X).length;
   const height=layout.height+(skipped?16+skipped*12:0);
   let lane=0;

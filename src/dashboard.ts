@@ -7,6 +7,7 @@ import { DASHBOARD_JS_EVENTS } from "./dashboard-js-events"
 import { DASHBOARD_JS_GRAPH_LAYOUT } from "./dashboard-js-graph-layout"
 import { DASHBOARD_JS_GRAPH } from "./dashboard-js-graph"
 import { DASHBOARD_JS_RENDER } from "./dashboard-js-render"
+import { parseTaskDependencies } from "./task-graph"
 import { log } from "./log"
 import type { ActivityBuffer, ActivityEntry } from "./activity"
 import type { PluginClient } from "./types"
@@ -72,21 +73,6 @@ interface MessageRow {
   delivered: number
   read: number
   time_created: number
-}
-
-function parseDependsOn(value: string | null): string[] {
-  if (!value) return []
-
-  try {
-    const parsed: unknown = JSON.parse(value)
-
-    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === "string")
-    if (typeof parsed === "string") return [parsed]
-  } catch {
-    return [value]
-  }
-
-  return []
 }
 
 /**
@@ -156,7 +142,7 @@ function buildState(db: Database): EnsembleDashboardState {
         status: tk.status,
         priority: tk.priority,
         assignee: tk.assignee,
-        dependsOn: parseDependsOn(tk.depends_on),
+        dependsOn: parseTaskDependencies(tk.depends_on),
         timeCreated: tk.time_created,
         timeUpdated: tk.time_updated,
       })),

@@ -1,8 +1,22 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamSpawn } from "../../src/tools/team-spawn"
 import { executeTeamTasksAdd } from "../../src/tools/team-tasks-add"
 import type { ToolDeps } from "../../src/types"
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
+  const [stdout, stderr, exit] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  if (exit !== 0) throw new Error(stderr.trim() || `git ${args.join(" ")} exited with code ${exit}`)
+  return stdout
+}
 
 describe("team_spawn", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -987,6 +1001,36 @@ describe("team_spawn — fire-and-forget promptAsync", () => {
     expect(msg).toBeTruthy()
     expect(msg!.content).toContain("charlie")
     expect(msg!.content).toContain("failed")
+  })
+
+  test("preserves the worktree branch before aborting on promptAsync failure", async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), "ensemble-spawn-rollback-"))
+    const originalDirectory = deps.directory
+    try {
+      await git(repo, ["init"])
+      await git(repo, ["config", "user.email", "test@example.com"])
+      await git(repo, ["config", "user.name", "Test User"])
+      await git(repo, ["commit", "--allow-empty", "-m", "init"])
+      deps.directory = repo
+
+      let rejectFn: ((err: Error) => void) | undefined
+      deps.client.session.promptAsync = () => new Promise((_resolve, reject) => { rejectFn = reject })
+
+      await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "Fix tests" }, "lead-sess")
+
+      const worktreeCall = deps.client.calls.find(c => c.method === "worktree.create")
+      const worktreeName = (worktreeCall!.args[0] as { worktreeCreateInput: { name: string } }).worktreeCreateInput.name
+      await git(repo, ["branch", `ensemble-${worktreeName}`])
+
+      rejectFn!(new Error("delivery failed"))
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      const branches = await git(repo, ["branch", "--list", "ensemble/preserved/*", "--format", "%(refname:short)"])
+      expect(branches.trim()).toContain("alice")
+    } finally {
+      deps.directory = originalDirectory
+      await rm(repo, { recursive: true, force: true })
+    }
   })
 })
 

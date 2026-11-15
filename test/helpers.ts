@@ -92,11 +92,9 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
   }
 }
 
-/** Flush fire-and-forget wake microtasks (wakeLeadIfPending awaits session.status). */
+/** Flush fire-and-forget wake work (wakeLeadIfPending awaits session.status). */
 export async function flushWakes(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
+  await new Promise(resolve => setTimeout(resolve, 0))
 }
 
 /** Create full ToolDeps for testing. */

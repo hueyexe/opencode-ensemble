@@ -5,16 +5,18 @@ import { log } from "./log"
 
 /** Options for a lead wake. */
 export interface WakeLeadOptions {
-  /** Send even when the lead session is busy (system/error notifications). */
+  /** Send even when the lead session is busy, and skip the cooldown (system/error notifications). */
   force?: boolean
+  /** Coalescing window override (tests); defaults to {@link WAKE_COOLDOWN_MS}. */
+  cooldownMs?: number
 }
 
 /** Per-database coalescing state, so separate plugin instances/DBs don't share it. */
 interface WakeState {
-  /** Last successful wake time per team, used to coalesce bursts. */
-  lastWakeAt: Map<string, number>
   /** Teams with a wake currently being resolved/sent. */
   inFlight: Set<string>
+  /** Trailing retries scheduled after a cooldown skip. */
+  timers: Map<string, ReturnType<typeof setTimeout>>
 }
 
 const states = new WeakMap<Database, WakeState>()
@@ -23,7 +25,7 @@ const WAKE_COOLDOWN_MS = 5000
 function stateFor(db: Database): WakeState {
   let state = states.get(db)
   if (!state) {
-    state = { lastWakeAt: new Map(), inFlight: new Set() }
+    state = { inFlight: new Set(), timers: new Map() }
     states.set(db, state)
   }
   return state
@@ -33,6 +35,7 @@ interface PendingLeadWake {
   leadSessionID: string
   count: number
   senders: string[]
+  lastWakeAt: number
 }
 
 /**
@@ -42,8 +45,8 @@ interface PendingLeadWake {
  * purged team (#48) or after the inbox was drained (#57).
  */
 function pendingLeadWake(db: Database, teamId: string): PendingLeadWake | undefined {
-  const team = db.query("SELECT lead_session_id FROM team WHERE id = ? AND status = 'active'")
-    .get(teamId) as { lead_session_id: string } | null
+  const team = db.query("SELECT lead_session_id, last_wake_at FROM team WHERE id = ? AND status = 'active'")
+    .get(teamId) as { lead_session_id: string; last_wake_at: number } | null
   if (!team?.lead_session_id) return undefined
 
   const row = db.query(
@@ -57,7 +60,28 @@ function pendingLeadWake(db: Database, teamId: string): PendingLeadWake | undefi
     leadSessionID: team.lead_session_id,
     count: row.c,
     senders: row.senders ? row.senders.split(",").filter(Boolean) : [],
+    lastWakeAt: team.last_wake_at,
   }
+}
+
+/** Schedule one trailing re-check after a cooldown skip. */
+function scheduleCooldownRetry(
+  client: PluginClient,
+  db: Database,
+  teamId: string,
+  options: WakeLeadOptions,
+  delayMs: number,
+): void {
+  const state = stateFor(db)
+  if (state.timers.has(teamId)) return
+  const timer = setTimeout(() => {
+    state.timers.delete(teamId)
+    wakeLeadIfPending(client, db, teamId, options).catch((err) => {
+      log(`wake:retry:failed team=${teamId} err=${err instanceof Error ? err.message : String(err)}`)
+    })
+  }, Math.max(0, delayMs))
+  ;(timer as { unref?: () => void }).unref?.()
+  state.timers.set(teamId, timer)
 }
 
 /** Best-effort busy check. Unknown status is treated as idle so wakes are not lost. */
@@ -99,15 +123,23 @@ export async function wakeLeadIfPending(
     return false
   }
 
+  const cooldownMs = options.cooldownMs ?? WAKE_COOLDOWN_MS
   const now = Date.now()
-  if (now - (state.lastWakeAt.get(teamId) ?? 0) < WAKE_COOLDOWN_MS) {
-    log(`wake:skip team=${teamId} reason=cooldown`)
+  if (!options.force && now - before.lastWakeAt < cooldownMs) {
+    const remaining = cooldownMs - (now - before.lastWakeAt)
+    scheduleCooldownRetry(client, db, teamId, options, remaining)
+    log(`wake:skip team=${teamId} reason=cooldown retryIn=${remaining}ms`)
     return false
   }
 
   state.inFlight.add(teamId)
   try {
-    if (!options.force && await isSessionBusy(client, before.leadSessionID)) {
+    // V2 synthetic wakes use queue delivery and are designed to wait for a busy
+    // session; V2 also has no lead-idle backstop, so skipping here would strand
+    // the message. On V1 the passive idle path retries, so a busy lead is left
+    // alone unless the caller forces the wake (system/error notifications).
+    const isV2 = Boolean(client.agent)
+    if (!options.force && !isV2 && await isSessionBusy(client, before.leadSessionID)) {
       log(`wake:skip team=${teamId} reason=lead-busy`)
       return false
     }
@@ -127,7 +159,13 @@ export async function wakeLeadIfPending(
       return false
     }
 
-    state.lastWakeAt.set(teamId, Date.now())
+    const pendingTimer = state.timers.get(teamId)
+    if (pendingTimer) {
+      clearTimeout(pendingTimer)
+      state.timers.delete(teamId)
+    }
+    // Persisted, not in-memory: worktree teammate instances share this DB.
+    db.run("UPDATE team SET last_wake_at = ? WHERE id = ? AND status = 'active'", [Date.now(), teamId])
     const senderText = after.senders.length > 0 ? ` from ${after.senders.join(", ")}` : ""
     client.session.promptAsync({
       sessionID: after.leadSessionID,
@@ -145,7 +183,16 @@ export async function wakeLeadIfPending(
   }
 }
 
-/** Clear in-memory wake coalescing state for a database (tests). */
+/** Clear wake coalescing state for a database (tests). */
 export function resetWakeState(db: Database): void {
-  states.delete(db)
+  const state = states.get(db)
+  if (state) {
+    for (const timer of state.timers.values()) clearTimeout(timer)
+    states.delete(db)
+  }
+  try {
+    db.run("UPDATE team SET last_wake_at = 0")
+  } catch {
+    // The table may not exist yet in a partially initialized test DB.
+  }
 }

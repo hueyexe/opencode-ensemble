@@ -7,7 +7,7 @@ import { releaseMemberTasks } from "../tasks"
 import { parseModelId, formatModelId, getSessionSelection } from "../member-model"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
-import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
+import { getTeamResourceParts, teamWorktreeName, preserveBranch, preservedBranchName } from "./merge-helper"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -441,7 +441,7 @@ export async function executeTeamSpawn(
     parts: [{ type: "text", text: contextStr }],
     agent,
     ...(modelParam ? { model: modelParam } : {}),
-  }).catch((err) => {
+  }).catch(async (err) => {
     const errMsg = err instanceof Error ? err.message : String(err)
     log(`spawn:promptAsync:failed name=${args.name} err=${errMsg} — rolling back`)
     try {
@@ -453,15 +453,6 @@ export async function executeTeamSpawn(
           "UPDATE team_task SET status = 'pending', assignee = NULL, time_updated = ? WHERE id = ? AND assignee = ? AND status = 'in_progress'",
           [Date.now(), args.claim_task, args.name]
         )
-      }
-      // No preserveBranch() needed here: the spawn prompt never ran, so the
-      // teammate cannot have committed work. The worktree is removed below.
-      deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
-      if (workspaceId) {
-        deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
-      }
-      if (worktreeDir) {
-        deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
       }
       const modelInfo = resolvedModel ? ` (model: ${resolvedModel})` : ""
       deps.client.tui.showToast({
@@ -476,6 +467,25 @@ export async function executeTeamSpawn(
         teamInfo.teamId,
         `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
       )
+
+      // promptAsync can reject after the server accepted the prompt, so the
+      // teammate may have run and committed. Preserve the branch before abort:
+      // session cleanup asynchronously deletes the worktree branch.
+      if (worktreeBranch) {
+        try {
+          const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
+          const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, args.name)
+          const preserved = await preserveBranch(worktreeBranch, safeBranch, deps.directory)
+          if (preserved) log(`spawn:rollback:branch:preserved src=${worktreeBranch} target=${safeBranch}`)
+        } catch { /* best effort — still abort/clean up */ }
+      }
+      deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
+      if (workspaceId) {
+        deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
+      }
+      if (worktreeDir) {
+        deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
+      }
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })
 
