@@ -318,6 +318,21 @@ describe("team_message — lead-bound messages wake the lead", () => {
     expect(call.parts[0]!.text).toContain("alice")
   })
 
+  test("does not wake the lead for a message from a shutting-down teammate", async () => {
+    deps.db.run("UPDATE team_member SET status = 'shutdown_requested' WHERE team_id = 't1' AND name = 'alice'")
+
+    const result = await executeTeamMessage(deps, { to: "lead", text: "shutting down" }, "sess-alice")
+    expect(result).toContain("Message sent to lead")
+    await flushWakes()
+
+    // Persisted for the normal system-prompt path, but no wake that could land
+    // after cleanup (#48).
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+    const row = deps.db.query("SELECT content FROM team_message WHERE team_id = 't1'").get() as { content: string }
+    expect(row.content).toBe("shutting down")
+  })
+
   test("stores message in DB with delivered=0 (system prompt transform delivers content)", async () => {
     await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
 

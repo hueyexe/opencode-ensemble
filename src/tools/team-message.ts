@@ -122,6 +122,19 @@ export async function executeTeamMessage(
   // This runs in the teammate's worktree instance — the event hook can't wake the lead
   // because session.idle events are scoped per-instance.
   if (isToLead) {
+    // A teammate that is already shutting down often sends a final
+    // acknowledgement. Waking the lead for it can land after team_cleanup and
+    // produce an empty "team is gone" turn (#48). Persist the message, but let
+    // the lead read it through the normal system-prompt path instead.
+    const senderStatus = teamInfo.role === "lead"
+      ? "lead"
+      : (deps.db.query("SELECT status FROM team_member WHERE team_id = ? AND name = ?")
+          .get(teamInfo.teamId, senderName) as { status: string } | null)?.status
+    if (senderStatus === "shutdown_requested" || senderStatus === "shutdown") {
+      log(`team_message:wake-lead:skip-shutdown from=${senderName} status=${senderStatus}`)
+      return `Message sent to ${args.to}.`
+    }
+
     log(`team_message:wake-lead from=${senderName} recipientSession=${recipientSessionId}`)
     // Coalesced, guarded wake: skips when the team is gone or the lead has
     // already drained the inbox, and never queues behind a busy lead (#48, #57).
