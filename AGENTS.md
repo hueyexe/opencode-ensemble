@@ -386,17 +386,18 @@ To publish a new version:
 bun run typecheck && bun test && bun run build && bun publish --access public
 ```
 
-Then verify npm actually accepted the publish **before** creating the GitHub
-release (a failed publish once left npm `latest` a month behind the repo):
+Then verify the registry actually accepted the publish **before** creating the
+GitHub release (a failed publish once left `latest` a month behind the repo):
 
 ```
-npm view @hueyexe/opencode-ensemble version
+curl -s https://registry.npmjs.org/@hueyexe%2Fopencode-ensemble/latest | jq -r .version
 ```
 
 The output must equal the bumped version. If it does not, stop and fix the
-publish (see #49); do not cut the GitHub release against a version npm does
-not serve. A weekly `npm-drift` workflow also compares npm `latest` with the
-newest GitHub release and opens an issue when they diverge.
+publish (see #49); do not cut the GitHub release against a version the registry
+does not serve. A weekly `npm-drift` workflow also compares the registry
+`latest` tag with the newest GitHub release and opens an issue when they
+diverge.
 
 Use a granular npm access token with "bypass 2FA for automation" in
 `~/.npmrc` (`//registry.npmjs.org/:_authToken=<token>`) so releases can run
