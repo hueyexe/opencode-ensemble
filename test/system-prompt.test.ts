@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDb, insertTeam, insertMember } from "./helpers"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
+import { DEFAULT_CONFIG } from "../src/config"
 import type { Database } from "../src/db"
 
 function insertTask(db: Database, teamId: string, id: string, status: string, priority = "medium") {
@@ -122,6 +123,58 @@ describe("buildLeadSystemPrompt", () => {
 
     expect(result).not.toContain("Team Messages")
   })
+
+  test("state-only omits message payloads but reports the unread count (#53)", () => {
+    const db = setupDb()
+    insertTeam(db, "t8", "cache-team", "lead-sess")
+    insertMember(db, "t8", "alice", "sess-a")
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m1", "t8", "alice", "lead", "secret payload", Date.now()])
+
+    const result = buildLeadSystemPrompt(db, "t8", { ...DEFAULT_CONFIG, systemPromptTeamState: "state-only" })
+
+    expect(result).toContain("Unread messages: 1")
+    expect(result).toContain("team_results")
+    expect(result).not.toContain("secret payload")
+    expect(result).not.toContain("--- Team Messages ---")
+    // Still surfaced, so the wake path does not re-fire; team_results can read it.
+    const row = db.query("SELECT delivered, read FROM team_message WHERE id = 'm1'").get() as { delivered: number; read: number }
+    expect(row).toEqual({ delivered: 1, read: 0 })
+  })
+
+  test("off injects only stable guidance and no live team state (#53)", () => {
+    const db = setupDb()
+    insertTeam(db, "t9", "quiet-team", "lead-sess")
+    insertMember(db, "t9", "alice", "sess-a", "busy")
+    insertTask(db, "t9", "task-1", "in_progress")
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m1", "t9", "alice", "lead", "secret payload", Date.now()])
+
+    const result = buildLeadSystemPrompt(db, "t9", { ...DEFAULT_CONFIG, systemPromptTeamState: "off" })
+
+    expect(result).toContain('"quiet-team"')
+    expect(result).toContain("team_results")
+    expect(result).not.toContain("alice")
+    expect(result).not.toContain("Task task-1")
+    expect(result).not.toContain("secret payload")
+    expect(result).not.toContain("Tasks:")
+  })
+
+  test("off output is stable across member/task/message changes (cache-safe)", () => {
+    const db = setupDb()
+    insertTeam(db, "t10", "stable-team", "lead-sess")
+    const config = { ...DEFAULT_CONFIG, systemPromptTeamState: "off" as const }
+
+    const before = buildLeadSystemPrompt(db, "t10", config)
+
+    insertMember(db, "t10", "alice", "sess-a", "busy")
+    insertTask(db, "t10", "task-1", "in_progress")
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m1", "t10", "alice", "lead", "new", Date.now()])
+    const after = buildLeadSystemPrompt(db, "t10", config)
+
+    expect(after).toBe(before)
+  })
 })
 
 describe("buildTeammateSystemPrompt", () => {
@@ -146,6 +199,24 @@ describe("buildTeammateSystemPrompt", () => {
     expect(resultA).not.toEqual(resultB)
     expect(resultA).toContain('"alice"')
     expect(resultB).toContain('"bob"')
+  })
+
+  test("state-only and off omit peer message payloads (#53)", () => {
+    const db = setupDb()
+    insertTeam(db, "t1", "bravo", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-a")
+    db.run("INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, time_created) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      ["m1", "t1", "bob", "alice", "secret peer payload", Date.now()])
+
+    const stateOnly = buildTeammateSystemPrompt(db, "t1", "alice", { ...DEFAULT_CONFIG, systemPromptTeamState: "state-only" })
+    expect(stateOnly).toContain("Unread messages: 1")
+    expect(stateOnly).not.toContain("secret peer payload")
+
+    db.run("UPDATE team_message SET delivered = 0 WHERE id = 'm1'")
+    const off = buildTeammateSystemPrompt(db, "t1", "alice", { ...DEFAULT_CONFIG, systemPromptTeamState: "off" })
+    expect(off).not.toContain("secret peer payload")
+    expect(off).not.toContain("Unread messages")
+    expect(off).toContain('"alice"')
   })
 })
 

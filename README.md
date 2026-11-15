@@ -329,7 +329,7 @@ What you get:
 
 ## Model Selection
 
-Control which AI models your agents use. By default, agents use whatever model OpenCode is configured with. You can override this per-agent, per-agent-type, or with automatic rotation.
+Control which AI models your agents use. By default, teammates inherit the lead conversation's current model (including its variant), read at spawn time. You can override this per-agent, per-agent-type, or with automatic rotation.
 
 **All agents use the same model:**
 ```json
@@ -371,7 +371,8 @@ When `promptForModels` is true, the lead uses the question tool to ask which mod
 2. `modelsByAgent` mapping for this agent type
 3. `modelAssignment` strategy (`rotate` or `random` from `modelPool`)
 4. `defaultModel`
-5. OpenCode's default model
+5. The lead conversation's current model at spawn time
+6. OpenCode's default model
 
 The lead can always override by passing `model` directly on `team_spawn`, regardless of config.
 
@@ -399,7 +400,8 @@ Configure via JSON files, environment variables, or both. Project config overrid
   "modelPool": ["anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
   "modelsByAgent": {},
   "modelAssignment": "default",
-  "promptForModels": false
+  "promptForModels": false,
+  "systemPromptTeamState": "full"
 }
 ```
 
@@ -417,11 +419,12 @@ All fields are optional. Missing fields use defaults.
 | `rateLimitCapacity` | `10` | Token bucket capacity for team tool calls. `0` disables. |
 | `dashboardPort` | `4747` | Dashboard server port. `0` disables. |
 | `dashboardHost` | `127.0.0.1` | Dashboard network interface to bind. Keep the loopback default unless you intend to expose the dashboard on your network. |
-| `defaultModel` | `""` | Default model for all agents (e.g. `"anthropic/claude-sonnet-4-6"`). Empty = OpenCode's default. |
+| `defaultModel` | `""` | Default model for all agents (e.g. `"anthropic/claude-sonnet-4-6"`). Empty = inherit the lead conversation's current model, then OpenCode's default. |
 | `modelPool` | `[]` | List of models for rotation/random assignment. |
 | `modelsByAgent` | `{}` | Map agent type to model (e.g. `{"build": "anthropic/claude-opus-4-7"}`). |
 | `modelAssignment` | `"default"` | How to assign models: `"default"`, `"rotate"`, or `"random"`. |
 | `promptForModels` | `false` | Lead asks user about model preferences before spawning. |
+| `systemPromptTeamState` | `"full"` | Live team state in the system prompt: `"full"` (statuses, tasks, message payloads), `"state-only"` (no message payloads; use `team_results`), or `"off"` (stable role/workflow guidance only). Lower settings avoid provider prefix-cache invalidation on every state change. |
 
 ### Environment variables
 
@@ -459,7 +462,7 @@ STALL_THRESHOLD_MS=0
 
 ## Known limitations
 
-- **Teammate messages may switch the lead's agent mode (v1).** When a teammate sends a message back to the lead, OpenCode can start the next prompt loop in build mode even if the lead was in plan/explore mode. Tracked upstream; the lead's mode restores when you send your next message. On v2, pass an explicit `model` on `team_spawn` so teammates never inherit the server default.
+- **Lead agent/model preservation is best-effort (v1).** On v1, Ensemble reads the lead's current agent and model and passes them on teammate wake prompts, so a Plan lead normally stays in Plan. If OpenCode cannot report the selection, it may fall back to Build/default; pass an explicit `model` on `team_spawn` when this matters. V2 wakes are synthetic and do not switch the lead's agent/model.
 - **Session switching is opt-in (v2).** `team_view` reports the teammate's session ID by default; it switches the user's client only when asked for with `navigate: true` — agents never hijack the client unprompted. The live sidebar (terminal only) shows member status on every client's dashboard at `http://localhost:4747`.
 - **Per-session shell env is unavailable (v2).** The v2 shell hook carries no session ID, so `ENSEMBLE_*` variables are not injected into teammate shells. Team identity travels in prompts and tool calls instead.
 

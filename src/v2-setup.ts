@@ -294,7 +294,7 @@ export async function setupEnsemble(
     const prompt =
       teamInfo.role === "lead"
         ? buildLeadSystemPrompt(db, teamInfo.teamId, config)
-        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
+        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown", config)
     vlog(`system-prompt:injected role=${teamInfo.role} len=${prompt.length}`)
     event.system.push({ type: "text", text: prompt })
     if (teamInfo.role === "member") {

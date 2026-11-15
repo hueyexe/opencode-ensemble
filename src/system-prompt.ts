@@ -52,51 +52,67 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
     "SELECT id, from_name, content FROM team_message WHERE team_id = ? AND to_name = 'lead' AND delivered = 0 ORDER BY time_created ASC"
   ).all(teamId) as Array<{ id: string; from_name: string; content: string }>
 
-  const lines = [
-    `You are leading team "${team.name}" with ${members.length} active teammates.`,
-    teammateLine,
-    `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
-  ]
+  const teamStateMode = config?.systemPromptTeamState ?? "full"
+  const lines: string[] = []
 
-  // Inline active and recently completed tasks
-  const activeTasks = db.query(
-    "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'in_progress' ORDER BY time_updated DESC LIMIT 5"
-  ).all(teamId) as Array<{ content: string; assignee: string | null }>
+  if (teamStateMode === "off") {
+    // Stable role line only. Everything else in this block would churn on
+    // status/task/message changes and invalidate the provider prefix cache.
+    lines.push(`You are leading team "${team.name}".`)
+  } else {
+    lines.push(
+      `You are leading team "${team.name}" with ${members.length} active teammates.`,
+      teammateLine,
+      `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
+    )
 
-  const recentCompleted = db.query(
-    "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'completed' ORDER BY time_updated DESC LIMIT 3"
-  ).all(teamId) as Array<{ content: string; assignee: string | null }>
+    // Inline active and recently completed tasks
+    const activeTasks = db.query(
+      "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'in_progress' ORDER BY time_updated DESC LIMIT 5"
+    ).all(teamId) as Array<{ content: string; assignee: string | null }>
 
-  if (activeTasks.length > 0) {
-    lines.push("Active tasks:")
-    for (const t of activeTasks) {
-      lines.push(`  [in_progress] ${truncate(t.content, 120)}${t.assignee ? ` → ${t.assignee}` : ""}`)
+    const recentCompleted = db.query(
+      "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'completed' ORDER BY time_updated DESC LIMIT 3"
+    ).all(teamId) as Array<{ content: string; assignee: string | null }>
+
+    if (activeTasks.length > 0) {
+      lines.push("Active tasks:")
+      for (const t of activeTasks) {
+        lines.push(`  [in_progress] ${truncate(t.content, 120)}${t.assignee ? ` → ${t.assignee}` : ""}`)
+      }
     }
-  }
-  if (recentCompleted.length > 0) {
-    lines.push("Recently completed:")
-    for (const t of recentCompleted) {
-      lines.push(`  [completed] ${truncate(t.content, 120)}${t.assignee ? ` → ${t.assignee}` : ""}`)
+    if (recentCompleted.length > 0) {
+      lines.push("Recently completed:")
+      for (const t of recentCompleted) {
+        lines.push(`  [completed] ${truncate(t.content, 120)}${t.assignee ? ` → ${t.assignee}` : ""}`)
+      }
     }
   }
 
   if (pendingMessages.length > 0) {
-    lines.push("", "--- Team Messages ---")
-    const MAX_MSG = 500
-    for (const msg of pendingMessages) {
-      const parsed = parseTaskResult(msg.content)
-      if (parsed) {
-        // Truncate details for system prompt — full content available via team_results
-        const truncatedResult = { ...parsed, details: truncate(parsed.details, 500) }
-        lines.push(formatTaskResult(msg.from_name, truncatedResult))
-      } else if (msg.content.length > MAX_MSG) {
-        lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (use team_results to read full message)`)
-      } else {
-        lines.push(`[From ${msg.from_name}]: ${msg.content}`)
+    if (teamStateMode === "full") {
+      lines.push("", "--- Team Messages ---")
+      const MAX_MSG = 500
+      for (const msg of pendingMessages) {
+        const parsed = parseTaskResult(msg.content)
+        if (parsed) {
+          // Truncate details for system prompt — full content available via team_results
+          const truncatedResult = { ...parsed, details: truncate(parsed.details, 500) }
+          lines.push(formatTaskResult(msg.from_name, truncatedResult))
+        } else if (msg.content.length > MAX_MSG) {
+          lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (use team_results to read full message)`)
+        } else {
+          lines.push(`[From ${msg.from_name}]: ${msg.content}`)
+        }
       }
-      markDelivered(db, msg.id)
+      lines.push("--- End Messages ---")
+    } else if (teamStateMode === "state-only") {
+      lines.push("", `Unread messages: ${pendingMessages.length} — use team_results to read them.`)
     }
-    lines.push("--- End Messages ---")
+    // Mark delivered in every mode so the wake path does not re-fire for
+    // content the lead has already been told about. team_results still
+    // returns these until they are read.
+    for (const msg of pendingMessages) markDelivered(db, msg.id)
   }
 
   // Model selection guidance (only when promptForModels is enabled)
@@ -140,6 +156,7 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
     "",
     "Teammates work asynchronously and message you when done.",
     "Do NOT poll team_status or team_tasks_list repeatedly — wait for messages.",
+    "When woken about new team messages, call team_results to read them.",
     "After spawning all teammates, tell the user what you've set up and wait.",
     "When all teammates finish, summarize results and suggest next steps.",
     "",
@@ -166,10 +183,16 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
  * Build the system prompt injected into a teammate's session.
  * Includes role reminder and delivers any pending peer messages.
  */
-export function buildTeammateSystemPrompt(db: Database, teamId: string, memberName: string): string {
+export function buildTeammateSystemPrompt(
+  db: Database,
+  teamId: string,
+  memberName: string,
+  config?: Required<EnsembleConfig>,
+): string {
   const team = db.query("SELECT name FROM team WHERE id = ?").get(teamId) as { name: string } | null
   if (!team) return ""
 
+  const teamStateMode = config?.systemPromptTeamState ?? "full"
   const lines = [
     `You are "${memberName}", a teammate in team "${team.name}". Use team_message to communicate. You MUST send your results to the lead via team_message before stopping.`,
   ]
@@ -180,20 +203,24 @@ export function buildTeammateSystemPrompt(db: Database, teamId: string, memberNa
   ).all(teamId, memberName) as Array<{ id: string; from_name: string; content: string }>
 
   if (pendingMessages.length > 0) {
-    lines.push("", "--- Messages for you ---")
-    const MAX_MSG = 500
-    for (const msg of pendingMessages) {
-      const parsed = parseTaskResult(msg.content)
-      if (parsed) {
-        lines.push(formatTaskResult(msg.from_name, { ...parsed, details: truncate(parsed.details, MAX_MSG) }))
-      } else if (msg.content.length > MAX_MSG) {
-        lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (truncated)`)
-      } else {
-        lines.push(`[From ${msg.from_name}]: ${msg.content}`)
+    if (teamStateMode === "full") {
+      lines.push("", "--- Messages for you ---")
+      const MAX_MSG = 500
+      for (const msg of pendingMessages) {
+        const parsed = parseTaskResult(msg.content)
+        if (parsed) {
+          lines.push(formatTaskResult(msg.from_name, { ...parsed, details: truncate(parsed.details, MAX_MSG) }))
+        } else if (msg.content.length > MAX_MSG) {
+          lines.push(`[From ${msg.from_name}]: ${msg.content.slice(0, MAX_MSG)}... (truncated)`)
+        } else {
+          lines.push(`[From ${msg.from_name}]: ${msg.content}`)
+        }
       }
-      markDelivered(db, msg.id)
+      lines.push("--- End Messages ---")
+    } else if (teamStateMode === "state-only") {
+      lines.push("", `Unread messages: ${pendingMessages.length} — use team_results to read them.`)
     }
-    lines.push("--- End Messages ---")
+    for (const msg of pendingMessages) markDelivered(db, msg.id)
   }
 
   return lines.join("\n")

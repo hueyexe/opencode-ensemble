@@ -299,7 +299,7 @@ const plugin: Plugin = async (input) => {
               const peerModel = getMemberModel(db, member.team_id, member.name)
               client.session.promptAsync({
                 sessionID,
-                parts: [{ type: "text", text: `[System: ${peerMsgs.c} new message(s) from teammates]` }],
+                parts: [{ type: "text", text: `[System: ${peerMsgs.c} new message(s) from teammates — use team_results to read them]` }],
                 ...(peerModel ? { model: peerModel } : {}),
               }).catch((err) => {
                 log(`wake-peer:failed err=${err instanceof Error ? err.message : String(err)}`)
@@ -374,7 +374,7 @@ const plugin: Plugin = async (input) => {
       log(`system-prompt:transform role=${teamInfo.role} session=${input.sessionID}`)
       const prompt = teamInfo.role === "lead"
         ? buildLeadSystemPrompt(db, teamInfo.teamId, config)
-        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
+        : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown", config)
       log(`system-prompt:injected role=${teamInfo.role} len=${prompt.length}`)
       output.system.push(prompt)
     },

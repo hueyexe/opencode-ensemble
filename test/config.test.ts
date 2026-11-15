@@ -71,6 +71,22 @@ describe("config", () => {
     expect(loadConfig(tmpDir).dashboardHost).toBe("0.0.0.0")
   })
 
+  test("defaults systemPromptTeamState to full and loads valid modes", () => {
+    expect(DEFAULT_CONFIG.systemPromptTeamState).toBe("full")
+    const configDir = path.join(tmpDir, ".opencode")
+    mkdirSync(configDir, { recursive: true })
+
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ systemPromptTeamState: "state-only" }))
+    expect(loadConfig(tmpDir).systemPromptTeamState).toBe("state-only")
+
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ systemPromptTeamState: "off" }))
+    expect(loadConfig(tmpDir).systemPromptTeamState).toBe("off")
+
+    // Invalid values fall back to the default.
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ systemPromptTeamState: "nonsense" }))
+    expect(loadConfig(tmpDir).systemPromptTeamState).toBe("full")
+  })
+
   test("invalid JSON logs warning and returns defaults", () => {
     const configDir = path.join(tmpDir, ".opencode")
     mkdirSync(configDir, { recursive: true })

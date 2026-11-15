@@ -33,6 +33,14 @@ export interface EnsembleConfig {
   modelAssignment?: "default" | "rotate" | "random"
   /** Lead asks user about model preferences before spawning (default: false) */
   promptForModels?: boolean
+  /**
+   * How much live team state to inject into the system prompt:
+   * "full" (default) includes statuses, tasks, and message payloads;
+   * "state-only" drops message payloads (use team_results);
+   * "off" injects only stable role/workflow guidance.
+   * Lower settings avoid invalidating provider prefix caches on every change.
+   */
+  systemPromptTeamState?: "full" | "state-only" | "off"
 }
 
 /** Default configuration values. */
@@ -52,6 +60,7 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   modelsByAgent: {},
   modelAssignment: "default",
   promptForModels: false,
+  systemPromptTeamState: "full",
 }
 
 /** Read a JSON config file, returning an empty object on missing/invalid. */
@@ -79,6 +88,9 @@ function readConfigFile(filePath: string): Partial<EnsembleConfig> {
     }
     if (typeof raw.modelAssignment === "string" && ["default", "rotate", "random"].includes(raw.modelAssignment)) result.modelAssignment = raw.modelAssignment as "default" | "rotate" | "random"
     if (typeof raw.promptForModels === "boolean") result.promptForModels = raw.promptForModels
+    if (typeof raw.systemPromptTeamState === "string" && ["full", "state-only", "off"].includes(raw.systemPromptTeamState)) {
+      result.systemPromptTeamState = raw.systemPromptTeamState as "full" | "state-only" | "off"
+    }
     return result
   } catch (err) {
     if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") return {}
