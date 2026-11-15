@@ -58,6 +58,10 @@ const plugin: Plugin = async (input) => {
   // Load plugin configuration (global → project → env vars)
   const config = loadConfig(input.directory)
 
+  // A stale busy status from a previous process would suppress wakes forever.
+  // Reset active teams to idle at startup; the next status event corrects it.
+  db.run("UPDATE team SET lead_status = 'idle' WHERE status = 'active'")
+
   // Initialize in-memory state
   const registry = new MemberRegistry()
   const tracker = new DescendantTracker()

@@ -97,6 +97,9 @@ export async function setupEnsemble(
 ): Promise<EnsembleHandle> {
   const db = createDb(options.dbPath ?? getDbPath())
   const config = loadConfig(ctx.location.directory)
+  // A stale busy status from a previous process would suppress wakes forever.
+  // Reset active teams to idle at startup; the next status event corrects it.
+  db.run("UPDATE team SET lead_status = 'idle' WHERE status = 'active'")
   const registry: MemberRegistry = new MemberRegistryImpl()
   const tracker: DescendantTracker = new DescendantTrackerImpl()
   const purgeApprovals = new PendingPurgeApprovals()

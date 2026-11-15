@@ -6,6 +6,7 @@ import path from "node:path"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
 import { sendMessage, markDelivered } from "../src/messaging"
 import { applyMigrations } from "../src/schema"
+import { buildLeadSystemPrompt } from "../src/system-prompt"
 import { executeTeamMessage } from "../src/tools/team-message"
 import { executeTeamResults } from "../src/tools/team-results"
 import { wakeLeadIfPending, resetWakeState } from "../src/wake"
@@ -240,6 +241,34 @@ describe("team_message wake coalescing (issue #57)", () => {
     await flush()
 
     expect(wakes(deps)).toHaveLength(1)
+  })
+
+  test("busy lead + drained inbox + shutdown ack produces no post-cleanup wake", async () => {
+    // Reproduces the live 0.21.x race end to end.
+    deps.db.run("UPDATE team SET lead_status = 'busy' WHERE id = 't1'")
+    await executeTeamMessage(deps, { to: "lead", text: "task result" }, "sess-alice")
+    await flush()
+    expect(wakes(deps)).toHaveLength(0)
+
+    // Lead reads the result during its current turn.
+    await executeTeamResults(deps, {}, "lead-sess")
+
+    // Teammate reports completion, then acknowledges shutdown.
+    deps.db.run("UPDATE team_member SET reported_to_lead = 1, status = 'shutdown_requested' WHERE team_id = 't1' AND name = 'alice'")
+    await executeTeamMessage(deps, { to: "lead", text: "ack" }, "sess-alice")
+    await flush()
+    expect(wakes(deps)).toHaveLength(0)
+
+    // The system prompt surfaces the ack on the lead's next step (marks it
+    // delivered, as in the live run), then the lead goes idle.
+    buildLeadSystemPrompt(deps.db, "t1")
+    deps.db.run("UPDATE team SET lead_status = 'idle' WHERE id = 't1'")
+    expect(await wakeLeadIfPending(deps.client, deps.db, "t1")).toBe(false)
+
+    // Cleanup archives the team; still no wake.
+    deps.db.run("UPDATE team SET status = 'archived' WHERE id = 't1'")
+    expect(await wakeLeadIfPending(deps.client, deps.db, "t1")).toBe(false)
+    expect(wakes(deps)).toHaveLength(0)
   })
 
   test("does not produce a second wake after the inbox is drained", async () => {
