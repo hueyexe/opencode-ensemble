@@ -106,14 +106,14 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
     expect(wakes(deps)).toHaveLength(0)
   })
 
-  test("queues a wake for a busy lead on V2 (synthetic queue delivery)", async () => {
+  test("does not queue a wake behind a busy lead on V2 (idle backstop retries)", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
     deps.client.agent = { readOnly: async () => undefined }
     deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })
 
     const sent = await wakeLeadIfPending(deps.client, deps.db, "t1")
-    expect(sent).toBe(true)
-    expect(wakes(deps)).toHaveLength(1)
+    expect(sent).toBe(false)
+    expect(wakes(deps)).toHaveLength(0)
   })
 
   test("force sends even when the lead is busy (system/error notifications)", async () => {

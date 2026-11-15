@@ -134,12 +134,12 @@ export async function wakeLeadIfPending(
 
   state.inFlight.add(teamId)
   try {
-    // V2 synthetic wakes use queue delivery and are designed to wait for a busy
-    // session; V2 also has no lead-idle backstop, so skipping here would strand
-    // the message. On V1 the passive idle path retries, so a busy lead is left
-    // alone unless the caller forces the wake (system/error notifications).
-    const isV2 = Boolean(client.agent)
-    if (!options.force && !isV2 && await isSessionBusy(client, before.leadSessionID)) {
+    // A busy lead is left alone: queueing a wake behind its current turn can
+    // produce an empty wake if the lead drains the inbox before the queued
+    // message is processed (#57). Both hosts retry on the lead's next idle
+    // event (V1 in index.ts, V2 in v2-setup.ts), which re-checks unseen
+    // messages first. System/error notifications can force the wake.
+    if (!options.force && await isSessionBusy(client, before.leadSessionID)) {
       log(`wake:skip team=${teamId} reason=lead-busy`)
       return false
     }

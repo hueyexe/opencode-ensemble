@@ -74,6 +74,40 @@ describe("v2-setup (issue #36)", () => {
     await handle.dispose()
   })
 
+  test("lead idle event wakes for unseen messages (V2 backstop)", async () => {
+    const { ctx } = mockSetupCtx()
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    seedLeadAndMember(handle)
+    handle.db.run(
+      "INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, read, time_created) VALUES ('m1', 'team1', 'alice', 'lead', 'done', 0, 0, ?)",
+      [Date.now()],
+    )
+
+    await handle.dispatch({ type: "session.status", data: { sessionID: "ses_lead", status: "idle" } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    const team = handle.db.query("SELECT last_wake_at FROM team WHERE id = 'team1'").get() as { last_wake_at: number }
+    expect(team.last_wake_at).toBeGreaterThan(0)
+    await handle.dispose()
+  })
+
+  test("lead idle event does not wake when the inbox is drained (V2 backstop)", async () => {
+    const { ctx } = mockSetupCtx()
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    seedLeadAndMember(handle)
+    handle.db.run(
+      "INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, read, time_created) VALUES ('m1', 'team1', 'alice', 'lead', 'done', 0, 1, ?)",
+      [Date.now()],
+    )
+
+    await handle.dispatch({ type: "session.status", data: { sessionID: "ses_lead", status: "idle" } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    const team = handle.db.query("SELECT last_wake_at FROM team WHERE id = 'team1'").get() as { last_wake_at: number }
+    expect(team.last_wake_at).toBe(0)
+    await handle.dispose()
+  })
+
   test("tool execute.before blocks team tools for sub-agents", async () => {
     const { ctx, hooks } = mockSetupCtx()
     const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })

@@ -7,7 +7,8 @@ import { deliverPrompt, type V2SessionPort } from "./v2-session"
 import type { V2Context } from "./v2-client"
 import { createV2Client } from "./v2-client"
 import { registerV2Tools } from "./v2-tools"
-import type { ToolDeps } from "./types"
+import { wakeLeadIfPending } from "./wake"
+import type { PluginClient, ToolDeps } from "./types"
 import { ProgressTracker } from "./progress"
 import { checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
 import { hasReportedCompletion } from "./messaging"
@@ -152,8 +153,30 @@ export async function setupEnsemble(
   })
   const controller = new AbortController()
 
+  let wakeClient: PluginClient | undefined
+
   const dispatch = async (event: V2EventLike): Promise<void> => {
     const transition = dispatchV2Event(db, registry, tracker, event)
+
+    // Lead idle backstop (V2). The wake path skips a busy lead so it cannot
+    // queue behind the current turn; this re-checks after the turn and wakes
+    // only if messages are still unseen. Without it, a message arriving while
+    // the lead is busy would sit until the user sent another prompt.
+    const sessionID = event.data?.sessionID
+    const idle = event.type === "session.idle"
+      || event.type === "session.execution.succeeded"
+      || event.type === "session.execution.failed"
+      || (event.type === "session.status"
+        && (typeof event.data?.status === "string" ? event.data.status : event.data?.status?.type) === "idle")
+    if (idle && sessionID && wakeClient) {
+      const leadTeam = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'")
+        .get(sessionID) as { id: string } | null
+      if (leadTeam) {
+        wakeLeadIfPending(wakeClient, db, leadTeam.id).catch((err) => {
+          vlog(`wake-lead:failed err=${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+    }
     // Idle-without-report nudge (parity with V1): a member that went idle
     // without ever messaging the lead gets ONE reminder to report via
     // team_message. Without this, weak models finish silently and the lead
@@ -327,6 +350,7 @@ export async function setupEnsemble(
   await ctx.shell.hook("create.before", () => undefined)
 
   const client = createV2Client(ctx, rpc ? { rpcEmitter: rpc } : {})
+  wakeClient = client
   const deps: ToolDeps = {
     db,
     registry,
