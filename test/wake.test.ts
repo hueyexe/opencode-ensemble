@@ -81,6 +81,17 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
     expect(wakes(deps)).toHaveLength(0)
   })
 
+  test("wakes for a final report even when every teammate is done", async () => {
+    // The old allDone gate could strand the last completion report if the
+    // immediate wake was skipped while the lead was busy.
+    deps.db.run("UPDATE team_member SET status = 'ready' WHERE team_id = 't1'")
+    sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "final report" })
+
+    const sent = await wakeLeadIfPending(deps.client, deps.db, "t1")
+    expect(sent).toBe(true)
+    expect(wakes(deps)).toHaveLength(1)
+  })
+
   test("does not queue a wake behind a busy lead", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
     deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })

@@ -156,7 +156,7 @@ A real-time mission control dashboard runs at `http://localhost:4747` while Open
 - **Live clock** — current time + team session duration
 - **Project outline** — collapsible per-project grouping when teams span multiple working directories
 
-The **Dependencies** tab lays out every task as a card, with arrows from each prerequisite to its dependent, live agent ownership/status, a detail panel for prerequisites and dependents, and warnings for missing or cyclic dependency IDs. Add dependencies with the `depends_on` field on `team_tasks_add`.
+The **Dependency graph** tab lays out every task as a card, with arrows from each prerequisite to its dependent, live agent ownership/status, a detail panel for prerequisites and dependents, and warnings for missing or cyclic dependency IDs. Add dependencies with the `depends_on` field on `team_tasks_add`.
 
 Configure the port in `.opencode/ensemble.json`:
 
