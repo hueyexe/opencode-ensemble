@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { setupDeps, insertTeam, insertMember } from "./helpers"
+import { setupDeps, insertTeam, insertMember, flushWakes } from "./helpers"
 import { executeTeamCreate } from "../src/tools/team-create"
 import { executeTeamSpawn } from "../src/tools/team-spawn"
 import { executeTeamMessage } from "../src/tools/team-message"
@@ -50,14 +50,15 @@ describe("integration: full team lifecycle", () => {
       const sessId = (deps.db.query("SELECT session_id FROM team_member WHERE team_id = ? AND name = ?").get(team.id, m.name) as { session_id: string }).session_id
       await executeTeamMessage(deps, { to: "lead", text: `${m.name} reporting done` }, sessId)
     }
+    await flushWakes()
 
     // Verify: 4 messages in DB with delivered=0
     const msgs = deps.db.query("SELECT delivered FROM team_message WHERE team_id = ? AND to_name = 'lead'").all(team.id) as Array<{ delivered: number }>
     expect(msgs).toHaveLength(4)
     for (const msg of msgs) expect(msg.delivered).toBe(0)
 
-    // Verify: 4 additional promptAsync wake-up calls (total now 8: 4 spawn + 4 wake)
-    expect(deps.client.calls.filter(c => c.method === "session.promptAsync")).toHaveLength(8)
+    // Verify: 4 spawn prompts + 1 coalesced wake for all 4 messages (#57)
+    expect(deps.client.calls.filter(c => c.method === "session.promptAsync")).toHaveLength(5)
 
     // 4. Lead receives messages via system prompt transform
     const prompt = buildLeadSystemPrompt(deps.db, team.id)
@@ -236,6 +237,7 @@ describe("integration: message delivery pipeline end-to-end", () => {
     // Step 1: Teammate sends message to lead
     const msgResult = await executeTeamMessage(deps, { to: "lead", text: "Found 3 issues in the auth module" }, workerSession)
     expect(msgResult).toContain("Message sent to lead")
+    await flushWakes()
 
     // Step 2: Message stored in DB with delivered=0
     const dbMsg = deps.db.query("SELECT * FROM team_message WHERE team_id = ? AND to_name = 'lead'").get(team.id) as { content: string; delivered: number }
@@ -326,13 +328,15 @@ describe("integration: race conditions and edge cases", () => {
       executeTeamMessage(deps, { to: "lead", text: "z done" }, sessions[2]!),
     ])
 
+    await flushWakes()
+
     // 3 messages in DB
     const msgs = deps.db.query("SELECT content FROM team_message WHERE team_id = ? AND to_name = 'lead' ORDER BY time_created").all(team.id) as Array<{ content: string }>
     expect(msgs).toHaveLength(3)
 
-    // 3 wake-up promptAsync calls
+    // 3 simultaneous messages coalesce into 1 wake (#57)
     const wakes = deps.client.calls.filter(c => c.method === "session.promptAsync")
-    expect(wakes).toHaveLength(3)
+    expect(wakes).toHaveLength(1)
 
     // System prompt delivers all 3
     const prompt = buildLeadSystemPrompt(deps.db, team.id)

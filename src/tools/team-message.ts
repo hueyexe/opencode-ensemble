@@ -3,6 +3,7 @@ import { resolveRecipientSession } from "../types"
 import { requireTeamMember } from "./shared"
 import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { parseModelId, getMemberModel } from "../member-model"
+import { wakeLeadIfPending } from "../wake"
 import { log } from "../log"
 
 /**
@@ -122,11 +123,9 @@ export async function executeTeamMessage(
   // because session.idle events are scoped per-instance.
   if (isToLead) {
     log(`team_message:wake-lead from=${senderName} recipientSession=${recipientSessionId}`)
-    deps.client.session.promptAsync({
-      sessionID: recipientSessionId,
-      parts: [{ type: "text", text: `[System: New team message from ${senderName}]` }],
-      synthetic: true,
-    }).catch((err) => {
+    // Coalesced, guarded wake: skips when the team is gone or the lead has
+    // already drained the inbox, and never queues behind a busy lead (#48, #57).
+    wakeLeadIfPending(deps.client, deps.db, teamInfo.teamId).catch((err) => {
       log(`team_message:wake-lead:failed from=${senderName} err=${err instanceof Error ? err.message : String(err)}`)
     })
     return `Message sent to ${args.to}.`

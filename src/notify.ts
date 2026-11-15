@@ -1,6 +1,7 @@
 import type { Database } from "./db"
 import type { PluginClient } from "./types"
 import { sendMessage } from "./messaging"
+import { wakeLeadIfPending } from "./wake"
 import { log } from "./log"
 
 type TeamEventType = "spawn" | "message" | "completed" | "error" | "shutdown"
@@ -90,16 +91,14 @@ export async function notifyWorkingProgress(
  * so the message is delivered on the lead's next turn.
  *
  * This is the delivery path for system events (teammate errors, timeouts,
- * stalls, spawn failures). Unlike the passive wake-lead path in the event
- * hook, this ALWAYS fires a promptAsync regardless of whether teammates are
- * still busy — an errored/aborted teammate is precisely the case where the
- * "all teammates done" gate would otherwise suppress the wake and strand the
- * message in the DB with delivered=0.
+ * stalls, spawn failures). The wake is forced past the busy check so an
+ * errored/aborted teammate is not stranded while the lead is working; the
+ * wake itself is still guarded against archived/purged teams and coalesced
+ * with normal wakes (#48, #57).
  *
- * The message is persisted first; the promptAsync wake is fire-and-forget
- * (never awaited, per the plugin's promptAsync invariant). If the wake fails,
- * the message is still in the DB and the passive backstop / recovery paths
- * remain available.
+ * The message is persisted first; the wake is fire-and-forget (never awaited,
+ * per the plugin's promptAsync invariant). If the wake fails, the message is
+ * still in the DB and the passive backstop / recovery paths remain available.
  *
  * Returns the persisted message id.
  */
@@ -111,18 +110,10 @@ export function notifyLead(
 ): string {
   const id = sendMessage(db, { teamId, from: "system", to: "lead", content })
 
-  const team = db.query("SELECT lead_session_id FROM team WHERE id = ?")
-    .get(teamId) as { lead_session_id: string } | null
-  if (!team?.lead_session_id) return id
-
   // Fire-and-forget wake — the system prompt transform delivers the actual
   // content on the lead's next turn. Synthetic: renders as a persistent
   // system entry, not a fake user turn.
-  client.session.promptAsync({
-    sessionID: team.lead_session_id,
-    parts: [{ type: "text", text: "[System: New team message from system]" }],
-    synthetic: true,
-  }).catch((err) => {
+  wakeLeadIfPending(client, db, teamId, { force: true }).catch((err) => {
     log(`notifyLead:wake:failed team=${teamId} err=${err instanceof Error ? err.message : String(err)}`)
   })
 

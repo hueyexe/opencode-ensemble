@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { setupDeps, insertTeam, insertMember } from "./helpers"
+import { setupDeps, insertTeam, insertMember, flushWakes } from "./helpers"
 import { executeTeamCreate } from "../src/tools/team-create"
 import { executeTeamSpawn } from "../src/tools/team-spawn"
 import { executeTeamMessage } from "../src/tools/team-message"
@@ -143,6 +143,7 @@ describe("issue #3: completion loop prevention", () => {
 
     // Grace asks lead a question (messages lead, but is still busy)
     await executeTeamMessage(deps, { to: "lead", text: "I have a question about the API" }, graceSession)
+    await flushWakes()
 
     // Grace is NOT marked as completed yet (still busy)
     expect(hasReportedCompletion(deps.db, team.id, "grace")).toBe(false)

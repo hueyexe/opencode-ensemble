@@ -14,6 +14,7 @@ import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation
 import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "./notify"
 import { hasReportedCompletion } from "./messaging"
 import { getMemberModel } from "./member-model"
+import { wakeLeadIfPending } from "./wake"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -64,8 +65,6 @@ const plugin: Plugin = async (input) => {
   const nudgedMembers = new Set<string>()
   const progressTracker = new ProgressTracker()
   const activityBuffer = new ActivityBuffer()
-  const wakeLeadTimestamps = new Map<string, number>()
-  const WAKE_LEAD_COOLDOWN_MS = 5000
 
   // Extract the working HeyAPI transport from the plugin-provided v1 client and pass it
   // to the v2 OpencodeClient. The plugin framework provides a v1 client which stores its
@@ -271,27 +270,16 @@ const plugin: Plugin = async (input) => {
           await notifyWorkingProgress(client, db, transition.teamId)
         }
 
-        // Wake the lead when it goes idle and has pending messages.
+        // Wake the lead when it goes idle and has unseen messages.
         // The system prompt transform delivers the actual message content.
         if (statusType === "idle") {
           const team = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'").get(sessionID) as { id: string } | null
           if (team) {
-            const pending = db.query("SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND to_name = 'lead' AND delivered = 0").get(team.id) as { c: number }
-            // Skip wake if all teammates are done or if we woke recently (issue #3 — breaks completion loop)
-            const allDone = (db.query(
-              "SELECT COUNT(*) as c FROM team_member WHERE team_id = ? AND status NOT IN ('ready', 'shutdown', 'error')"
-            ).get(team.id) as { c: number }).c === 0
-            const lastWake = wakeLeadTimestamps.get(team.id) ?? 0
-            if (pending.c > 0 && !allDone && Date.now() - lastWake > WAKE_LEAD_COOLDOWN_MS) {
-              wakeLeadTimestamps.set(team.id, Date.now())
-              log(`wake-lead: ${pending.c} pending messages, sending promptAsync`)
-              client.session.promptAsync({
-                sessionID,
-                parts: [{ type: "text", text: `[System: ${pending.c} new team message(s) available]` }],
-              }).catch((err) => {
-                log(`wake-lead:failed err=${err instanceof Error ? err.message : String(err)}`)
-              })
-            }
+            // Guarded/coalesced: skips if the team was archived or the inbox
+            // was already drained while this idle event was in flight (#48, #57).
+            wakeLeadIfPending(client, db, team.id).catch((err) => {
+              log(`wake-lead:failed err=${err instanceof Error ? err.message : String(err)}`)
+            })
           }
 
           // Also flush peer messages for teammates that just went idle

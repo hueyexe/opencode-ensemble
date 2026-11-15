@@ -92,6 +92,13 @@ export function mockClient(): PluginClient & { calls: Array<{ method: string; ar
   }
 }
 
+/** Flush fire-and-forget wake microtasks (wakeLeadIfPending awaits session.status). */
+export async function flushWakes(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
 /** Create full ToolDeps for testing. */
 export function setupDeps(db?: EnsembleDatabase): ToolDeps & { client: ReturnType<typeof mockClient> } {
   const d = db ?? setupDb()

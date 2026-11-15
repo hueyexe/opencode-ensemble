@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { setupDeps, insertTeam, insertMember } from "../helpers"
+import { setupDeps, insertTeam, insertMember, flushWakes } from "../helpers"
 import { executeTeamMessage } from "../../src/tools/team-message"
 import { executeTeamBroadcast } from "../../src/tools/team-broadcast"
 
@@ -26,6 +26,7 @@ describe("team_message", () => {
     expect(rows[0]!.to_name).toBe("lead")
 
     // Check promptAsync WAS called — wake-up for the lead
+    await flushWakes()
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
   })
@@ -65,6 +66,7 @@ describe("team_message", () => {
     expect(result).toContain("Message sent to lead")
 
     // promptAsync called once (wake-up only, not full content)
+    await flushWakes()
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
 
@@ -78,6 +80,7 @@ describe("team_message", () => {
     const result = await executeTeamMessage(deps, { to: "lead", text: shortText }, "sess-alice")
     expect(result).toContain("Message sent to lead")
 
+    await flushWakes()
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
 
@@ -304,6 +307,7 @@ describe("team_message — lead-bound messages wake the lead", () => {
     expect(result).toContain("Message sent to lead")
 
     // promptAsync should be called once (wake-up)
+    await flushWakes()
     const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
 
@@ -329,11 +333,12 @@ describe("team_message — lead-bound messages wake the lead", () => {
     expect(result).toContain("Message sent to lead")
   })
 
-  test("never calls session.status for lead-bound messages", async () => {
+  test("checks the lead's status before waking so a busy lead is not queued", async () => {
     await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
+    await flushWakes()
 
     const statusCalls = deps.client.calls.filter(c => c.method === "session.status")
-    expect(statusCalls).toHaveLength(0)
+    expect(statusCalls).toHaveLength(1)
   })
 
   test("still calls promptAsync for member-to-member messages", async () => {
