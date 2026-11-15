@@ -4,34 +4,6 @@
 
 # OpenCode Ensemble
 
-## Dependency graph fork
-
-This fork adds a **Dependency graph** tab beside **Overview** in the dashboard.
-Task cards show the assigned agent, agent status/type/model, task status, and
-unfinished prerequisites. Arrows flow from prerequisite to dependent. Select a
-card to inspect its dependencies and open the assigned agent's existing drawer.
-Unassigned tasks remain visible; missing prerequisites and cycles show warnings.
-The graph updates with live dashboard state and supports keyboard navigation.
-
-Install this fork in OpenCode V2:
-
-```bash
-opencode plugin add 'github:Andrii-Hladkyi-Masedko/opencode-ensemble#feature/dependency-graph'
-```
-
-Replace any existing upstream Ensemble plugin entry rather than loading both.
-Check global and project configuration, restart OpenCode, and open the dashboard
-at `http://localhost:4747`. No new runtime dependencies or database changes.
-
-For local development, point the `plugins` entry at your clone/worktree:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [{ "package": "/absolute/path/to/opencode-ensemble" }]
-}
-```
-
 [![npm version](https://img.shields.io/npm/v/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![npm downloads](https://img.shields.io/npm/dm/@hueyexe/opencode-ensemble.svg)](https://www.npmjs.com/package/@hueyexe/opencode-ensemble)
 [![CI](https://github.com/hueyexe/opencode-ensemble/actions/workflows/ci.yml/badge.svg)](https://github.com/hueyexe/opencode-ensemble/actions/workflows/ci.yml)
@@ -183,6 +155,8 @@ A real-time mission control dashboard runs at `http://localhost:4747` while Open
 - **Keyboard shortcuts** — `j/k` navigate agents, `Enter` opens drawer, `Esc` closes, `?` shows help
 - **Live clock** — current time + team session duration
 - **Project outline** — collapsible per-project grouping when teams span multiple working directories
+
+The **Dependencies** tab lays out every task as a card, with arrows from each prerequisite to its dependent, live agent ownership/status, a detail panel for prerequisites and dependents, and warnings for missing or cyclic dependency IDs. Add dependencies with the `depends_on` field on `team_tasks_add`.
 
 Configure the port in `.opencode/ensemble.json`:
 
@@ -431,7 +405,9 @@ Configure via JSON files, environment variables, or both. Project config overrid
   "modelsByAgent": {},
   "modelAssignment": "default",
   "promptForModels": false,
-  "systemPromptTeamState": "full"
+  "systemPromptTeamState": "full",
+  "taskDepthLimit": 0,
+  "taskDepthLimitOverflowAction": "lead_resolve"
 }
 ```
 
@@ -455,6 +431,8 @@ All fields are optional. Missing fields use defaults.
 | `modelAssignment` | `"default"` | How to assign models: `"default"`, `"rotate"`, or `"random"`. |
 | `promptForModels` | `false` | Lead asks user about model preferences before spawning. |
 | `systemPromptTeamState` | `"full"` | Live team state in the system prompt: `"full"` (statuses, tasks, message payloads), `"state-only"` (no message payloads; use `team_results`), or `"off"` (stable role/workflow guidance only). Lower settings avoid provider prefix-cache invalidation on every state change. |
+| `taskDepthLimit` | `0` (unlimited) | Maximum task dependency depth, counting roots as depth 1. `team_tasks_add` rejects a batch that would exceed it, before writing anything. The issue #42 `depth_limit` alias is accepted. |
+| `taskDepthLimitOverflowAction` | `"lead_resolve"` | `"lead_resolve"` tells the lead to split the work; `"user_resolve"` tells the lead to ask the user first. Both reject the over-limit batch. The issue #42 `depth_limit_overflow_action` alias is accepted. |
 
 ### Environment variables
 

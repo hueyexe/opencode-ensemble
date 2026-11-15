@@ -33,6 +33,10 @@ export interface EnsembleConfig {
   modelAssignment?: "default" | "rotate" | "random"
   /** Lead asks user about model preferences before spawning (default: false) */
   promptForModels?: boolean
+  /** Max task dependency depth (default: 0 = unlimited). Roots count as depth 1. */
+  taskDepthLimit?: number
+  /** What to do when a task would exceed taskDepthLimit (default: "lead_resolve"). */
+  taskDepthLimitOverflowAction?: "lead_resolve" | "user_resolve"
   /**
    * How much live team state to inject into the system prompt:
    * "full" (default) includes statuses, tasks, and message payloads;
@@ -61,6 +65,8 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   modelAssignment: "default",
   promptForModels: false,
   systemPromptTeamState: "full",
+  taskDepthLimit: 0,
+  taskDepthLimitOverflowAction: "lead_resolve",
 }
 
 /** Read a JSON config file, returning an empty object on missing/invalid. */
@@ -90,6 +96,17 @@ function readConfigFile(filePath: string): Partial<EnsembleConfig> {
     if (typeof raw.promptForModels === "boolean") result.promptForModels = raw.promptForModels
     if (typeof raw.systemPromptTeamState === "string" && ["full", "state-only", "off"].includes(raw.systemPromptTeamState)) {
       result.systemPromptTeamState = raw.systemPromptTeamState as "full" | "state-only" | "off"
+    }
+    // Accept the issue #42 snake_case spellings as aliases; camelCase wins.
+    const depthLimit = typeof raw.taskDepthLimit === "number" ? raw.taskDepthLimit : raw.depth_limit
+    if (typeof depthLimit === "number" && Number.isInteger(depthLimit) && depthLimit >= 0) {
+      result.taskDepthLimit = depthLimit
+    }
+    const overflow = typeof raw.taskDepthLimitOverflowAction === "string"
+      ? raw.taskDepthLimitOverflowAction
+      : raw.depth_limit_overflow_action
+    if (overflow === "lead_resolve" || overflow === "user_resolve") {
+      result.taskDepthLimitOverflowAction = overflow
     }
     return result
   } catch (err) {

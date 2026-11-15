@@ -117,6 +117,54 @@ describe("team_tasks_add", () => {
     ] }, "lead-sess")
     expect(result).toContain("Added 1 task")
   })
+
+  test("deduplicates repeated depends_on IDs", async () => {
+    const first = await executeTeamTasksAdd(deps, { tasks: [{ content: "A", priority: "low" }] }, "sess-alice")
+    const id = first.match(/task_\S+/)![0]!
+
+    await executeTeamTasksAdd(deps, { tasks: [{ content: "B", priority: "low", depends_on: [id, id] }] }, "sess-alice")
+
+    const row = deps.db.query("SELECT depends_on FROM team_task WHERE content = 'B'").get() as { depends_on: string }
+    expect(JSON.parse(row.depends_on)).toEqual([id])
+  })
+
+  test("enforces taskDepthLimit atomically before inserting (issue #42)", async () => {
+    deps.config = { ...deps.config, taskDepthLimit: 3 }
+    const a = (await executeTeamTasksAdd(deps, { tasks: [{ content: "A", priority: "low" }] }, "sess-alice")).match(/task_\S+/)![0]!
+    const b = (await executeTeamTasksAdd(deps, { tasks: [{ content: "B", priority: "low", depends_on: [a] }] }, "sess-alice")).match(/task_\S+/)![0]!
+    const c = (await executeTeamTasksAdd(deps, { tasks: [{ content: "C", priority: "low", depends_on: [b] }] }, "sess-alice")).match(/task_\S+/)![0]!
+
+    await expect(executeTeamTasksAdd(deps, { tasks: [
+      { content: "D", priority: "low", depends_on: [c] },
+      { content: "E", priority: "low" },
+    ] }, "sess-alice")).rejects.toThrow(/Task depth 4 exceeds taskDepthLimit 3/)
+
+    // The whole batch is rejected — E must not be inserted either.
+    const rows = deps.db.query("SELECT content FROM team_task WHERE team_id = ? ORDER BY content").all("t1") as Array<{ content: string }>
+    expect(rows.map(row => row.content)).toEqual(["A", "B", "C"])
+  })
+
+  test("taskDepthLimit 0 (default) allows any depth", async () => {
+    let parent: string | undefined
+    for (const content of ["A", "B", "C", "D", "E"]) {
+      const result = await executeTeamTasksAdd(deps, { tasks: [{
+        content,
+        priority: "low",
+        ...(parent ? { depends_on: [parent] } : {}),
+      }] }, "sess-alice")
+      parent = result.match(/task_\S+/)![0]!
+    }
+    const count = deps.db.query("SELECT COUNT(*) as c FROM team_task WHERE team_id = ?").get("t1") as { c: number }
+    expect(count.c).toBe(5)
+  })
+
+  test("user_resolve overflow asks the lead to consult the user", async () => {
+    deps.config = { ...deps.config, taskDepthLimit: 1, taskDepthLimitOverflowAction: "user_resolve" }
+    const a = (await executeTeamTasksAdd(deps, { tasks: [{ content: "A", priority: "low" }] }, "sess-alice")).match(/task_\S+/)![0]!
+
+    await expect(executeTeamTasksAdd(deps, { tasks: [{ content: "B", priority: "low", depends_on: [a] }] }, "sess-alice"))
+      .rejects.toThrow(/Ask the user/)
+  })
 })
 
 describe("team_tasks_complete", () => {
@@ -144,6 +192,22 @@ describe("team_tasks_complete", () => {
 
     const row = deps.db.query("SELECT status FROM team_task WHERE id = ?").get(taskId) as Record<string, string>
     expect(row.status).toBe("completed")
+  })
+
+  test("tolerates a malformed depends_on row while unblocking", async () => {
+    const addResult = await executeTeamTasksAdd(deps, { tasks: [
+      { content: "Fix bug", priority: "high" },
+    ] }, "sess-alice")
+    const taskId = addResult.match(/task_\S+/)![0]!
+    await executeTeamClaim(deps, { task_id: taskId }, "sess-alice")
+
+    // Hand-edited/legacy corruption must not break the unblock pass.
+    deps.db.run(
+      "INSERT INTO team_task (id, team_id, content, status, priority, depends_on, time_created, time_updated) VALUES (?, ?, ?, 'blocked', 'low', ?, ?, ?)",
+      ["task_bad_dep", "t1", "Bad row", "not json {{{", Date.now(), Date.now()],
+    )
+
+    await expect(executeTeamTasksComplete(deps, { task_id: taskId }, "sess-alice")).resolves.toContain("Completed")
   })
 
   test("fires a progress toast on completion", async () => {

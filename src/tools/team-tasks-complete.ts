@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
+import { parseTaskDependencies } from "../task-graph"
 import { log } from "../log"
 
 /**
@@ -51,7 +52,7 @@ export async function executeTeamTasksComplete(
   let unblocked = 0
   for (const t of allTasks) {
     if (t.status !== "blocked" || !t.depends_on) continue
-    const depIds: string[] = JSON.parse(t.depends_on)
+    const depIds = parseTaskDependencies(t.depends_on)
     if (!depIds.includes(args.task_id)) continue
 
     const allResolved = depIds.every(depId => {

@@ -87,6 +87,31 @@ describe("config", () => {
     expect(loadConfig(tmpDir).systemPromptTeamState).toBe("full")
   })
 
+  test("loads task depth policy and accepts snake_case aliases (#42)", () => {
+    expect(DEFAULT_CONFIG.taskDepthLimit).toBe(0)
+    expect(DEFAULT_CONFIG.taskDepthLimitOverflowAction).toBe("lead_resolve")
+
+    const configDir = path.join(tmpDir, ".opencode")
+    mkdirSync(configDir, { recursive: true })
+
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({
+      taskDepthLimit: 6,
+      taskDepthLimitOverflowAction: "user_resolve",
+    }))
+    expect(loadConfig(tmpDir).taskDepthLimit).toBe(6)
+    expect(loadConfig(tmpDir).taskDepthLimitOverflowAction).toBe("user_resolve")
+
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({
+      depth_limit: 3,
+      depth_limit_overflow_action: "lead_resolve",
+    }))
+    expect(loadConfig(tmpDir).taskDepthLimit).toBe(3)
+    expect(loadConfig(tmpDir).taskDepthLimitOverflowAction).toBe("lead_resolve")
+
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ taskDepthLimit: -1 }))
+    expect(loadConfig(tmpDir).taskDepthLimit).toBe(0)
+  })
+
   test("invalid JSON logs warning and returns defaults", () => {
     const configDir = path.join(tmpDir, ".opencode")
     mkdirSync(configDir, { recursive: true })
