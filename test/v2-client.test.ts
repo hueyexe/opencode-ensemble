@@ -164,6 +164,25 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect(calls[1]?.input).toMatchObject({ sessionID: "ses_child", delivery: "queue" })
   })
 
+  test("session.promptAsync passes a model variant through switchModel", async () => {
+    const { calls, ctx } = mockCtx()
+    const client = createV2Client(ctx as never)
+    await client.session.promptAsync({
+      sessionID: "ses_child",
+      parts: [{ type: "text", text: "hello" }],
+      model: { providerID: "openai", modelID: "gpt-6.1-terra", variant: "max" },
+    })
+    expect(calls[0]).toMatchObject({
+      domain: "session",
+      method: "switchModel",
+      input: {
+        sessionID: "ses_child",
+        model: { providerID: "openai", id: "gpt-6.1-terra", variant: "max" },
+      },
+    })
+    expect(calls[1]?.input).toMatchObject({ sessionID: "ses_child", delivery: "queue" })
+  })
+
   test("session.abort maps to interrupt", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never)

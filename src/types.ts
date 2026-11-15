@@ -50,7 +50,7 @@ export interface PluginClient {
     promptAsync(options: {
       sessionID: string
       parts: Array<{ type: "text"; text: string }>
-      model?: { providerID: string; modelID: string }
+      model?: { providerID: string; modelID: string; variant?: string }
       agent?: string
       tools?: Record<string, boolean>
       system?: string

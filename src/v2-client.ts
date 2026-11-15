@@ -215,7 +215,11 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         if (options.model) {
           await ctx.session.switchModel({
             sessionID: options.sessionID,
-            model: { providerID: options.model.providerID, id: options.model.modelID },
+            model: {
+              providerID: options.model.providerID,
+              id: options.model.modelID,
+              ...(options.model.variant ? { variant: options.model.variant } : {}),
+            },
           })
         }
         const text = joinParts(options.parts)
