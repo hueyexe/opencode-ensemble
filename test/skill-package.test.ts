@@ -7,6 +7,7 @@ const readmePath = join(root, "README.md");
 const skillDir = join(root, ".agents", "skills", "opencode-ensemble");
 const skillPath = join(skillDir, "SKILL.md");
 const cliSkillPath = join(root, "skills", "opencode-ensemble", "SKILL.md");
+const claudeSkillPath = join(root, ".claude", "skills", "opencode-ensemble", "SKILL.md");
 
 const referenceFiles = [
   "coordination-patterns.md",
@@ -61,7 +62,9 @@ describe("opencode-ensemble agent skill", () => {
   test("lives at the OpenCode project compatibility path and remains CLI-installable", () => {
     expect(existsSync(skillPath)).toBe(true);
     expect(existsSync(cliSkillPath)).toBe(true);
+    expect(existsSync(claudeSkillPath)).toBe(true);
     expect(read(cliSkillPath)).toBe(read(skillPath));
+    expect(read(claudeSkillPath)).toBe(read(skillPath));
   });
 
   test("ships every referenced skill support file", () => {
