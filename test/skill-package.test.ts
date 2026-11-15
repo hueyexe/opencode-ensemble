@@ -4,8 +4,9 @@ import { describe, expect, test } from "bun:test";
 
 const root = join(import.meta.dir, "..");
 const readmePath = join(root, "README.md");
-const skillDir = join(root, "skills", "opencode-ensemble");
+const skillDir = join(root, ".agents", "skills", "opencode-ensemble");
 const skillPath = join(skillDir, "SKILL.md");
+const cliSkillPath = join(root, "skills", "opencode-ensemble", "SKILL.md");
 
 const referenceFiles = [
   "coordination-patterns.md",
@@ -55,6 +56,12 @@ describe("opencode-ensemble agent skill", () => {
     expect(skill).not.toContain("anthropic/claude-opus-4-6");
     expect(skill).toContain("Do not invent task IDs");
     expect(skill).toContain("Keep teammate prompts short");
+  });
+
+  test("lives at the OpenCode project compatibility path and remains CLI-installable", () => {
+    expect(existsSync(skillPath)).toBe(true);
+    expect(existsSync(cliSkillPath)).toBe(true);
+    expect(read(cliSkillPath)).toBe(read(skillPath));
   });
 
   test("ships every referenced skill support file", () => {

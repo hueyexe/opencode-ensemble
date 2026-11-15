@@ -130,6 +130,8 @@ Install the companion skill to teach your AI how to form useful Ensemble teams, 
 npx skills@latest add hueyexe/opencode-ensemble --skill opencode-ensemble
 ```
 
+Inside this repository the skill lives at `.agents/skills/opencode-ensemble`, so OpenCode discovers it automatically while working on Ensemble itself. The `skills/` entry is a symlink kept for the skills CLI.
+
 The skill is useful when you want the agent to decide whether parallel work is appropriate, split work into independent slices, use `depends_on` correctly, or pick a safe mix of `explore` and `build` teammates.
 
 Good team shapes:
