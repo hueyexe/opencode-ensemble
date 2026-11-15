@@ -333,6 +333,19 @@ describe("team_message — lead-bound messages wake the lead", () => {
     expect(row.content).toBe("shutting down")
   })
 
+  test("does not wake the lead for follow-up messages after the teammate reported", async () => {
+    deps.db.run("UPDATE team_member SET reported_to_lead = 1 WHERE team_id = 't1' AND name = 'alice'")
+
+    const result = await executeTeamMessage(deps, { to: "lead", text: "ack" }, "sess-alice")
+    expect(result).toContain("Message sent to lead")
+    await flushWakes()
+
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
+    const row = deps.db.query("SELECT content FROM team_message WHERE team_id = 't1'").get() as { content: string }
+    expect(row.content).toBe("ack")
+  })
+
   test("stores message in DB with delivered=0 (system prompt transform delivers content)", async () => {
     await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
 

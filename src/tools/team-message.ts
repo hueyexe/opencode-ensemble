@@ -130,8 +130,9 @@ export async function executeTeamMessage(
       ? "lead"
       : (deps.db.query("SELECT status FROM team_member WHERE team_id = ? AND name = ?")
           .get(teamInfo.teamId, senderName) as { status: string } | null)?.status
-    if (senderStatus === "shutdown_requested" || senderStatus === "shutdown") {
-      log(`team_message:wake-lead:skip-shutdown from=${senderName} status=${senderStatus}`)
+    const alreadyReported = teamInfo.role !== "lead" && hasReportedCompletion(deps.db, teamInfo.teamId, senderName)
+    if (senderStatus === "shutdown_requested" || senderStatus === "shutdown" || alreadyReported) {
+      log(`team_message:wake-lead:skip-followup from=${senderName} status=${senderStatus} reported=${alreadyReported}`)
       return `Message sent to ${args.to}.`
     }
 
