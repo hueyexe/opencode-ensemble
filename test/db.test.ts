@@ -103,6 +103,21 @@ describe("schema migrations", () => {
     expect(row.last_wake_at).toBe(0)
   })
 
+  test("migration 12 adds persisted lead_status to team with default idle", () => {
+    applyMigrations(db)
+    const cols = db.query("PRAGMA table_info(team)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>
+    const col = cols.find(c => c.name === "lead_status")
+    expect(col).toBeTruthy()
+    expect(col?.notnull).toBe(1)
+    expect(String(col?.dflt_value)).toBe("'idle'")
+
+    db.run(
+      "INSERT INTO team (id, name, project_id, lead_session_id, status, delegate, time_created, time_updated) VALUES ('t1', 'team', 'default', 'lead', 'active', 0, 0, 0)"
+    )
+    const row = db.query("SELECT lead_status FROM team WHERE id = 't1'").get() as { lead_status: string }
+    expect(row.lead_status).toBe("idle")
+  })
+
   test("creates team_task table", () => {
     applyMigrations(db)
     const row = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='team_task'").get()

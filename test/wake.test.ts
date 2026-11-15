@@ -99,7 +99,7 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
 
   test("does not queue a wake behind a busy lead", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
-    deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })
+    deps.db.run("UPDATE team SET lead_status = 'busy' WHERE id = 't1'")
 
     const sent = await wakeLeadIfPending(deps.client, deps.db, "t1")
     expect(sent).toBe(false)
@@ -109,7 +109,7 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
   test("does not queue a wake behind a busy lead on V2 (idle backstop retries)", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
     deps.client.agent = { readOnly: async () => undefined }
-    deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })
+    deps.db.run("UPDATE team SET lead_status = 'busy' WHERE id = 't1'")
 
     const sent = await wakeLeadIfPending(deps.client, deps.db, "t1")
     expect(sent).toBe(false)
@@ -118,7 +118,7 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
 
   test("force sends even when the lead is busy (system/error notifications)", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "system", to: "lead", content: "alice failed" })
-    deps.client.session.status = async () => ({ data: { "lead-sess": { type: "busy" } } })
+    deps.db.run("UPDATE team SET lead_status = 'busy' WHERE id = 't1'")
 
     const sent = await wakeLeadIfPending(deps.client, deps.db, "t1", { force: true })
     expect(sent).toBe(true)
@@ -186,22 +186,22 @@ describe("wakeLeadIfPending (issues #48, #57)", () => {
   test("re-checks team state after the status lookup (cleanup between schedule and send)", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
 
-    let releaseStatus: (() => void) | undefined
-    deps.client.session.status = () => new Promise((resolve) => {
-      releaseStatus = () => resolve({ data: {} })
+    let releaseMessages: (() => void) | undefined
+    deps.client.session.messages = () => new Promise((resolve) => {
+      releaseMessages = () => resolve({ data: [] })
     })
 
     const pending = wakeLeadIfPending(deps.client, deps.db, "t1")
     deps.db.run("UPDATE team SET status = 'archived' WHERE id = 't1'")
-    releaseStatus!()
+    releaseMessages!()
 
     expect(await pending).toBe(false)
     expect(wakes(deps)).toHaveLength(0)
   })
 
-  test("never throws when the transport fails", async () => {
+  test("never throws when the selection lookup fails", async () => {
     sendMessage(deps.db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
-    deps.client.session.status = async () => { throw new Error("status down") }
+    deps.client.session.messages = async () => { throw new Error("selection lookup down") }
 
     await expect(wakeLeadIfPending(deps.client, deps.db, "t1")).resolves.toBe(true)
     expect(wakes(deps)).toHaveLength(1)

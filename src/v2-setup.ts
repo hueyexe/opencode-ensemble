@@ -158,17 +158,32 @@ export async function setupEnsemble(
   const dispatch = async (event: V2EventLike): Promise<void> => {
     const transition = dispatchV2Event(db, registry, tracker, event)
 
+    // Persist the lead's status so teammate instances can make reliable,
+    // synchronous wake decisions from the shared DB (#57). session.active()
+    // can report idle between LLM steps, which queued wakes behind a busy turn.
+    const sessionID = event.data?.sessionID
+    const rawStatus = event.type === "session.status"
+      ? (typeof event.data?.status === "string" ? event.data.status : event.data?.status?.type)
+      : event.type === "session.idle"
+        || event.type === "session.execution.succeeded"
+        || event.type === "session.execution.failed"
+        ? "idle"
+        : event.type === "session.execution.started"
+          ? "busy"
+          : event.type === "session.retry.scheduled"
+            ? "retry"
+            : undefined
+    if (sessionID && (rawStatus === "idle" || rawStatus === "busy" || rawStatus === "retry")) {
+      const leadTeam = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'")
+        .get(sessionID) as { id: string } | null
+      if (leadTeam) db.run("UPDATE team SET lead_status = ? WHERE id = ?", [rawStatus, leadTeam.id])
+    }
+
     // Lead idle backstop (V2). The wake path skips a busy lead so it cannot
     // queue behind the current turn; this re-checks after the turn and wakes
     // only if messages are still unseen. Without it, a message arriving while
     // the lead is busy would sit until the user sent another prompt.
-    const sessionID = event.data?.sessionID
-    const idle = event.type === "session.idle"
-      || event.type === "session.execution.succeeded"
-      || event.type === "session.execution.failed"
-      || (event.type === "session.status"
-        && (typeof event.data?.status === "string" ? event.data.status : event.data?.status?.type) === "idle")
-    if (idle && sessionID && wakeClient) {
+    if (rawStatus === "idle" && sessionID && wakeClient) {
       const leadTeam = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'")
         .get(sessionID) as { id: string } | null
       if (leadTeam) {

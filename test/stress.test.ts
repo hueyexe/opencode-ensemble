@@ -839,6 +839,7 @@ describe("stress: completion loop prevention (issue #3)", () => {
 
     // Dave reports and goes idle
     await executeTeamMessage(deps, { to: "lead", text: "first pass done" }, daveSess)
+    await flushWakes()
     deps.db.run("UPDATE team_member SET status = 'busy' WHERE session_id = ?", [daveSess])
     handleSessionStatusEvent(deps.db, deps.registry, daveSess, "idle")
     expect(hasReportedCompletion(deps.db, teamId, "dave")).toBe(true)

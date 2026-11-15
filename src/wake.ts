@@ -36,6 +36,7 @@ interface PendingLeadWake {
   count: number
   senders: string[]
   lastWakeAt: number
+  leadStatus: string
 }
 
 /**
@@ -45,8 +46,8 @@ interface PendingLeadWake {
  * purged team (#48) or after the inbox was drained (#57).
  */
 function pendingLeadWake(db: Database, teamId: string): PendingLeadWake | undefined {
-  const team = db.query("SELECT lead_session_id, last_wake_at FROM team WHERE id = ? AND status = 'active'")
-    .get(teamId) as { lead_session_id: string; last_wake_at: number } | null
+  const team = db.query("SELECT lead_session_id, last_wake_at, lead_status FROM team WHERE id = ? AND status = 'active'")
+    .get(teamId) as { lead_session_id: string; last_wake_at: number; lead_status: string } | null
   if (!team?.lead_session_id) return undefined
 
   const row = db.query(
@@ -61,7 +62,13 @@ function pendingLeadWake(db: Database, teamId: string): PendingLeadWake | undefi
     count: row.c,
     senders: row.senders ? row.senders.split(",").filter(Boolean) : [],
     lastWakeAt: team.last_wake_at,
+    leadStatus: team.lead_status,
   }
+}
+
+/** A lead is busy while its session is actively running or retrying. */
+function leadIsBusy(status: string): boolean {
+  return status === "busy" || status === "retry"
 }
 
 /** Schedule one trailing re-check after a cooldown skip. */
@@ -82,17 +89,6 @@ function scheduleCooldownRetry(
   }, Math.max(0, delayMs))
   ;(timer as { unref?: () => void }).unref?.()
   state.timers.set(teamId, timer)
-}
-
-/** Best-effort busy check. Unknown status is treated as idle so wakes are not lost. */
-async function isSessionBusy(client: PluginClient, sessionID: string): Promise<boolean> {
-  try {
-    const status = await client.session.status()
-    const entry = status.data?.[sessionID]
-    return entry?.type === "busy" || entry?.type === "retry"
-  } catch {
-    return false
-  }
 }
 
 /**
@@ -138,9 +134,11 @@ export async function wakeLeadIfPending(
     // produce an empty wake if the lead drains the inbox before the queued
     // message is processed (#57). Both hosts retry on the lead's next idle
     // event (V1 in index.ts, V2 in v2-setup.ts), which re-checks unseen
-    // messages first. System/error notifications can force the wake.
-    if (!options.force && await isSessionBusy(client, before.leadSessionID)) {
-      log(`wake:skip team=${teamId} reason=lead-busy`)
+    // messages first. lead_status is persisted so this decision is reliable
+    // from teammate instances and between LLM steps. System/error
+    // notifications can force the wake.
+    if (!options.force && leadIsBusy(before.leadStatus)) {
+      log(`wake:skip team=${teamId} reason=lead-busy status=${before.leadStatus}`)
       return false
     }
 
@@ -156,6 +154,10 @@ export async function wakeLeadIfPending(
     const after = pendingLeadWake(db, teamId)
     if (!after) {
       log(`wake:skip team=${teamId} reason=drained`)
+      return false
+    }
+    if (!options.force && leadIsBusy(after.leadStatus)) {
+      log(`wake:skip team=${teamId} reason=lead-busy status=${after.leadStatus}`)
       return false
     }
 

@@ -166,6 +166,11 @@ const plugin: Plugin = async (input) => {
       if (event.type === "session.status") {
         const { sessionID, status } = event.properties
         const statusType = status.type as "idle" | "busy" | "retry"
+        // Persist the lead's status so teammate instances can make reliable,
+        // synchronous wake decisions from the shared DB (#57).
+        const leadTeam = db.query("SELECT id FROM team WHERE lead_session_id = ? AND status = 'active'")
+          .get(sessionID) as { id: string } | null
+        if (leadTeam) db.run("UPDATE team SET lead_status = ? WHERE id = ?", [statusType, leadTeam.id])
         const retryPayload = statusType === "retry"
           ? (status as { attempt: number; message: string; action?: { reason: string; provider: string; title: string; message: string; label: string; link?: string }; next: number })
           : undefined

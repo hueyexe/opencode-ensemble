@@ -208,6 +208,11 @@ export const MIGRATIONS: string[] = [
   // teammate instances share the SQLite file but not module state, so an
   // in-memory cooldown cannot coalesce wakes across instances (issue #57).
   `ALTER TABLE team ADD COLUMN last_wake_at INTEGER NOT NULL DEFAULT 0;`,
+  // Migration 12: Persist the lead's last session status. Wake decisions run
+  // from teammate instances that cannot see the lead's event stream, and
+  // session.active() can report idle between steps. The shared DB gives them
+  // a synchronous, reliable busy/idle signal (#57).
+  `ALTER TABLE team ADD COLUMN lead_status TEXT NOT NULL DEFAULT 'idle';`,
 ]
 
 /**

@@ -361,12 +361,14 @@ describe("team_message — lead-bound messages wake the lead", () => {
     expect(result).toContain("Message sent to lead")
   })
 
-  test("checks the lead's status before waking so a busy lead is not queued", async () => {
+  test("uses persisted lead_status so a busy lead is not woken", async () => {
+    deps.db.run("UPDATE team SET lead_status = 'busy' WHERE id = 't1'")
+
     await executeTeamMessage(deps, { to: "lead", text: "done" }, "sess-alice")
     await flushWakes()
 
-    const statusCalls = deps.client.calls.filter(c => c.method === "session.status")
-    expect(statusCalls).toHaveLength(1)
+    const promptCalls = deps.client.calls.filter(c => c.method === "session.promptAsync")
+    expect(promptCalls).toHaveLength(0)
   })
 
   test("still calls promptAsync for member-to-member messages", async () => {

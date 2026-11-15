@@ -31,6 +31,7 @@ describe("issue #3: completion loop prevention", () => {
     // Simulate busy→ready transition (teammate finished work)
     deps.db.run("UPDATE team_member SET status = 'busy' WHERE team_id = ? AND name = ?", [team.id, memberName])
     handleSessionStatusEvent(deps.db, deps.registry, memberSession, "idle")
+    await flushWakes()
 
     return { teamId: team.id, memberSession }
   }

@@ -91,6 +91,29 @@ describe("v2-setup (issue #36)", () => {
     await handle.dispose()
   })
 
+  test("persists lead busy/idle and wakes only on the idle transition", async () => {
+    const { ctx } = mockSetupCtx()
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    seedLeadAndMember(handle)
+    handle.db.run(
+      "INSERT INTO team_message (id, team_id, from_name, to_name, content, delivered, read, time_created) VALUES ('m1', 'team1', 'alice', 'lead', 'done', 0, 0, ?)",
+      [Date.now()],
+    )
+
+    await handle.dispatch({ type: "session.status", data: { sessionID: "ses_lead", status: "busy" } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    let team = handle.db.query("SELECT lead_status, last_wake_at FROM team WHERE id = 'team1'").get() as { lead_status: string; last_wake_at: number }
+    expect(team.lead_status).toBe("busy")
+    expect(team.last_wake_at).toBe(0)
+
+    await handle.dispatch({ type: "session.status", data: { sessionID: "ses_lead", status: "idle" } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    team = handle.db.query("SELECT lead_status, last_wake_at FROM team WHERE id = 'team1'").get() as { lead_status: string; last_wake_at: number }
+    expect(team.lead_status).toBe("idle")
+    expect(team.last_wake_at).toBeGreaterThan(0)
+    await handle.dispose()
+  })
+
   test("lead idle event does not wake when the inbox is drained (V2 backstop)", async () => {
     const { ctx } = mockSetupCtx()
     const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
