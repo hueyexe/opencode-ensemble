@@ -37,10 +37,11 @@ describe("README social preview", () => {
     expect(gitignore).toContain("docs/superpowers/");
   });
 
-  test("uses the bumped plugin version in install snippets", () => {
+  test("uses @latest in install snippets so they cannot go stale", () => {
     const readme = readFileSync(readmePath, "utf8");
 
-    expect(readme).toContain("@hueyexe/opencode-ensemble@0.18.0");
-    expect(readme).not.toContain("@hueyexe/opencode-ensemble@0.17.0");
+    expect(readme).toContain("@hueyexe/opencode-ensemble@latest");
+    // Guard against re-introducing a pinned version that silently rots.
+    expect(readme).not.toMatch(/@hueyexe\/opencode-ensemble@\d+\.\d+\.\d+/);
   });
 });

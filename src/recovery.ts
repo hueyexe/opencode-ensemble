@@ -192,20 +192,25 @@ export async function recoverOrphanedWorktrees(db: Database, client: PluginClien
 }
 
 /**
- * Redeliver undelivered messages (delivered=0) via promptAsync.
+ * Schedule redelivery of undelivered messages (delivered=0) via promptAsync.
  * Resolves recipient session IDs from the member registry or team lead.
- * Continues on partial failure — logs but doesn't abort.
+ *
+ * Delivery is fire-and-forget: promptAsync is never awaited (AGENTS.md
+ * invariant), so a slow or broken transport cannot block recovery/init.
+ * Messages are marked delivered only after promptAsync resolves; failures
+ * leave them undelivered for the next recovery pass. The returned count is
+ * the number of deliveries scheduled, not confirmed.
  */
 export async function recoverUndeliveredMessages(
   db: Database,
   client: PluginClient,
   registry: MemberRegistry,
-): Promise<{ redelivered: number }> {
+): Promise<{ scheduled: number }> {
   // Get all active teams
   const teams = db.query("SELECT id, lead_session_id FROM team WHERE status = 'active'")
     .all() as Array<{ id: string; lead_session_id: string }>
 
-  let redelivered = 0
+  let scheduled = 0
 
   for (const team of teams) {
     const messages = getUndeliveredMessages(db, team.id)
@@ -233,22 +238,24 @@ export async function recoverUndeliveredMessages(
         continue
       }
 
-      try {
-        const recipientModel = getMemberModel(db, team.id, msg.to_name)
-        await client.session.promptAsync({
-          sessionID: recipientSessionId,
-          parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }],
-          ...(recipientModel ? { model: recipientModel } : {}),
-        })
+      const recipientModel = getMemberModel(db, team.id, msg.to_name)
+      // Fire-and-forget, NOT awaited: recovery must not block on transport.
+      // Mark delivered only on success; failures stay undelivered for the
+      // next recovery pass.
+      client.session.promptAsync({
+        sessionID: recipientSessionId,
+        parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }],
+        ...(recipientModel ? { model: recipientModel } : {}),
+      }).then(() => {
         markDelivered(db, msg.id)
-        redelivered++
-      } catch {
-        // Continue on failure — message stays undelivered for next recovery
-      }
+      }).catch((err) => {
+        log(`recovery:redeliver:failed team=${team.id} msg=${msg.id} err=${err instanceof Error ? err.message : String(err)}`)
+      })
+      scheduled++
     }
   }
 
-  return { redelivered }
+  return { scheduled }
 }
 
 /**

@@ -20,7 +20,7 @@ Built on the public OpenCode SDKs — no OpenCode internals. Runtime dependencie
 Install the plugin and you're done:
 
 ```sh
-opencode plugin add @hueyexe/opencode-ensemble@0.18.0
+opencode plugin add @hueyexe/opencode-ensemble@latest
 ```
 
 Then restart OpenCode and ask it to do something that benefits from parallel work. The agent handles the rest. See [Install](#install) for worktree permissions and other options.
@@ -181,19 +181,19 @@ The plugin uses SQLite via the host's runtime adapter:
 The simplest install is the CLI (npm registry or Git package specifiers both work):
 
 ```sh
-opencode plugin add @hueyexe/opencode-ensemble@0.18.0
+opencode plugin add @hueyexe/opencode-ensemble@latest
 ```
 
 This installs globally and writes the config entry for you. To update later: `opencode plugin update @hueyexe/opencode-ensemble`.
 
-**Manual config** — add to your OpenCode config with a pinned version. Project-level or global.
+**Manual config** — add to your OpenCode config with `@latest`, or pin an exact version for reproducibility. Project-level or global.
 
 **Project-level** (`opencode.json` in your project root):
 
 ```jsonc
 {
   // OpenCode v2:
-  "plugins": ["@hueyexe/opencode-ensemble@0.18.0"]
+  "plugins": ["@hueyexe/opencode-ensemble@latest"]
 }
 ```
 
@@ -202,7 +202,7 @@ This installs globally and writes the config entry for you. To update later: `op
 ```jsonc
 {
   // OpenCode v1:
-  "plugin": ["@hueyexe/opencode-ensemble@0.18.0"]
+  "plugin": ["@hueyexe/opencode-ensemble@latest"]
 }
 ```
 

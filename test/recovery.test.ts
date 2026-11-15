@@ -402,7 +402,7 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(1)
+    expect(result.scheduled).toBe(1)
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)
@@ -416,7 +416,7 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "done" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(0)
+    expect(result.scheduled).toBe(0)
 
     // No promptAsync calls for lead messages
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
@@ -449,12 +449,12 @@ describe("recoverUndeliveredMessages", () => {
     db.run("UPDATE team_message SET delivered = 1 WHERE id = ?", [id])
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(0)
+    expect(result.scheduled).toBe(0)
   })
 
   test("returns zero when no undelivered messages", async () => {
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(0)
+    expect(result.scheduled).toBe(0)
   })
 
   test("handles multiple undelivered messages (skips lead-bound)", async () => {
@@ -463,13 +463,13 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "msg3" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(2) // only member-to-member, not lead
+    expect(result.scheduled).toBe(2) // only member-to-member, not lead
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(2)
   })
 
-  test("continues on partial failure", async () => {
+  test("continues on partial failure and leaves the failed message undelivered", async () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "msg1" })
     sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "msg2" })
 
@@ -482,15 +482,35 @@ describe("recoverUndeliveredMessages", () => {
     }
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    // One succeeded, one failed
-    expect(result.redelivered).toBe(1)
+    // Both deliveries are scheduled; only the successful one is marked delivered.
+    expect(result.scheduled).toBe(2)
+
+    await Promise.resolve()
+    const rows = db.query("SELECT delivered FROM team_message WHERE team_id = ? ORDER BY time_created ASC")
+      .all("t1") as Array<{ delivered: number }>
+    expect(rows.map(row => row.delivered)).toEqual([0, 1])
+  })
+
+  test("does not await promptAsync — a slow transport cannot block recovery", async () => {
+    sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
+
+    let release: (() => void) | undefined
+    client.session.promptAsync = () => new Promise((resolve) => {
+      release = () => resolve({})
+    })
+
+    const result = await recoverUndeliveredMessages(db, client, registry)
+    expect(result.scheduled).toBe(1)
+    // The call returned while the delivery promise is still pending.
+    expect(release).toBeDefined()
+    release!()
   })
 
   test("skips broadcast messages (to_name is NULL)", async () => {
     broadcastMessage(db, { teamId: "t1", from: "alice", content: "hey everyone" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(0)
+    expect(result.scheduled).toBe(0)
 
     // No promptAsync calls should have been made
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
@@ -505,7 +525,7 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "charlie", content: "hello" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(0)
+    expect(result.scheduled).toBe(0)
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(0)
@@ -516,7 +536,7 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t1", from: "alice", to: "bob", content: "hello" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(0)
+    expect(result.scheduled).toBe(0)
   })
 
   test("recovers member-to-member messages across multiple active teams (skips lead-bound)", async () => {
@@ -535,7 +555,7 @@ describe("recoverUndeliveredMessages", () => {
     sendMessage(db, { teamId: "t2", from: "charlie", to: "lead", content: "msg for t2" })
 
     const result = await recoverUndeliveredMessages(db, client, registry)
-    expect(result.redelivered).toBe(1) // only member-to-member, lead-bound skipped
+    expect(result.scheduled).toBe(1) // only member-to-member, lead-bound skipped
 
     const promptCalls = client.calls.filter(c => c.method === "session.promptAsync")
     expect(promptCalls).toHaveLength(1)

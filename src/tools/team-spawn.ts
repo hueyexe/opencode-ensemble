@@ -438,6 +438,8 @@ export async function executeTeamSpawn(
           [Date.now(), args.claim_task, args.name]
         )
       }
+      // No preserveBranch() needed here: the spawn prompt never ran, so the
+      // teammate cannot have committed work. The worktree is removed below.
       deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
       if (workspaceId) {
         deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
