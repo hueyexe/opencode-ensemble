@@ -13,6 +13,19 @@ export interface SidebarSummary {
   lines: string[]
 }
 
+/** Mouse-up events that should activate a dashboard link. */
+export interface LinkActivationEvent {
+  button: number
+  isDragging?: boolean
+}
+
+/**
+ * Accept only an un-dragged primary-button release as a link activation.
+ */
+export function isPrimaryLinkActivation(event: LinkActivationEvent): boolean {
+  return event.button === 0 && event.isDragging !== true
+}
+
 /** Glyph per member status (paired with text elsewhere — never color-only). */
 function glyph(status: string): string {
   switch (status) {

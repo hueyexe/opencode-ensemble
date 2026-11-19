@@ -31,6 +31,9 @@ jobs:
       - name: Test
         run: bun test
 
+      - name: TUI browser runtime tests
+        run: bun run test:tui
+
       - name: Build
         run: bun run build
 

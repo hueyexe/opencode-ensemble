@@ -1,11 +1,17 @@
 /** @jsxImportSource @opentui/solid */
 import "@opentui/solid"
 import { TextAttributes } from "@opentui/core"
-import type { BoxRenderable, CliRenderer, RGBA } from "@opentui/core"
-import { createSignal, onCleanup, onMount } from "solid-js"
+import type {
+  BoxRenderable,
+  CliRenderer,
+  RGBA,
+  TextNodeRenderable,
+} from "@opentui/core"
+import { onCleanup, onMount } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { spawn } from "node:child_process"
 import { EnsembleRpc } from "./rpc"
+import { isPrimaryLinkActivation } from "./tui-view"
 
 const DASHBOARD_URL = "http://localhost:4747/"
 
@@ -115,6 +121,8 @@ function sameSnapshot(
 /** Render the sidebar from a snapshot, without async reactive dependencies. */
 function TeamSidebar(props: {
   snapshot: SidebarSnapshot | undefined
+  barWidth: number
+  onBarWidthMeasured: (width: number) => void
   theme: {
     text: {
       muted: RGBA
@@ -128,9 +136,8 @@ function TeamSidebar(props: {
   }
   renderer: CliRenderer
 }) {
-  const [teamHovered, setTeamHovered] = createSignal(false)
-  const [barWidth, setBarWidth] = createSignal(1)
   let barTrack: BoxRenderable | undefined
+  let teamLink: TextNodeRenderable | undefined
   const context = () => props.snapshot?.context
   const team = () => context()?.team
   const totalTasks = () => {
@@ -141,8 +148,8 @@ function TeamSidebar(props: {
     const total = totalTasks()
     if (total === 0) return 0
     return Math.min(
-      barWidth(),
-      Math.round(((context()?.tasks.done ?? 0) / total) * barWidth()),
+      props.barWidth,
+      Math.round(((context()?.tasks.done ?? 0) / total) * props.barWidth),
     )
   }
 
@@ -150,7 +157,14 @@ function TeamSidebar(props: {
     const width = barTrack?.getLayoutNode().getComputedWidth()
     if (!width || !Number.isFinite(width)) return
     const next = Math.max(1, Math.floor(width) - 1)
-    if (next !== barWidth()) setBarWidth(next)
+    if (next !== props.barWidth) props.onBarWidthMeasured(next)
+  }
+
+  const setTeamLinkHover = (hovered: boolean) => {
+    if (!teamLink) return
+    teamLink.attributes = hovered
+      ? TextAttributes.UNDERLINE
+      : TextAttributes.NONE
   }
 
   onMount(() => {
@@ -175,23 +189,20 @@ function TeamSidebar(props: {
         <text
           fg={props.theme.text.muted}
           onMouseUp={(event: { button: number; isDragging?: boolean }) => {
-            if (team() && event.button === 0 && !event.isDragging) {
+            if (team() && isPrimaryLinkActivation(event)) {
               openDashboard()
             }
           }}
-          attributes={
-            team() && teamHovered()
-              ? TextAttributes.UNDERLINE
-              : TextAttributes.NONE
-          }
-          onMouseOver={() => setTeamHovered(true)}
-          onMouseOut={() => setTeamHovered(false)}
+          onMouseOver={() => setTeamLinkHover(true)}
+          onMouseOut={() => setTeamLinkHover(false)}
+          attributes={TextAttributes.NONE}
         >
           {props.snapshot?.unavailable
             ? "unavailable"
             : team()
               ? (
                   <a
+                    ref={(node) => (teamLink = node)}
                     href={DASHBOARD_URL}
                   >
                     {team()}
@@ -237,7 +248,7 @@ function TeamSidebar(props: {
               {"━".repeat(completedBars())}
             </text>
             <text fg={props.theme.text.muted}>
-              {"─".repeat(Math.max(0, barWidth() - completedBars()))}
+              {"─".repeat(Math.max(0, props.barWidth - completedBars()))}
             </text>
           </box>
           <text fg={props.theme.text.muted} flexShrink={0}>
@@ -266,6 +277,7 @@ export default Plugin.define({
     const rpc = context.client.rpc(EnsembleRpc)
     const location = context.location ?? context.data.location.default()
     const snapshots = new Map<string, SidebarSnapshot>()
+    const barWidths = new Map<string, number>()
     const inFlight = new Set<string>()
     const queuedRefresh = new Set<string>()
     let activeSessionID: string | undefined
@@ -319,6 +331,14 @@ export default Plugin.define({
           return (
             <TeamSidebar
               snapshot={snapshots.get(panel.sessionID)}
+              barWidth={barWidths.get(panel.sessionID) ?? 1}
+              onBarWidthMeasured={(width) => {
+                if ((barWidths.get(panel.sessionID) ?? 1) === width) return
+                barWidths.set(panel.sessionID, width)
+                if (activeSessionID === panel.sessionID && !disposed) {
+                  registerSidebar()
+                }
+              }}
               theme={context.theme}
               renderer={context.renderer}
             />

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { summarizeMembers, type SidebarMember } from "../src/tui-view"
+import {
+  isPrimaryLinkActivation,
+  summarizeMembers,
+  type SidebarMember,
+} from "../src/tui-view"
 
 function member(name: string, status: string): SidebarMember {
   return { name, status }
@@ -29,5 +33,11 @@ describe("tui-view helpers (issue #36)", () => {
       member("bob", "error"),
     ])
     expect(summary).toMatchObject({ working: 0, idle: 0, total: 2 })
+  })
+
+  test("dashboard links activate only on an un-dragged primary click", () => {
+    expect(isPrimaryLinkActivation({ button: 0 })).toBe(true)
+    expect(isPrimaryLinkActivation({ button: 1 })).toBe(false)
+    expect(isPrimaryLinkActivation({ button: 0, isDragging: true })).toBe(false)
   })
 })
