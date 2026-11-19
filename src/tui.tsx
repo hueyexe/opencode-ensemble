@@ -2,9 +2,9 @@
 import "@opentui/solid"
 import { TextAttributes } from "@opentui/core"
 import type {
-  BoxRenderable,
   CliRenderer,
   RGBA,
+  TextRenderable,
   TextNodeRenderable,
 } from "@opentui/core"
 import { onCleanup, onMount } from "solid-js"
@@ -132,7 +132,7 @@ function TeamSidebar(props: {
   theme: SidebarTheme
   renderer: CliRenderer
 }) {
-  let barTrack: BoxRenderable | undefined
+  let progressLine: TextRenderable | undefined
   let teamLink: TextNodeRenderable | undefined
   const context = () => props.snapshot?.context
   const team = () => context()?.team
@@ -150,9 +150,11 @@ function TeamSidebar(props: {
   }
 
   const measureBar = () => {
-    const width = barTrack?.getLayoutNode().getComputedWidth()
+    const width = progressLine?.getLayoutNode().getComputedWidth()
     if (!width || !Number.isFinite(width)) return
-    const next = Math.max(1, Math.floor(width) - 1)
+    const labelWidth = "tasks ".length
+    const countWidth = `${context()?.tasks.done ?? 0}/${totalTasks()}`.length
+    const next = Math.max(1, Math.floor(width) - labelWidth - countWidth - 1)
     if (next !== props.barWidth) props.onBarWidthMeasured(next)
   }
 
@@ -224,33 +226,23 @@ function TeamSidebar(props: {
         </box>
       ))}
       {team() ? (
-        <box
-          flexDirection="row"
-          flexWrap="no-wrap"
+        <text
+          ref={(node) => (progressLine = node)}
           width="100%"
-          alignItems="center"
+          wrapMode="none"
         >
-          <text fg={props.theme.text.muted} flexShrink={0}>tasks </text>
-          <box
-            ref={(node) => (barTrack = node)}
-            flexDirection="row"
-            flexWrap="no-wrap"
-            flexGrow={1}
-            flexShrink={1}
-            minWidth={0}
-            overflow="hidden"
-          >
-            <text fg={props.theme.text.feedback.success.base}>
-              {"━".repeat(completedBars())}
-            </text>
-            <text fg={props.theme.text.muted}>
-              {"─".repeat(Math.max(0, props.barWidth - completedBars()))}
-            </text>
-          </box>
-          <text fg={props.theme.text.muted} flexShrink={0}>
+          <span style={{ fg: props.theme.text.muted }}>tasks </span>
+          <span style={{ fg: props.theme.text.feedback.success.base }}>
+            {"━".repeat(completedBars())}
+          </span>
+          <span style={{ fg: props.theme.text.muted }}>
+            {"─".repeat(Math.max(0, props.barWidth - completedBars()))}
+          </span>
+          <span style={{ fg: props.theme.text.muted }}>
+            {" "}
             {context()?.tasks.done ?? 0}/{totalTasks()}
-          </text>
-        </box>
+          </span>
+        </text>
       ) : null}
       {props.snapshot?.unavailable ? (
         <text fg={props.theme.text.feedback.error.base}>

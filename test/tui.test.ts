@@ -356,7 +356,9 @@ describe("tui companion (issue #36)", () => {
 
       const link = findLink(current.renderer.root)
       expect(link?.link?.url).toBe("http://localhost:4747/")
-      const taskRow = rows.find((spans) => spans.some((span) => span.text === "2/3"))
+      const taskRow = rows.find((spans) =>
+        spans.some((span) => span.text.includes("2/3")),
+      )
       expect(taskRow?.some((span) => span.text.includes("━"))).toBe(true)
       expect(frame.find((line) => line.includes("2/3"))?.trimEnd().endsWith("2/3"))
         .toBe(true)
@@ -383,7 +385,7 @@ describe("tui companion (issue #36)", () => {
         const current = await harness.render(1)
         await current.flush()
         const spans = current.captureSpans().lines.find((row) =>
-          row.spans.some((span) => span.text === count),
+          row.spans.some((span) => span.text.includes(count)),
         )?.spans
         expect(spans?.some((span) => span.text.includes("━"))).toBe(completed)
         expect(current.captureCharFrame()).toContain(count)
@@ -437,7 +439,7 @@ describe("tui companion (issue #36)", () => {
         const fullBar = await harness.render(2)
         await fullBar.flush()
         const taskSpans = fullBar.captureSpans().lines.find((row) =>
-          row.spans.some((span) => span.text === "2/3"),
+          row.spans.some((span) => span.text.includes("2/3")),
         )?.spans
         const completed = taskSpans?.find((span) => span.text.includes("━"))
         const remaining = taskSpans?.find((span) => span.text.includes("─"))
@@ -447,11 +449,14 @@ describe("tui companion (issue #36)", () => {
           fullBar.captureCharFrame().split("\n").find((value) => value.includes("2/3")) ??
           ""
         const availableTrackWidth =
-          taskLine.indexOf("2/3") - taskLine.indexOf("tasks ") - "tasks ".length
+          taskLine.indexOf("2/3") -
+          taskLine.indexOf("tasks ") -
+          "tasks ".length -
+          1
         const renderedTrackWidth =
-          (completed?.text.length ?? 0) + (remaining?.text.length ?? 0)
-        expect(availableTrackWidth - renderedTrackWidth).toBeGreaterThanOrEqual(0)
-        expect(availableTrackWidth - renderedTrackWidth).toBeLessThanOrEqual(1)
+          (completed?.text.match(/━/g)?.length ?? 0) +
+          (remaining?.text.match(/─/g)?.length ?? 0)
+        expect(availableTrackWidth).toBe(renderedTrackWidth)
 
         harness.release(fullBar)
         expect(harness.renderer.listenerCount("frame")).toBe(0)
