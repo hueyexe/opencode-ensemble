@@ -176,6 +176,7 @@ function TeamSidebar(props: {
   return (
     <box
       ref={(node) => (sidebarBox = node)}
+      onSizeChange={measureBar}
       flexDirection="column"
       width="100%"
       flexGrow={1}

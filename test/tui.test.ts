@@ -139,6 +139,16 @@ function createHarness(readContext: ContextReader) {
       roots.add(root)
       return root
     },
+    renderLatest: async (sessionID = "lead-session", width = 80) => {
+      const registration = registrations.at(-1)
+      if (!registration) throw new Error("No sidebar registration is available")
+      const root = await testRender(
+        () => registration.claim.render({ sessionID }),
+        { width, height: 20 },
+      )
+      roots.add(root)
+      return root
+    },
     release: (root: RendererSetup) => {
       root.renderer.destroy()
       roots.delete(root)
@@ -158,6 +168,67 @@ async function nextTurn(): Promise<void> {
 
 function member(status: string, name = status): TeamContextData["members"][number] {
   return { name, status }
+}
+
+async function assertProgressLayout(input: {
+  width: number
+  done: number
+  pending: number
+}): Promise<void> {
+  const tasks = { done: input.done, pending: input.pending }
+  const harness = createHarness(async () => ({
+    team: "alpha",
+    members: [],
+    tasks,
+  }))
+  let attempts = 0
+
+  const renderStableSlot = async (): Promise<RendererSetup> => {
+    attempts += 1
+    if (attempts > 3) throw new Error("Progress layout did not settle")
+    const registrationCount = harness.registrations.length
+    const root = await harness.renderLatest("lead-session", input.width)
+    await root.flush()
+    if (harness.registrations.length > registrationCount) {
+      harness.release(root)
+      return renderStableSlot()
+    }
+    return root
+  }
+
+  try {
+    const initial = await harness.render(0, "lead-session", input.width)
+    await nextTurn()
+    harness.release(initial)
+
+    const root = await renderStableSlot()
+    const count = `${input.done}/${input.done + input.pending}`
+    const row = root
+      .captureCharFrame()
+      .split("\n")
+      .find((line) => line.includes(count))
+    expect(row).toBeDefined()
+    const taskLine = row ?? ""
+    const countPosition = taskLine.indexOf(count)
+    const labelPosition = taskLine.indexOf("tasks ")
+    const availableWidth =
+      countPosition - labelPosition - "tasks ".length - 1
+    const completedWidth = taskLine.match(/━/g)?.length ?? 0
+    const remainingWidth = taskLine.match(/─/g)?.length ?? 0
+    const trackWidth = completedWidth + remainingWidth
+
+    expect(taskLine.length).toBe(input.width)
+    expect(availableWidth).toBe(trackWidth)
+    expect(trackWidth).toBeGreaterThan(1)
+    expect(completedWidth).toBe(
+      input.done + input.pending === 0
+        ? 0
+        : Math.round((input.done / (input.done + input.pending)) * trackWidth),
+    )
+    harness.release(root)
+  } finally {
+    harness.dispose()
+  }
 }
 
 describe("tui companion (issue #36)", () => {
@@ -185,15 +256,15 @@ describe("tui companion (issue #36)", () => {
       await nextTurn()
 
       expect(calls).toBe(1)
-      expect(harness.registrations).toHaveLength(2)
+      expect(harness.registrations).toHaveLength(3)
       expect(harness.registrations[0]?.disposed).toBe(true)
 
       harness.release(initial)
-      const current = await harness.render(1)
+      const current = await harness.renderLatest()
       harness.emitMember()
       await nextTurn()
       expect(calls).toBe(2)
-      expect(harness.registrations).toHaveLength(2)
+      expect(harness.registrations).toHaveLength(3)
 
       response = {
         team: "alpha",
@@ -203,11 +274,10 @@ describe("tui companion (issue #36)", () => {
       harness.emitMember()
       await nextTurn()
       expect(calls).toBe(3)
-      expect(harness.registrations).toHaveLength(3)
-      expect(harness.registrations[1]?.disposed).toBe(true)
+      expect(harness.registrations).toHaveLength(4)
 
       harness.release(current)
-      const changed = await harness.render(2)
+      const changed = await harness.renderLatest()
       await changed.flush()
       const frame = changed.captureCharFrame()
       expect(frame).toContain("worker")
@@ -231,27 +301,27 @@ describe("tui companion (issue #36)", () => {
     try {
       const initial = await harness.render(0)
       await nextTurn()
-      expect(harness.registrations).toHaveLength(2)
+      expect(harness.registrations).toHaveLength(3)
       harness.release(initial)
 
       failed = true
-      const current = await harness.render(1)
+      const current = await harness.renderLatest()
       harness.emitMember()
       await nextTurn()
-      expect(harness.registrations).toHaveLength(3)
+      expect(harness.registrations).toHaveLength(4)
       harness.release(current)
 
-      const unavailable = await harness.render(2)
+      const unavailable = await harness.renderLatest()
       await unavailable.flush()
       expect(unavailable.captureCharFrame()).toContain("Team status unavailable")
 
       failed = false
       harness.emitMember()
       await nextTurn()
-      expect(harness.registrations).toHaveLength(4)
+      expect(harness.registrations).toHaveLength(5)
       harness.release(unavailable)
 
-      const recovered = await harness.render(3)
+      const recovered = await harness.renderLatest()
       await recovered.flush()
       expect(recovered.captureCharFrame()).toContain("alpha")
       expect(recovered.captureCharFrame()).not.toContain("Team status unavailable")
@@ -289,10 +359,10 @@ describe("tui companion (issue #36)", () => {
       await nextTurn()
 
       expect(calls).toBe(2)
-      expect(harness.registrations).toHaveLength(3)
+      expect(harness.registrations).toHaveLength(4)
       harness.release(initial)
 
-      const latest = await harness.render(2)
+      const latest = await harness.renderLatest()
       await latest.flush()
       expect(latest.captureCharFrame()).toContain("idle")
       expect(latest.captureCharFrame()).toContain("1/1")
@@ -318,7 +388,7 @@ describe("tui companion (issue #36)", () => {
       await nextTurn()
       harness.release(initial)
 
-      const current = await harness.render(1)
+      const current = await harness.renderLatest()
       await current.flush()
 
       const capture = current.captureSpans()
@@ -401,9 +471,9 @@ describe("tui companion (issue #36)", () => {
     await assertTaskCase({ pending: 0, done: 3 }, "3/3", true)
   })
 
-  // `bun test` uses Solid's server entry; CI also runs this under browser conditions.
+  // `bun test` uses Solid's server entry; CI also runs these in the browser runtime.
   test.skipIf(!browserSolidRuntime)(
-    "underlines the team link only while hovered and fills the measured progress track",
+    "underlines the team link only while hovered",
     async () => {
       const harness = createHarness(async () => ({
         team: "alpha",
@@ -411,11 +481,11 @@ describe("tui companion (issue #36)", () => {
         tasks: { pending: 1, done: 2 },
       }))
       try {
-        const initial = await harness.render(0)
+        const initial = await harness.render(0, "lead-session", 40)
         await nextTurn()
         harness.release(initial)
 
-        const measured = await harness.render(1, "lead-session", 40)
+        const measured = await harness.renderLatest("lead-session", 40)
         await measured.flush()
         expect(harness.renderer.listenerCount("frame")).toBeGreaterThan(0)
 
@@ -434,37 +504,22 @@ describe("tui companion (issue #36)", () => {
           TextAttributes.NONE,
         )
 
-        harness.renderer.emit("frame")
-        expect(harness.registrations).toHaveLength(3)
         harness.release(measured)
-
-        const fullBar = await harness.render(2, "lead-session", 40)
-        await fullBar.flush()
-        const taskSpans = fullBar.captureSpans().lines.find((row) =>
-          row.spans.some((span) => span.text.includes("2/3")),
-        )?.spans
-        const completed = taskSpans?.find((span) => span.text.includes("━"))
-        const remaining = taskSpans?.find((span) => span.text.includes("─"))
-        expect(completed?.text.length).toBeGreaterThan(1)
-        expect(remaining?.text.length).toBeGreaterThan(1)
-        const taskLine =
-          fullBar.captureCharFrame().split("\n").find((value) => value.includes("2/3")) ??
-          ""
-        const availableTrackWidth =
-          taskLine.indexOf("2/3") -
-          taskLine.indexOf("tasks ") -
-          "tasks ".length -
-          1
-        const renderedTrackWidth =
-          (completed?.text.match(/━/g)?.length ?? 0) +
-          (remaining?.text.match(/─/g)?.length ?? 0)
-        expect(availableTrackWidth).toBe(renderedTrackWidth)
-
-        harness.release(fullBar)
         expect(harness.renderer.listenerCount("frame")).toBe(0)
       } finally {
         harness.dispose()
       }
+    },
+  )
+
+  test.skipIf(!browserSolidRuntime)(
+    "fills the measured bar width for varied task counts and terminal widths",
+    async () => {
+      await assertProgressLayout({ width: 32, done: 0, pending: 0 })
+      await assertProgressLayout({ width: 40, done: 1, pending: 2 })
+      await assertProgressLayout({ width: 80, done: 2, pending: 5 })
+      await assertProgressLayout({ width: 32, done: 8, pending: 1 })
+      await assertProgressLayout({ width: 40, done: 12, pending: 8 })
     },
   )
 
