@@ -1,9 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 import "@opentui/solid"
-import { TextAttributes } from "@opentui/core"
+import { RGBA, TextAttributes } from "@opentui/core"
 import type {
   CliRenderer,
-  RGBA,
   TextNodeRenderable,
 } from "@opentui/core"
 import { onCleanup, onMount } from "solid-js"
@@ -41,11 +40,6 @@ type RpcClient = {
 }
 
 interface SidebarTheme {
-  hue: {
-    interactive: {
-      200: RGBA
-    }
-  }
   text: {
     muted: RGBA
     feedback: {
@@ -54,6 +48,15 @@ interface SidebarTheme {
       error: { base: RGBA }
     }
   }
+}
+
+/** Keep aligned with the dashboard's ST palette in dashboard-js-core.ts. */
+const STATUS_COLORS = {
+  busy: RGBA.fromHex("#60a5fa"),
+  ready: RGBA.fromHex("#8a96aa"),
+  shutdown_requested: RGBA.fromHex("#fbbf24"),
+  shutdown: RGBA.fromHex("#7b879b"),
+  error: RGBA.fromHex("#f87171"),
 }
 
 /** Open the Ensemble dashboard in the user's default browser. */
@@ -75,19 +78,11 @@ function openDashboard(): void {
   child.unref()
 }
 
-function statusColor(status: string, theme: SidebarTheme): RGBA {
-  switch (status) {
-    case "busy":
-      return theme.hue.interactive[200]
-    case "ready":
-      return theme.text.feedback.success.base
-    case "shutdown_requested":
-      return theme.text.feedback.warning.base
-    case "error":
-      return theme.text.feedback.error.base
-    default:
-      return theme.text.muted
+function statusColor(status: string): RGBA {
+  if (status in STATUS_COLORS) {
+    return STATUS_COLORS[status as keyof typeof STATUS_COLORS]
   }
+  return STATUS_COLORS.ready
 }
 
 function statusLabel(status: string): string {
@@ -226,7 +221,7 @@ function TeamSidebar(props: {
           alignItems="center"
         >
           <box flexDirection="row" alignItems="center">
-            <text fg={statusColor(member.status, props.theme)}>●</text>
+            <text fg={statusColor(member.status)}>●</text>
             <text>{" "}{member.name}</text>
           </box>
           <text fg={props.theme.text.muted}>

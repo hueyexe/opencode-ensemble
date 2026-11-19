@@ -91,11 +91,9 @@ function createHarness(readContext: ContextReader) {
     location: { directory: "/project" },
     data: { location: { default: () => ({ directory: "/project" }) } },
     theme: {
-      hue: { interactive: { 200: "#4488ff" } },
       text: {
         base: "#ffffff",
         muted: "#888888",
-        action: { primary: { base: "#ffffff" } },
         feedback: {
           success: { base: "#44bb66" },
           warning: { base: "#ffaa33" },
@@ -338,11 +336,11 @@ describe("tui companion (issue #36)", () => {
       const rowFor = (label: string) =>
         rows.find((spans) => spans.some((span) => span.text.trim() === label))
       const expectations = [
-        ["working", [68, 136, 255, 255]],
-        ["idle", [68, 187, 102, 255]],
-        ["stopping", [255, 170, 51, 255]],
-        ["done", [136, 136, 136, 255]],
-        ["error", [238, 68, 68, 255]],
+        ["working", [96, 165, 250, 255]],
+        ["idle", [138, 150, 170, 255]],
+        ["stopping", [251, 191, 36, 255]],
+        ["done", [123, 135, 155, 255]],
+        ["error", [248, 113, 113, 255]],
       ] as const
       expectations.forEach(([label, expectedColor]) => {
         const spans = rowFor(label)
