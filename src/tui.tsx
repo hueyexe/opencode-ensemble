@@ -4,14 +4,17 @@ import { TextAttributes } from "@opentui/core"
 import type {
   CliRenderer,
   RGBA,
-  TextRenderable,
   TextNodeRenderable,
 } from "@opentui/core"
 import { onCleanup, onMount } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { spawn } from "node:child_process"
 import { EnsembleRpc } from "./rpc"
-import { isPrimaryLinkActivation } from "./tui-view"
+import {
+  getLayoutWidth,
+  isPrimaryLinkActivation,
+  type LayoutMeasureNode,
+} from "./tui-view"
 
 const DASHBOARD_URL = "http://localhost:4747/"
 
@@ -132,7 +135,7 @@ function TeamSidebar(props: {
   theme: SidebarTheme
   renderer: CliRenderer
 }) {
-  let progressLine: TextRenderable | undefined
+  let sidebarBox: LayoutMeasureNode | undefined
   let teamLink: TextNodeRenderable | undefined
   const context = () => props.snapshot?.context
   const team = () => context()?.team
@@ -150,7 +153,7 @@ function TeamSidebar(props: {
   }
 
   const measureBar = () => {
-    const width = progressLine?.getLayoutNode().getComputedWidth()
+    const width = getLayoutWidth(sidebarBox)
     if (!width || !Number.isFinite(width)) return
     const labelWidth = "tasks ".length
     const countWidth = `${context()?.tasks.done ?? 0}/${totalTasks()}`.length
@@ -176,7 +179,13 @@ function TeamSidebar(props: {
   })
 
   return (
-    <box flexDirection="column" width="100%" flexGrow={1} minWidth={0}>
+    <box
+      ref={(node) => (sidebarBox = node)}
+      flexDirection="column"
+      width="100%"
+      flexGrow={1}
+      minWidth={0}
+    >
       <box
         flexDirection="row"
         justifyContent="space-between"
@@ -227,7 +236,6 @@ function TeamSidebar(props: {
       ))}
       {team() ? (
         <text
-          ref={(node) => (progressLine = node)}
           width="100%"
           wrapMode="none"
         >

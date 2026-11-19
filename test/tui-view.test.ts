@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  getLayoutWidth,
   isPrimaryLinkActivation,
   summarizeMembers,
   type SidebarMember,
@@ -39,5 +40,13 @@ describe("tui-view helpers (issue #36)", () => {
     expect(isPrimaryLinkActivation({ button: 0 })).toBe(true)
     expect(isPrimaryLinkActivation({ button: 1 })).toBe(false)
     expect(isPrimaryLinkActivation({ button: 0, isDragging: true })).toBe(false)
+  })
+
+  test("reads widths from both OpenTUI layout APIs", () => {
+    expect(getLayoutWidth({ getLayout: () => ({ width: 42 }) })).toBe(42)
+    expect(
+      getLayoutWidth({ getLayoutNode: () => ({ getComputedWidth: () => 64 }) }),
+    ).toBe(64)
+    expect(getLayoutWidth(undefined)).toBeUndefined()
   })
 })

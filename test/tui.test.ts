@@ -125,14 +125,18 @@ function createHarness(readContext: ContextReader) {
       eventHandlers.get("member")?.forEach((handler) => {
         handler()
       }),
-    render: async (index: number, sessionID = "lead-session") => {
+    render: async (
+      index: number,
+      sessionID = "lead-session",
+      width = 80,
+    ) => {
       const registration = registrations[index]
       if (!registration) {
         throw new Error(`Sidebar registration ${index} is missing`)
       }
       const root = await testRender(
         () => registration.claim.render({ sessionID }),
-        { width: 80, height: 20 },
+        { width, height: 20 },
       )
       roots.add(root)
       return root
@@ -413,7 +417,7 @@ describe("tui companion (issue #36)", () => {
         await nextTurn()
         harness.release(initial)
 
-        const measured = await harness.render(1)
+        const measured = await harness.render(1, "lead-session", 40)
         await measured.flush()
         expect(harness.renderer.listenerCount("frame")).toBeGreaterThan(0)
 
@@ -436,7 +440,7 @@ describe("tui companion (issue #36)", () => {
         expect(harness.registrations).toHaveLength(3)
         harness.release(measured)
 
-        const fullBar = await harness.render(2)
+        const fullBar = await harness.render(2, "lead-session", 40)
         await fullBar.flush()
         const taskSpans = fullBar.captureSpans().lines.find((row) =>
           row.spans.some((span) => span.text.includes("2/3")),

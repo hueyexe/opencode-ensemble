@@ -26,6 +26,19 @@ export function isPrimaryLinkActivation(event: LinkActivationEvent): boolean {
   return event.button === 0 && event.isDragging !== true
 }
 
+/** Cross-version layout measurement surface for OpenTUI renderables. */
+export interface LayoutMeasureNode {
+  getLayout?: () => { width: number }
+  getLayoutNode?: () => { getComputedWidth: () => number }
+}
+
+/** Read a renderable width across OpenTUI versions. */
+export function getLayoutWidth(node: LayoutMeasureNode | undefined): number | undefined {
+  const layoutWidth = node?.getLayout?.().width
+  if (layoutWidth && layoutWidth > 0) return layoutWidth
+  return node?.getLayoutNode?.().getComputedWidth()
+}
+
 /** Glyph per member status (paired with text elsewhere — never color-only). */
 function glyph(status: string): string {
   switch (status) {
