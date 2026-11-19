@@ -91,10 +91,11 @@ function createHarness(readContext: ContextReader) {
     location: { directory: "/project" },
     data: { location: { default: () => ({ directory: "/project" }) } },
     theme: {
+      hue: { interactive: { 200: "#4488ff" } },
       text: {
         base: "#ffffff",
         muted: "#888888",
-        action: { primary: { base: "#4488ff" } },
+        action: { primary: { base: "#ffffff" } },
         feedback: {
           success: { base: "#44bb66" },
           warning: { base: "#ffaa33" },

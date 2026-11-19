@@ -37,6 +37,22 @@ type RpcClient = {
   }
 }
 
+interface SidebarTheme {
+  hue: {
+    interactive: {
+      200: RGBA
+    }
+  }
+  text: {
+    muted: RGBA
+    feedback: {
+      success: { base: RGBA }
+      warning: { base: RGBA }
+      error: { base: RGBA }
+    }
+  }
+}
+
 /** Open the Ensemble dashboard in the user's default browser. */
 function openDashboard(): void {
   const command =
@@ -56,20 +72,10 @@ function openDashboard(): void {
   child.unref()
 }
 
-function statusColor(status: string, theme: {
-  text: {
-    muted: RGBA
-    action: { primary: { base: RGBA } }
-    feedback: {
-      success: { base: RGBA }
-      warning: { base: RGBA }
-      error: { base: RGBA }
-    }
-  }
-}): RGBA {
+function statusColor(status: string, theme: SidebarTheme): RGBA {
   switch (status) {
     case "busy":
-      return theme.text.action.primary.base
+      return theme.hue.interactive[200]
     case "ready":
       return theme.text.feedback.success.base
     case "shutdown_requested":
@@ -123,17 +129,7 @@ function TeamSidebar(props: {
   snapshot: SidebarSnapshot | undefined
   barWidth: number
   onBarWidthMeasured: (width: number) => void
-  theme: {
-    text: {
-      muted: RGBA
-      action: { primary: { base: RGBA } }
-      feedback: {
-        success: { base: RGBA }
-        warning: { base: RGBA }
-        error: { base: RGBA }
-      }
-    }
-  }
+  theme: SidebarTheme
   renderer: CliRenderer
 }) {
   let barTrack: BoxRenderable | undefined
