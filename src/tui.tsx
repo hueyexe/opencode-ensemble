@@ -51,15 +51,6 @@ interface SidebarTheme {
   }
 }
 
-/** Keep aligned with the dashboard's ST palette in dashboard-js-core.ts. */
-const STATUS_COLORS = {
-  busy: RGBA.fromHex("#60a5fa"),
-  ready: RGBA.fromHex("#8a96aa"),
-  shutdown_requested: RGBA.fromHex("#fbbf24"),
-  shutdown: RGBA.fromHex("#7b879b"),
-  error: RGBA.fromHex("#f87171"),
-}
-
 /** Open the Ensemble dashboard in the user's default browser. */
 function openDashboard(): void {
   const command =
@@ -79,11 +70,19 @@ function openDashboard(): void {
   child.unref()
 }
 
-function statusColor(status: string): RGBA {
-  if (status in STATUS_COLORS) {
-    return STATUS_COLORS[status as keyof typeof STATUS_COLORS]
+function statusColor(status: string, theme: SidebarTheme): RGBA {
+  switch (status) {
+    case "busy":
+      return theme.text.feedback.success.base
+    case "shutdown_requested":
+      return theme.text.feedback.warning.base
+    case "error":
+      return theme.text.feedback.error.base
+    case "ready":
+    case "shutdown":
+    default:
+      return theme.text.muted
   }
-  return STATUS_COLORS.ready
 }
 
 function statusLabel(status: string): string {
@@ -223,7 +222,7 @@ function TeamSidebar(props: {
           alignItems="center"
         >
           <box flexDirection="row" alignItems="center">
-            <text fg={statusColor(member.status)}>●</text>
+            <text fg={statusColor(member.status, props.theme)}>●</text>
             <text fg={member.status === "ready" ? props.theme.text.muted : props.theme.text.base}>
               {" "}{member.name}
             </text>

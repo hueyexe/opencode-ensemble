@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
+  RGBA,
   TextAttributes,
   isTextNodeRenderable,
-  type RGBA,
   type Renderable,
   type TextRenderable,
   type TextNodeRenderable,
@@ -92,12 +92,12 @@ function createHarness(readContext: ContextReader) {
     data: { location: { default: () => ({ directory: "/project" }) } },
     theme: {
       text: {
-        base: "#ffffff",
-        muted: "#888888",
+        base: RGBA.fromHex("#ffffff"),
+        muted: RGBA.fromHex("#888888"),
         feedback: {
-          success: { base: "#44bb66" },
-          warning: { base: "#ffaa33" },
-          error: { base: "#ee4444" },
+          success: { base: RGBA.fromHex("#44bb66") },
+          warning: { base: RGBA.fromHex("#ffaa33") },
+          error: { base: RGBA.fromHex("#ee4444") },
         },
       },
     },
@@ -406,17 +406,17 @@ describe("tui companion (issue #36)", () => {
       const rowFor = (label: string) =>
         rows.find((spans) => spans.some((span) => span.text.trim() === label))
       const expectations = [
-        ["working", [96, 165, 250, 255]],
-        ["idle", [138, 150, 170, 255]],
-        ["stopping", [251, 191, 36, 255]],
-        ["done", [123, 135, 155, 255]],
-        ["error", [248, 113, 113, 255]],
+        ["working", [68, 187, 102, 255]],
+        ["idle", [136, 136, 136, 255]],
+        ["stopping", [255, 170, 51, 255]],
+        ["done", [136, 136, 136, 255]],
+        ["error", [238, 68, 68, 255]],
       ] as const
       expectations.forEach(([label, expectedColor]) => {
         const spans = rowFor(label)
         expect(spans).toBeDefined()
         const rowSpans = spans ?? []
-        const icon = rowSpans.find((span) => span.text.trim() === "●")
+        const icon = rowSpans.find((span) => span.text.includes("●"))
         const labelSpan = rowSpans.find((span) => span.text.trim() === label)
         expect(colorBuffer(icon?.fg))
           .toEqual([...expectedColor])
