@@ -1,8 +1,21 @@
 /** @jsxImportSource @opentui/solid */
 import "@opentui/solid"
-import { createSignal, onCleanup, onMount, Show } from "solid-js"
+import { RGBA, TextAttributes } from "@opentui/core"
+import type {
+  CliRenderer,
+  TextNodeRenderable,
+} from "@opentui/core"
+import { onCleanup, onMount } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
+import { spawn } from "node:child_process"
 import { EnsembleRpc } from "./rpc"
+import {
+  getLayoutWidth,
+  isPrimaryLinkActivation,
+  type LayoutMeasureNode,
+} from "./tui-view"
+
+const DASHBOARD_URL = "http://localhost:4747/"
 
 /** Team context shape from the server bridge. */
 interface TeamContextData {
@@ -11,91 +24,352 @@ interface TeamContextData {
   tasks: { pending: number; done: number }
 }
 
-/** Sidebar widget: team members with status plus task counts. */
-function TeamSidebar(props: { fetchContext: () => Promise<TeamContextData | null>; onEvent: (cb: () => void) => () => void }) {
-  const [state, setState] = createSignal<TeamContextData | null>(null)
-  const load = async (): Promise<void> => {
-    try {
-      setState(await props.fetchContext())
-    } catch {
-      // Server unreachable — keep the last known state.
+interface SidebarSnapshot {
+  context: TeamContextData | null
+  unavailable: boolean
+}
+
+type RpcClient = {
+  teamContext(
+    input: { sessionID: string },
+    options?: { location?: unknown },
+  ): Promise<TeamContextData>
+  events: {
+    on(name: "member", handler: () => void): () => void
+  }
+}
+
+interface SidebarTheme {
+  text: {
+    base: RGBA
+    muted: RGBA
+    feedback: {
+      info: { base: RGBA }
+      success: { base: RGBA }
+      warning: { base: RGBA }
+      error: { base: RGBA }
     }
   }
-  onMount(() => {
-    void load()
-    const off = props.onEvent(() => void load())
-    onCleanup(off)
-    // Heartbeat: events alone go stale (cleanup emits nothing, events can be
-    // missed across reconnects). Re-fetch on a slow tick — local RPC read.
-    const tick = setInterval(() => void load(), 10_000)
-    onCleanup(() => clearInterval(tick))
-  })
+}
+
+/** Open the Ensemble dashboard in the user's default browser. */
+function openDashboard(): void {
+  const command =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "cmd"
+        : "xdg-open"
+  const args =
+    process.platform === "win32"
+      ? ["/c", "start", "", DASHBOARD_URL]
+      : [DASHBOARD_URL]
+  const child = spawn(command, args, { detached: true, stdio: "ignore" })
+  child.on("error", (error) =>
+    console.error("Unable to open Ensemble dashboard:", error),
+  )
+  child.unref()
+}
+
+function statusColor(status: string, theme: SidebarTheme): RGBA {
+  switch (status) {
+    case "busy":
+      return theme.text.feedback.info.base
+    case "shutdown_requested":
+      return theme.text.feedback.warning.base
+    case "error":
+      return theme.text.feedback.error.base
+    case "ready":
+    case "shutdown":
+    default:
+      return theme.text.muted
+  }
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "busy":
+      return "working"
+    case "ready":
+      return "idle"
+    case "shutdown_requested":
+      return "stopping"
+    case "shutdown":
+      return "done"
+    default:
+      return status
+  }
+}
+
+function sameSnapshot(
+  left: SidebarSnapshot | undefined,
+  right: SidebarSnapshot,
+): boolean {
+  if (!left || left.unavailable !== right.unavailable) return false
+  if (left.unavailable || right.unavailable) return left.unavailable === right.unavailable
+  const previous = left.context
+  const next = right.context
+  if (!previous || !next) return previous === next
   return (
-    <Show when={state()?.team} fallback={<text>Ensemble: no active team</text>}>
-      <box flexDirection="column">
-        <text>Ensemble: {state()?.team}</text>
-        {(state()?.members ?? []).map((member) => (
-          <text>
-            {member.status === "busy" ? "●" : member.status === "ready" ? "○" : "■"} {member.name} ({member.status})
-          </text>
-        ))}
-        <text>
-          tasks: {(state()?.tasks.pending ?? 0)} open / {(state()?.tasks.done ?? 0)} done
+    previous.team === next.team &&
+    previous.tasks.done === next.tasks.done &&
+    previous.tasks.pending === next.tasks.pending &&
+    previous.members.length === next.members.length &&
+    previous.members.every(
+      (member, index) =>
+        member.name === next.members[index]?.name &&
+        member.status === next.members[index]?.status,
+    )
+  )
+}
+
+/** Render the sidebar from a snapshot, without async reactive dependencies. */
+function TeamSidebar(props: {
+  snapshot: SidebarSnapshot | undefined
+  barWidth: number
+  onBarWidthMeasured: (width: number) => void
+  theme: SidebarTheme
+  renderer: CliRenderer
+}) {
+  let sidebarBox: LayoutMeasureNode | undefined
+  let teamLink: TextNodeRenderable | undefined
+  const context = () => props.snapshot?.context
+  const team = () => context()?.team
+  const totalTasks = () => {
+    const tasks = context()?.tasks
+    return (tasks?.done ?? 0) + (tasks?.pending ?? 0)
+  }
+  const completedBars = () => {
+    const total = totalTasks()
+    if (total === 0) return 0
+    return Math.min(
+      props.barWidth,
+      Math.round(((context()?.tasks.done ?? 0) / total) * props.barWidth),
+    )
+  }
+
+  const measureBar = () => {
+    const width = getLayoutWidth(sidebarBox)
+    if (!width || !Number.isFinite(width)) return
+    const labelWidth = "tasks ".length
+    const countWidth = `${context()?.tasks.done ?? 0}/${totalTasks()}`.length
+    const next = Math.max(1, Math.floor(width) - labelWidth - countWidth - 1)
+    if (next !== props.barWidth) props.onBarWidthMeasured(next)
+  }
+
+  const setTeamLinkHover = (hovered: boolean) => {
+    if (!teamLink) return
+    teamLink.attributes = hovered
+      ? TextAttributes.UNDERLINE
+      : TextAttributes.NONE
+  }
+
+  onMount(() => {
+    props.renderer.on("frame", measureBar)
+    props.renderer.on("resize", measureBar)
+    measureBar()
+    onCleanup(() => {
+      props.renderer.off("frame", measureBar)
+      props.renderer.off("resize", measureBar)
+    })
+  })
+
+  return (
+    <box
+      ref={(node) => (sidebarBox = node)}
+      onSizeChange={measureBar}
+      flexDirection="column"
+      width="100%"
+      flexGrow={1}
+      minWidth={0}
+    >
+      <box
+        flexDirection="row"
+        justifyContent="space-between"
+        width="100%"
+        alignItems="center"
+      >
+        <text attributes={TextAttributes.BOLD}>Ensemble</text>
+        <text
+          fg={props.theme.text.muted}
+          onMouseUp={(event: { button: number; isDragging?: boolean }) => {
+            if (team() && isPrimaryLinkActivation(event)) {
+              openDashboard()
+            }
+          }}
+          onMouseOver={() => setTeamLinkHover(true)}
+          onMouseOut={() => setTeamLinkHover(false)}
+          attributes={TextAttributes.NONE}
+        >
+          {props.snapshot?.unavailable
+            ? "unavailable"
+            : team()
+              ? (
+                  <a
+                    ref={(node) => (teamLink = node)}
+                    href={DASHBOARD_URL}
+                  >
+                    {team()}
+                  </a>
+                )
+              : "no active team"}
         </text>
       </box>
-    </Show>
+      {(context()?.members ?? []).map((member) => (
+        <box
+          flexDirection="row"
+          justifyContent="space-between"
+          width="100%"
+          alignItems="center"
+        >
+          <box flexDirection="row" alignItems="center">
+            <text fg={statusColor(member.status, props.theme)}>●</text>
+            <text fg={member.status === "ready" ? props.theme.text.muted : props.theme.text.base}>
+              {" "}{member.name}
+            </text>
+          </box>
+          <text fg={props.theme.text.muted}>
+            {statusLabel(member.status)}
+          </text>
+        </box>
+      ))}
+      {team() ? (
+        <text
+          width="100%"
+          wrapMode="none"
+        >
+          <span style={{ fg: props.theme.text.muted }}>tasks </span>
+          <span style={{ fg: props.theme.text.feedback.success.base }}>
+            {"━".repeat(completedBars())}
+          </span>
+          <span style={{ fg: props.theme.text.muted }}>
+            {"─".repeat(Math.max(0, props.barWidth - completedBars()))}
+          </span>
+          <span style={{ fg: props.theme.text.muted }}>
+            {" "}
+            {context()?.tasks.done ?? 0}/{totalTasks()}
+          </span>
+        </text>
+      ) : null}
+      {props.snapshot?.unavailable ? (
+        <text fg={props.theme.text.feedback.error.base}>
+          Team status unavailable
+        </text>
+      ) : null}
+    </box>
   )
 }
 
 /**
  * Terminal companion for opencode-ensemble (issue #36).
  *
- * Two persistent surfaces only — transient toasts were removed as noise
- * (live state lives in the sidebar; events live in the transcript as
- * synthetic system lines):
- *   1. Sidebar widget: live member status + task counts.
- *   2. Native agent switching: team_view with navigate: true (user opt-in
- *      only — agents never hijack the client unprompted).
- *
- * Enhancement only: desktop, web, and companion-less terminals lose nothing
- * functional — tools, approvals, model-context messages, and the dashboard
- * all live server-side.
+ * The sidebar shows live team status and task progress. team_view navigation
+ * remains opt-in so teammates never take over the user's client unprompted.
  */
 export default Plugin.define({
   id: "ensemble.tui",
   setup(context) {
     const rpc = context.client.rpc(EnsembleRpc)
+    const location = context.location ?? context.data.location.default()
+    const snapshots = new Map<string, SidebarSnapshot>()
+    const barWidths = new Map<string, number>()
+    const inFlight = new Set<string>()
+    const queuedRefresh = new Set<string>()
+    let activeSessionID: string | undefined
+    let disposed = false
+    let offSidebar: (() => void) | undefined
 
-    // Native agent switching: team_view(navigate: true) emits "view";
-    // the companion navigates the TUI to the teammate session (ctrl+p to return).
+    async function refreshSession(sessionID: string) {
+      if (disposed) return
+      if (inFlight.has(sessionID)) {
+        queuedRefresh.add(sessionID)
+        return
+      }
+      inFlight.add(sessionID)
+      let changed = false
+      try {
+        const result = (await rpc.teamContext(
+          { sessionID },
+          { location },
+        )) as TeamContextData
+        if (disposed) return
+        const snapshot = { context: result, unavailable: false }
+        changed = !sameSnapshot(snapshots.get(sessionID), snapshot)
+        snapshots.set(sessionID, snapshot)
+      } catch {
+        if (disposed) return
+        const snapshot = { context: null, unavailable: true }
+        changed = !sameSnapshot(snapshots.get(sessionID), snapshot)
+        snapshots.set(sessionID, snapshot)
+      } finally {
+        inFlight.delete(sessionID)
+        if (changed && activeSessionID === sessionID && !disposed) {
+          registerSidebar()
+        }
+        if (queuedRefresh.delete(sessionID)) void refreshSession(sessionID)
+      }
+    }
+
+    function registerSidebar() {
+      offSidebar?.()
+      offSidebar = context.ui.slot({
+        append: "sidebar.content",
+        render: (panel: { sessionID: string }) => {
+          activeSessionID = panel.sessionID
+          if (
+            panel.sessionID &&
+            !snapshots.has(panel.sessionID) &&
+            !inFlight.has(panel.sessionID)
+          ) {
+            void refreshSession(panel.sessionID)
+          }
+          return (
+            <TeamSidebar
+              snapshot={snapshots.get(panel.sessionID)}
+              barWidth={barWidths.get(panel.sessionID) ?? 1}
+              onBarWidthMeasured={(width) => {
+                if ((barWidths.get(panel.sessionID) ?? 1) === width) return
+                barWidths.set(panel.sessionID, width)
+                if (activeSessionID === panel.sessionID && !disposed) {
+                  registerSidebar()
+                }
+              }}
+              theme={context.theme}
+              renderer={context.renderer}
+            />
+          )
+        },
+      })
+    }
+
+    const refreshActiveSession = () => {
+      const sessionID = activeSessionID
+      if (!sessionID || disposed) return
+      void refreshSession(sessionID)
+    }
+
     const offView = rpc.events.on("view", (event) => {
       const data = event.data as unknown as { sessionID: string }
       if (!data.sessionID) return
       if (context.ui.tabs.enabled()) {
         void context.ui.tabs.focus(data.sessionID)
       } else {
-        void context.ui.router.navigate({ type: "session", sessionID: data.sessionID })
+        void context.ui.router.navigate({
+          type: "session",
+          sessionID: data.sessionID,
+        })
       }
     })
-
-    const onEvent = (cb: () => void): (() => void) => rpc.events.on("member", cb)
-
-    const offSidebar = context.ui.slot({
-      append: "sidebar.content",
-      render: (panel: { sessionID?: string }) => (
-        <TeamSidebar
-          fetchContext={async () => {
-            if (!panel.sessionID) return null
-            return (await rpc.teamContext({ sessionID: panel.sessionID })) as TeamContextData
-          }}
-          onEvent={onEvent}
-        />
-      ),
-    })
+    const offMember = rpc.events.on("member", refreshActiveSession)
+    const timer = setInterval(refreshActiveSession, 10_000)
+    registerSidebar()
 
     return () => {
+      disposed = true
+      clearInterval(timer)
       offView()
-      offSidebar()
+      offMember()
+      offSidebar?.()
     }
   },
 })
