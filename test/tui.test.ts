@@ -426,6 +426,15 @@ describe("tui companion (issue #36)", () => {
         expect(line?.endsWith(label)).toBe(true)
       })
 
+      const busyRow = rowFor("working") ?? []
+      const idleRow = rowFor("idle") ?? []
+      expect(
+        colorBuffer(busyRow.find((span) => span.text.includes("busy-agent"))?.fg),
+      ).toEqual([255, 255, 255, 255])
+      expect(
+        colorBuffer(idleRow.find((span) => span.text.includes("ready-agent"))?.fg),
+      ).toEqual([136, 136, 136, 255])
+
       const link = findLink(current.renderer.root)
       expect(link?.link?.url).toBe("http://localhost:4747/")
       const taskRow = rows.find((spans) =>

@@ -41,6 +41,7 @@ type RpcClient = {
 
 interface SidebarTheme {
   text: {
+    base: RGBA
     muted: RGBA
     feedback: {
       success: { base: RGBA }
@@ -223,7 +224,9 @@ function TeamSidebar(props: {
         >
           <box flexDirection="row" alignItems="center">
             <text fg={statusColor(member.status)}>●</text>
-            <text>{" "}{member.name}</text>
+            <text fg={member.status === "ready" ? props.theme.text.muted : props.theme.text.base}>
+              {" "}{member.name}
+            </text>
           </box>
           <text fg={props.theme.text.muted}>
             {statusLabel(member.status)}
