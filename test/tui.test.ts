@@ -95,6 +95,7 @@ function createHarness(readContext: ContextReader) {
         base: RGBA.fromHex("#ffffff"),
         muted: RGBA.fromHex("#888888"),
         feedback: {
+          info: { base: RGBA.fromHex("#60a5fa") },
           success: { base: RGBA.fromHex("#44bb66") },
           warning: { base: RGBA.fromHex("#ffaa33") },
           error: { base: RGBA.fromHex("#ee4444") },
@@ -406,7 +407,7 @@ describe("tui companion (issue #36)", () => {
       const rowFor = (label: string) =>
         rows.find((spans) => spans.some((span) => span.text.trim() === label))
       const expectations = [
-        ["working", [68, 187, 102, 255]],
+        ["working", [96, 165, 250, 255]],
         ["idle", [136, 136, 136, 255]],
         ["stopping", [255, 170, 51, 255]],
         ["done", [136, 136, 136, 255]],

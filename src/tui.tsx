@@ -44,6 +44,7 @@ interface SidebarTheme {
     base: RGBA
     muted: RGBA
     feedback: {
+      info: { base: RGBA }
       success: { base: RGBA }
       warning: { base: RGBA }
       error: { base: RGBA }
@@ -73,7 +74,7 @@ function openDashboard(): void {
 function statusColor(status: string, theme: SidebarTheme): RGBA {
   switch (status) {
     case "busy":
-      return theme.text.feedback.success.base
+      return theme.text.feedback.info.base
     case "shutdown_requested":
       return theme.text.feedback.warning.base
     case "error":
