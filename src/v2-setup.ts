@@ -19,7 +19,7 @@ import { loadConfig } from "./config"
 import { TokenBucket } from "./rate-limit"
 import { ActivityBuffer, recordFromToolBefore, recordFromToolAfter } from "./activity"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
-import { startDashboard, type DashboardServer } from "./dashboard"
+import { startDashboard } from "./dashboard"
 import { EnsembleRpc, emitMemberEvent, emitNoticeEvent } from "./v2-rpc"
 import { isWorktreeInstance } from "./util"
 import { vlog } from "./log"
@@ -381,13 +381,14 @@ export async function setupEnsemble(
   }
   await registerV2Tools(ctx.tool, deps)
 
-  // Dashboard mirrors V1: main instance only, skipped when port is 0.
-  let dashboard: DashboardServer | null = null
+  // Dashboard mirrors V1: main instance only, skipped when port is 0. It is a
+  // process-global listener, so it is started here but not torn down with this
+  // instance: a location release disposes the plugin without re-running setup,
+  // and closing the port left the dashboard unreachable until a restart.
   const dashboardPort = options.dashboardPort ?? config.dashboardPort
   if (dashboardPort !== 0 && !isWorktreeInstance(ctx.location.directory)) {
-    dashboard = await startDashboard(db, dashboardPort, { activityBuffer, client, host: config.dashboardHost }).catch((err) => {
+    await startDashboard(db, dashboardPort, { activityBuffer, client, host: config.dashboardHost }).catch((err) => {
       vlog(`init:dashboard:failed err=${err instanceof Error ? err.message : String(err)}`)
-      return null
     })
   }
 
@@ -398,7 +399,6 @@ export async function setupEnsemble(
     dispatch,
     dispose: async () => {
       controller.abort()
-      dashboard?.stop()
     },
   }
 }

@@ -5,7 +5,10 @@
   "module": "src/index.ts",
   "main": "dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
     "./rpc": "./src/rpc.ts",
     "./tui": "./src/tui.tsx"
   },
