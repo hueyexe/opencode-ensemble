@@ -235,6 +235,10 @@ describe("v2-setup (issue #36)", () => {
     }
     expect(teams.teams?.length).toBe(1)
     await handle.dispose()
+    // A location release tears the plugin instance down; the dashboard is
+    // process-global, so it must keep answering.
+    const afterRelease = await fetch("http://localhost:47999/api/health")
+    expect(afterRelease.status).toBe(200)
   })
 
   test("extractQuestionOutput reads string and part-array results", () => {

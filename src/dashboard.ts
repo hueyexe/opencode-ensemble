@@ -393,8 +393,12 @@ export async function startDashboard(db: Database, port: number, options?: Dashb
             // Check if the other process is still alive
             let alive = false
             try { process.kill(data.pid, 0); alive = true } catch { /* process is dead */ }
-            if (alive && data.pid !== process.pid) {
-              log(`dashboard:already-running port=${port} pid=${data.pid}`)
+            if (alive) {
+              log(
+                data.pid === process.pid
+                  ? `dashboard:already-running port=${port} (same process)`
+                  : `dashboard:already-running port=${port} pid=${data.pid}`,
+              )
               resolve(null)
               return
             }
@@ -414,6 +418,8 @@ export async function startDashboard(db: Database, port: number, options?: Dashb
     })
 
     server.listen(port, options?.host ?? "127.0.0.1", () => {
+      // Auxiliary server: it must not hold the host process open on its own.
+      server.unref()
       log(`dashboard:started port=${port} url=http://localhost:${port}`)
       resolve(toDashboardServer(server))
     })
