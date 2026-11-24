@@ -154,9 +154,13 @@ Three hooks wired in index.ts:
 4. Fire-and-forget spawn — not blocking, not tmux
 5. tool.execute.before for rate limiting — token bucket, in-memory
 6. tool.execute.before for sub-agent isolation — full descendant tracking via parent chain
-7. Worktree isolation on by default — each teammate gets their own git
-   worktree via client.worktree.create(). Opt out with worktree: false
-   for read-only agents. Lead merges branches after cleanup.
+7. Writable teammates get their own Git worktrees by default. Read-only
+   agents and spawns with `worktree: false` use the shared directory.
+   V1 uses `client.worktree.create()` and skips isolation when the plugin
+   already runs inside an OpenCode worktree. V2 starts at the lead session's
+   commit and verifies the child's directory before dispatch. When the lead
+   has no usable Git commit, V2 uses the shared directory with a warning.
+   Once V2 attempts allocation, errors fail the spawn.
 8. Plan approval is prompt-enforced, not permission-based — the teammate's
    context message tells it to send a plan and wait for approval. No tool-level
    gating.

@@ -1,13 +1,23 @@
-import type { PluginClient } from "./types"
-import { log } from "./log"
+import { realpath } from "node:fs/promises"
+import type { PermissionRule, PluginClient } from "./types"
+import { vlog } from "./log"
 import { runCommand } from "./process"
+
+type SessionInfo = {
+  id: string
+  projectID?: string
+  location?: { directory?: string }
+}
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
   /** Plugin location; `project.id` is required by the 2.0.19+ worktree API. */
   location?: { directory?: string; project?: { id?: string } }
   session: {
-    create(input: Record<string, unknown>): Promise<{ id: string }>
+    create(input: Record<string, unknown>): Promise<SessionInfo>
+    move?(input: { sessionID: string; directory: string; delivery: "queue" }): Promise<unknown>
+    wait?(input: { sessionID: string }): Promise<unknown>
+    remove?(input: { sessionID: string }): Promise<unknown>
     prompt(input: Record<string, unknown>): Promise<unknown>
     switchAgent(input: Record<string, unknown>): Promise<unknown>
     switchModel(input: Record<string, unknown>): Promise<unknown>
@@ -55,57 +65,31 @@ export function agentRulesAreReadOnly(rules: unknown): boolean | undefined {
   return match.effect === "deny"
 }
 
-/** Prefix marking a workspace id that is really a local directory (see below). */
-const DIR_WORKSPACE_PREFIX = "v2dir:"
-
-/** Injectable shell lookups (default to git; overridden in tests). */
+/** Optional companion integration. */
 export interface V2ClientDeps {
-  /** Current branch checked out in a directory, or null when unknown. */
-  gitBranch?: (directory: string) => Promise<string | null>
-  /** Create and check out a branch in a directory. Returns the effective
-   * branch name, or null when the branch could not be created or checked
-   * out — never record the requested name without this confirmation. */
-  gitCreateBranch?: (directory: string, branch: string) => Promise<string | null>
-  /** Worktree directory currently on a branch, or null when none. */
-  gitDir?: (branch: string) => Promise<string | null>
   /** RPC emitter for companion events (team_view navigation). */
   rpcEmitter?: { events: { emit(name: string, data: unknown): Promise<unknown> } }
 }
 
-/** Current branch in a directory via git. */
-async function gitBranchDefault(directory: string): Promise<string | null> {
-  try {
-    const result = await runCommand(["git", "branch", "--show-current"], { cwd: directory })
-    const branch = result.stdout.trim()
-    return result.exitCode === 0 && branch ? branch : null
-  } catch {
-    return null
+async function git(directory: string, ...args: string[]): Promise<string> {
+  const result = await runCommand(["git", ...args], { cwd: directory })
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} in "${directory}" failed: ${result.stderr.trim() || result.exitCode}`)
   }
+  return result.stdout.trimEnd()
 }
 
-/** Create and check out a branch in a directory via git. Returns the
- * effective branch name, or null when neither create nor switch worked —
- * callers must record the return value, not the requested name, so a
- * failed create can never be recorded as a live branch. */
-async function gitCreateBranchDefault(directory: string, branch: string): Promise<string | null> {
-  try {
-    await runCommand(["git", "switch", "-c", branch], { cwd: directory })
-    return branch
-  } catch (err) {
-    // The branch may already exist (re-spawn after the abort-cleanup race
-    // documented in AGENTS.md) — switch to it instead of recording a name
-    // with no ref behind it. Log both attempts; swallowing failures silently
-    // made team_merge squash a stale branch and silently lose new work
-    // (PR #46 review).
-    log(`v2-client:gitCreateBranch:create-failed directory=${directory} branch=${branch} err=${err instanceof Error ? err.message : String(err)} — trying existing branch`)
-    try {
-      await runCommand(["git", "switch", branch], { cwd: directory })
-      return branch
-    } catch (err2) {
-      log(`v2-client:gitCreateBranch:switch-failed directory=${directory} branch=${branch} err=${err2 instanceof Error ? err2.message : String(err2)}`)
-      return null
-    }
-  }
+async function gitWorktrees(directory: string): Promise<Array<string | undefined>> {
+  const paths = (await git(directory, "worktree", "list", "--porcelain", "-z"))
+    .split("\0").filter((field) => field.startsWith("worktree ")).map((field) => field.slice(9))
+  // Git emits forward slashes on Windows. Resolve both SDK and Git paths
+  // the same way, ignoring stale worktree entries whose paths no longer exist.
+  return Promise.all(paths.map((path) => realpath(path).catch(() => undefined)))
+}
+
+async function sessionIsIn(info: SessionInfo | undefined, directory: string): Promise<boolean> {
+  if (!info?.location?.directory) return false
+  return await realpath(info.location.directory).catch(() => undefined) === directory
 }
 
 /** Concatenate the text parts of a promptAsync payload into one string. */
@@ -118,7 +102,7 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
 
 /**
  * Adapt a V2 plugin context to the shared PluginClient interface so all 14
- * team tools run unchanged on V2 (DRY: one adapter, zero logic forks).
+ * team tools can use the same client on both hosts.
  *
  * Mapping notes (all spike-verified live against v2.0.3 unless marked OQ):
  * - create: V1 `permission` rules become V2 `{action, resource, effect}`;
@@ -132,28 +116,137 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  *   states here, extend the mapping.
  * - tui.*: no-op. Toasts and session-select move to the CLI (`./tui`) plugin
  *   in a later phase — the server plugin must not depend on a TUI.
- * - worktree.create: V2 reports only the directory, so the branch is read
- *   back via git (falls back to the requested name). OQ-V2-branch.
+ * - createIsolatedSession: V2 spawn provisions the worktree from the lead's
+ *   session location and verifies the child's location before returning it.
  * - worktree.list: V2 entries carry directory only; name is the basename
  *   (recovery filters on the `ensemble-` prefix — a non-matching dir is
  *   skipped, never wrongly deleted). reset has no production callers and
  *   maps to refresh. OQ-V2-wtname.
- * - workspace.*: V2 ctx has no workspace domain (workspaces are
- *   provider-based). create bridges a branch to its worktree directory and
- *   returns a `v2dir:<dir>` id; session.create routes that id to
- *   location.directory, preserving worktree isolation with zero tool
- *   changes. list returns [] and remove resolves — the DB workspace_id
- *   column stays the source of truth and is still nulled by cleanup.
+ * - Worktree and workspace creation through the shared methods is V1-only.
+ *   V2 workspace list/remove remain no-ops for cleanup of stored workspace IDs.
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
-  const gitBranch = deps.gitBranch ?? gitBranchDefault
-  const gitCreateBranch = deps.gitCreateBranch ?? gitCreateBranchDefault
   // 2.0.19+ worktree endpoints require the project; older hosts ignore it.
   const project = (): Record<string, unknown> => {
     const projectID = ctx.location?.project?.id
     return projectID ? { projectID } : {}
   }
+  function toV2Permissions(permissions?: PermissionRule[]) {
+    // V1 action names predate the V2 vocabulary: bash is now shell.
+    return permissions?.map((rule) => ({
+      action: rule.permission === "bash" ? "shell" : rule.permission,
+      resource: rule.pattern,
+      effect: rule.action,
+    }))
+  }
+
+  async function applyLegacyPermissions(id: string, permissions: ReturnType<typeof toV2Permissions>) {
+    // Before 2.0.19, session rules had to be re-asserted after create.
+    if (permissions && typeof ctx.permission?.rules === "function") {
+      await ctx.permission.rules({ sessionID: id, permissions })
+    }
+  }
+
   return {
+    createIsolatedSession: async ({ parentID, name, title, permissions, signal }) => {
+      const lead = await ctx.session.get({ sessionID: parentID }) as SessionInfo | undefined
+      if (!lead?.location?.directory) throw new Error(`Lead session "${parentID}" has no worktree location`)
+      const from = await realpath(lead.location.directory)
+      const commit = await runCommand(["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: from })
+      signal.throwIfAborted()
+      if (commit.exitCode !== 0) return undefined
+      const head = commit.stdout.trimEnd()
+      const existingWorktrees = await gitWorktrees(from)
+      const worktreeProject = lead.projectID ? { projectID: lead.projectID } : project()
+      let directory: string | undefined
+      let createdBranch: string | undefined
+      let sessionID: string | undefined
+      let unverifiedWorktree: string | undefined
+      try {
+        signal.throwIfAborted()
+        // Pin the commit, not the source path: a Git-created lead checkout
+        // need not appear in the host's worktree inventory.
+        const created = await ctx.worktree.create({ ...worktreeProject, name, branch: head })
+        unverifiedWorktree = created.directory
+        const resolved = await realpath(created.directory)
+        if (existingWorktrees.includes(resolved) || !(await gitWorktrees(from)).includes(resolved)) {
+          throw new Error(`OpenCode returned "${resolved}", which is not a new worktree of the lead's repository`)
+        }
+        const checkout = await git(resolved, "rev-parse", "--verify", "HEAD")
+        if (checkout !== head) {
+          // A detached checkout may be the only reference to this commit.
+          throw new Error(`Worktree "${resolved}" started at ${checkout}, expected lead commit ${head}`)
+        }
+        directory = resolved
+        unverifiedWorktree = undefined
+        const hostBranch = await git(directory, "branch", "--show-current")
+        signal.throwIfAborted()
+        if (!hostBranch) {
+          await git(directory, "switch", "-c", name)
+          createdBranch = name
+        }
+        signal.throwIfAborted()
+
+        const rules = toV2Permissions(permissions(directory))
+        const child = await ctx.session.create({ parentID, title, permissions: rules, location: { directory } })
+        sessionID = child.id
+        if (!sessionID) throw new Error("OpenCode returned no child session ID")
+        signal.throwIfAborted()
+        if (!await sessionIsIn(child, directory)) {
+          // A linked child can inherit the parent's location on create.
+          if (!ctx.session.move || !ctx.session.wait) {
+            throw new Error(`Cannot bind child session "${sessionID}" to "${directory}": session move is unavailable`)
+          }
+          signal.throwIfAborted()
+          await ctx.session.move({ sessionID, directory, delivery: "queue" })
+          await ctx.session.wait({ sessionID })
+          const moved = await ctx.session.get({ sessionID }) as SessionInfo | undefined
+          if (!await sessionIsIn(moved, directory)) {
+            throw new Error(`Child session "${sessionID}" did not move to worktree directory "${directory}"`)
+          }
+        }
+        signal.throwIfAborted()
+        await applyLegacyPermissions(sessionID, rules)
+        signal.throwIfAborted()
+        return { sessionID, directory, branch: hostBranch || name, rollback }
+      } catch (error) {
+        const residuals = await rollback()
+        const message = [String(error), ...residuals].join(". ")
+        if (signal.aborted || residuals.length) vlog(`Isolated spawn "${name}" failed: ${message}`)
+        throw new Error(message)
+      }
+
+      async function rollback(): Promise<string[]> {
+        const residuals: string[] = []
+        if (unverifiedWorktree) residuals.push(`unverified worktree "${unverifiedWorktree}" was left untouched`)
+        if (sessionID) {
+          try {
+            if (!ctx.session.remove) throw new Error("session.remove is unavailable on this host")
+            await ctx.session.remove({ sessionID })
+          } catch (err) {
+            residuals.push(`could not remove child session "${sessionID}": ${err}`)
+            if (directory) residuals.push(`worktree "${directory}" was kept for the remaining child session`)
+            return residuals
+          }
+        }
+        if (directory) {
+          try {
+            if ((await gitWorktrees(from)).includes(directory)) {
+              // A rejected prompt may already have run, even on a detached HEAD.
+              const currentHead = await git(directory, "rev-parse", "--verify", "HEAD")
+              if (currentHead !== head) throw new Error(`keeping checkout with worker commit ${currentHead}`)
+              await ctx.worktree.remove({ ...worktreeProject, directory, force: false })
+            }
+            if (createdBranch && await git(from, "branch", "--list", createdBranch)) {
+              await git(from, "branch", "-d", "--", createdBranch)
+            }
+          } catch (err) {
+            residuals.push(`could not finish cleanup of worktree "${directory}": ${err}`)
+          }
+        }
+        return residuals
+      }
+    },
     agent: {
       readOnly: async (agent: string) => {
         if (!ctx.agent) return undefined
@@ -169,35 +262,16 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }
         if (options.parentID) input["parentID"] = options.parentID
-        // V1 action names predate the V2 vocabulary: bash is now shell.
-        const V1_ACTION_MAP: Record<string, string> = { bash: "shell" }
-        const permissions = options.permission?.map((rule) => ({
-          action: V1_ACTION_MAP[rule.permission] ?? rule.permission,
-          resource: rule.pattern,
-          effect: rule.action,
-        }))
+        const permissions = toV2Permissions(options.permission)
         if (permissions) input["permissions"] = permissions
         if (options.workspaceID ?? options.directory) {
-          if (options.workspaceID?.startsWith(DIR_WORKSPACE_PREFIX)) {
-            input["location"] = {
-              directory: options.workspaceID.slice(DIR_WORKSPACE_PREFIX.length),
-            }
-          } else {
-            input["location"] = {
-              ...(options.directory ? { directory: options.directory } : {}),
-              ...(options.workspaceID ? { workspaceID: options.workspaceID } : {}),
-            }
+          input["location"] = {
+            ...(options.directory ? { directory: options.directory } : {}),
+            ...(options.workspaceID ? { workspaceID: options.workspaceID } : {}),
           }
         }
         const created = await ctx.session.create(input)
-        if (permissions && typeof ctx.permission?.rules === "function") {
-          // 2.0.3–2.0.18 merged agent rules after session rules, so create()
-          // permissions lost to the agent's and had to be re-asserted. From
-          // 2.0.19 the session ruleset merges last (core permission.ts
-          // `merge(agent.permissions, session.permissions)` with last-match
-          // evaluation) and rules() no longer exists, so create() is enough.
-          await ctx.permission.rules({ sessionID: created.id, permissions })
-        }
+        await applyLegacyPermissions(created.id, permissions)
         return { data: { id: created.id } }
       },
       promptAsync: async (options) => {
@@ -256,20 +330,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       },
     },
     worktree: {
-      create: async (options) => {
-        const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
-        const created = await ctx.worktree.create({ ...project(), name })
-        let branch = await gitBranch(created.directory)
-        if (!branch) {
-          // 2.0.32+ creates worktrees detached; team_merge needs a named
-          // branch. Record the effective branch only — never the requested
-          // name — so a failed create cannot point team_merge at a stale
-          // same-named branch whose commits would silently shadow new work
-          // (PR #46 review).
-          branch = (await gitCreateBranch(created.directory, name)) ?? ""
-        }
-        return { data: { name, branch, directory: created.directory } }
-      },
+      create: async () => { throw new Error("V2 worktrees must be created with an isolated session") },
       remove: async (options) => {
         const directory = (options.worktreeRemoveInput as { directory: string }).directory
         return ctx.worktree.remove({ ...project(), directory, force: false })
@@ -287,30 +348,9 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       reset: async () => ctx.worktree.refresh(project()),
     },
     workspace: {
-      create: async (options) => {
-        const branch = (options as { branch?: string }).branch ?? ""
-        const directory = await deps.gitDir?.(branch)
-        if (!directory) throw new Error(`V2 workspace bridge: no worktree found on branch "${branch}"`)
-        return {
-          data: {
-            id: `${DIR_WORKSPACE_PREFIX}${directory}`,
-            type: "local",
-            branch,
-            directory,
-            projectID: "",
-          },
-        }
-      },
+      create: async () => { throw new Error("V2 does not create workspaces for isolated sessions") },
       remove: async () => undefined,
-      list: async () => ({
-        data: [] as Array<{
-          id: string
-          type: string
-          branch: string | null
-          directory: string | null
-          projectID: string
-        }>,
-      }),
+      list: async () => ({ data: [] }),
     },
-  } as PluginClient
+  }
 }

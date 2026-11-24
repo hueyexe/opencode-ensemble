@@ -1,11 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
-import { executeTeamSpawn } from "../../src/tools/team-spawn"
+import { executeTeamSpawn, spawnFailures } from "../../src/tools/team-spawn"
 import { executeTeamTasksAdd } from "../../src/tools/team-tasks-add"
 import type { ToolDeps } from "../../src/types"
+import { createV2Client } from "../../src/v2-client"
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
@@ -1076,4 +1077,321 @@ describe("team_spawn — timeout on session.create / worktree.create", () => {
     expect(result).toContain("spawned")
     expect(result).not.toContain("branch:")
   }, 10000)
+})
+
+describe("V2 isolated teammate spawn", () => {
+  let root: string
+  let leadDir: string
+  let workerDir: string
+  let base: string
+  let leadHead: string
+
+  beforeEach(async () => {
+    spawnFailures.delete("t1")
+    root = await realpath(await mkdtemp(path.join(tmpdir(), "ensemble-v2-spawn-")))
+    await git(root, ["init", "-b", "main"])
+    await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "default branch"])
+    base = (await git(root, ["rev-parse", "HEAD"])).trim()
+    leadDir = path.join(root, "opencode", "worktree", "lead")
+    workerDir = path.join(root, "worker")
+    await git(root, ["worktree", "add", "--detach", leadDir, base])
+    await git(leadDir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "lead change"])
+    leadHead = (await git(leadDir, ["rev-parse", "HEAD"])).trim()
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  function setupV2(leadDirectory = leadDir) {
+    const deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    const calls: string[] = []
+    const dispatched = Promise.withResolvers<void>()
+    let childDir = leadDirectory
+    let movedTo: string | undefined
+    const ctx = {
+      location: { directory: root, project: { id: "project" } },
+      session: {
+        create: async (input: Record<string, unknown>) => {
+          calls.push("create")
+          expect(input["parentID"]).toBe("lead-sess")
+          return { id: "child-sess", location: { directory: childDir } }
+        },
+        get: async (input: Record<string, unknown>) => {
+          if (input["sessionID"] === "lead-sess") return { location: { directory: leadDirectory } }
+          calls.push("get child")
+          return { location: { directory: childDir } }
+        },
+        move: async (input: Record<string, unknown>) => {
+          calls.push("move")
+          movedTo = input["directory"] as string
+        },
+        wait: async () => {
+          calls.push("wait")
+          if (movedTo) childDir = movedTo
+        },
+        prompt: async () => {
+          calls.push(`prompt in ${childDir}`)
+          dispatched.resolve()
+        },
+        remove: async () => { calls.push("remove session") },
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        interrupt: async () => undefined,
+        active: async () => ({}),
+        context: async () => [],
+        synthetic: async () => undefined,
+      },
+      permission: {},
+      worktree: {
+        create: async (input: Record<string, unknown>) => {
+          calls.push("worktree")
+          // The lead checkout was added by Git, outside the host's inventory.
+          if (input["from"] === leadDirectory) throw new Error("SourceDirectoryNotFoundError")
+          await git(root, ["worktree", "add", "--detach", workerDir, String(input["branch"] ?? base)])
+          return { directory: workerDir }
+        },
+        remove: async (input: Record<string, unknown>) => {
+          calls.push("remove worktree")
+          expect(input).toMatchObject({ directory: workerDir, force: false })
+          await git(root, ["worktree", "remove", workerDir])
+        },
+        list: async () => [],
+        refresh: async () => undefined,
+      },
+    }
+    return { ctx, calls, dispatched: dispatched.promise, deps: { ...deps, directory: leadDirectory, client: createV2Client(ctx) } }
+  }
+
+  test.each(["non-Git directory", "repository with unborn HEAD"])("warns and spawns with ordinary permissions from a %s", async (mode) => {
+    const directory = await realpath(await mkdtemp(path.join(tmpdir(), "ensemble-no-lead-commit-")))
+    try {
+      if (mode === "repository with unborn HEAD") await git(directory, ["init", "-b", "main"])
+      const { ctx, calls, dispatched, deps } = setupV2(directory)
+      const create = ctx.session.create
+      ctx.session.create = async (input) => {
+        expect(input).not.toHaveProperty("location")
+        const rules = input["permissions"] as Array<{ action: string; resource: string; effect: string }>
+        expect(rules).toContainEqual({ action: "execute", resource: "*", effect: "allow" })
+        expect(rules).toContainEqual({ action: "team_message", resource: "*", effect: "allow" })
+        expect(rules.map(rule => rule.action)).not.toContain("edit")
+        expect(rules.map(rule => rule.action)).not.toContain("shell")
+        return create(input)
+      }
+
+      const result = await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess")
+      await dispatched
+
+      expect(result).toMatch(/WARNING: .*share your working directory/)
+      expect(calls).toEqual(["create", `prompt in ${directory}`])
+      expect(deps.db.query("SELECT worktree_dir, worktree_branch, workspace_id FROM team_member WHERE name = ?").get("builder"))
+        .toEqual({ worktree_dir: null, worktree_branch: null, workspace_id: null })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("can retry the same worker name after session.create rejects", async () => {
+    const { ctx, calls, dispatched, deps } = setupV2()
+    const create = ctx.session.create
+    ctx.session.create = async () => { throw new Error("Session creation rejected") }
+    const args = { name: "builder", prompt: "Implement change" }
+
+    await expect(executeTeamSpawn(deps, args, "lead-sess")).rejects.toThrow("Session creation rejected")
+    ctx.session.create = create
+    const result = await executeTeamSpawn(deps, args, "lead-sess")
+    await dispatched
+
+    expect(result).toContain("branch: ensemble-")
+    expect(calls).toEqual(["worktree", "remove worktree", "worktree", "create", "move", "wait", "get child", `prompt in ${workerDir}`])
+  })
+
+  test("leaves a host-selected branch intact on rollback", async () => {
+    const { ctx, calls, deps } = setupV2()
+    const branch = "existing-worker-branch"
+    await git(root, ["branch", branch, leadHead])
+    ctx.worktree.create = async () => {
+      await git(root, ["worktree", "add", workerDir, branch])
+      return { directory: workerDir }
+    }
+    ctx.session.create = async () => { throw new Error("Session creation rejected") }
+
+    await expect(executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess"))
+      .rejects.toThrow("Session creation rejected")
+    expect(calls).toEqual(["remove worktree"])
+    expect((await git(root, ["rev-parse", `refs/heads/${branch}`])).trim()).toBe(leadHead)
+  })
+
+  test("binds a linked child before dispatch and starts its branch at the detached lead's commit", async () => {
+    const { calls, dispatched, deps } = setupV2()
+    await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change", model: "test/model" }, "lead-sess")
+    await dispatched
+
+    expect(calls).toEqual(["worktree", "create", "move", "wait", "get child", `prompt in ${workerDir}`])
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("builder")
+    const branch = (await git(workerDir, ["symbolic-ref", "--short", "HEAD"])).trim()
+    expect(row).toEqual({ worktree_dir: workerDir, worktree_branch: branch })
+    expect(branch).toMatch(/^ensemble-/)
+    expect((await git(workerDir, ["rev-parse", "HEAD", `refs/heads/${branch}`])).trim().split("\n")).toEqual([leadHead, leadHead])
+    expect((await git(root, ["rev-parse", "HEAD"])).trim()).toBe(base)
+  })
+
+  test("rolls back a child whose move leaves it in the lead checkout before claiming or prompting", async () => {
+    const { ctx, calls, deps } = setupV2()
+    ctx.session.wait = async () => { calls.push("wait") }
+    await executeTeamTasksAdd(deps, { tasks: [{ content: "Implement change", priority: "medium" }] }, "lead-sess")
+    const task = deps.db.query("SELECT id FROM team_task").get() as { id: string }
+
+    await expect(executeTeamSpawn(deps, { name: "builder", prompt: "Implement change", claim_task: task.id }, "lead-sess")).rejects.toThrow(/location|directory/)
+    expect(calls).toEqual(["worktree", "create", "move", "wait", "get child", "remove session", "remove worktree"])
+    expect(deps.db.query("SELECT name FROM team_member WHERE name = ?").get("builder")).toBeNull()
+    expect(deps.db.query("SELECT status, assignee FROM team_task WHERE id = ?").get(task.id)).toEqual({ status: "pending", assignee: null })
+    expect(deps.registry.isTeamSession("child-sess")).toBe(false)
+    expect(await git(root, ["branch", "--list", "ensemble-*"])).toBe("")
+  })
+
+  test("accepts a child created directly in its worktree without moving it", async () => {
+    const { ctx, calls, deps } = setupV2()
+    ctx.session.create = async (input) => {
+      expect(input["location"]).toEqual({ directory: workerDir })
+      return { id: "child-sess", location: { directory: workerDir, workspaceID: "ws_worker" } }
+    }
+    await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess")
+    expect(calls).not.toContain("move")
+    expect(deps.registry.isTeamSession("child-sess")).toBe(true)
+  })
+
+  test("leaves an existing worker branch untouched when git switch exits nonzero", async () => {
+    const { ctx, calls, deps } = setupV2()
+    const create = ctx.worktree.create
+    let name = ""
+    ctx.worktree.create = async (input) => {
+      name = String(input["name"])
+      await git(root, ["branch", name, base])
+      return create(input)
+    }
+    await expect(executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess")).rejects.toThrow(/already exists/)
+    expect(calls).toEqual(["worktree", "remove worktree"])
+    expect((await git(root, ["rev-parse", `refs/heads/${name}`])).trim()).toBe(base)
+  })
+
+  test("preserves a detached commit made by the host startup command", async () => {
+    const { ctx, calls, deps } = setupV2()
+    const create = ctx.worktree.create
+    let actualHead = ""
+    ctx.worktree.create = async (input) => {
+      const result = await create(input)
+      await git(workerDir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "startup work"])
+      actualHead = (await git(workerDir, ["rev-parse", "HEAD"])).trim()
+      return result
+    }
+
+    const error = await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess").catch((err: Error) => err)
+    expect(String(error)).toContain(leadHead)
+    expect(String(error)).toContain(actualHead)
+    expect(String(error)).toContain(workerDir)
+    expect(calls).toEqual(["worktree"])
+    expect((await git(workerDir, ["rev-parse", "HEAD"])).trim()).toBe(actualHead)
+  })
+
+  test.each(["missing", "failing"])("keeps a moved child's checkout when session.remove is %s", async (mode) => {
+    const { ctx, calls, deps } = setupV2()
+    const wait = ctx.session.wait
+    ctx.session.wait = async () => {
+      await wait()
+      throw new Error("Move wait failed")
+    }
+    Object.assign(ctx.session, { remove: mode === "missing" ? undefined : async () => { throw new Error("Removal failed") } })
+
+    const error = await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess").catch((err: Error) => err)
+    expect(String(error)).toContain("child-sess")
+    expect(String(error)).toContain(workerDir)
+    expect(String(error)).toContain(mode === "missing" ? "session.remove is unavailable" : "Removal failed")
+    expect(calls).toEqual(["worktree", "create", "move", "wait"])
+    expect((await git(workerDir, ["rev-parse", "HEAD"])).trim()).toBe(leadHead)
+    expect(await git(workerDir, ["symbolic-ref", "--short", "HEAD"])).toMatch(/^ensemble-/)
+  })
+
+  test("preserves a worker's detached commit if its first prompt rejects after execution", async () => {
+    const { ctx, deps } = setupV2()
+    ctx.session.prompt = async () => {
+      await git(workerDir, ["switch", "--detach"])
+      await git(workerDir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "worker result"])
+      throw new Error("Lost prompt response")
+    }
+    const notified = Promise.withResolvers<void>()
+    deps.client.tui.showToast = async () => { notified.resolve() }
+    await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change", model: "test/model" }, "lead-sess")
+    await notified.promise
+    expect(await git(root, ["worktree", "list", "--porcelain"])).toContain(workerDir)
+    expect((await git(workerDir, ["log", "-1", "--format=%s"])).trim()).toBe("worker result")
+  })
+
+  test.each([true, false])("releases a rejected first dispatch only if its child can be removed (%s)", async (canRemove) => {
+    const { ctx, calls, deps } = setupV2()
+    ctx.session.switchModel = async () => { throw new Error("Model selection rejected") }
+    if (!canRemove) Object.assign(ctx.session, { remove: undefined })
+    const notified = Promise.withResolvers<void>()
+    deps.client.tui.showToast = async (options) => {
+      if (options.variant === "error") notified.resolve()
+    }
+    await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change", model: "test/model" }, "lead-sess")
+    await notified.promise
+    const msg = deps.db.query("SELECT content FROM team_message WHERE from_name = 'system' AND to_name = 'lead'").get() as { content: string }
+    expect(msg.content).toContain("Model selection rejected")
+    expect(calls).not.toContain(`prompt in ${workerDir}`)
+    if (canRemove) {
+      expect(calls.slice(-2)).toEqual(["remove session", "remove worktree"])
+      expect(await git(root, ["worktree", "list", "--porcelain"])).not.toContain(workerDir)
+    } else {
+      expect(msg.content).toContain("child-sess")
+      expect(msg.content).toContain(workerDir)
+      expect((await git(workerDir, ["rev-parse", "HEAD"])).trim()).toBe(leadHead)
+      expect(calls).not.toContain("remove worktree")
+    }
+  })
+
+  test("refuses to use or remove a checkout that existed before worktree creation", async () => {
+    const { ctx, calls, deps } = setupV2()
+    await git(root, ["worktree", "add", "--detach", workerDir, leadHead])
+    ctx.worktree.create = async () => ({ directory: workerDir })
+    await expect(executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess")).rejects.toThrow(/not a new worktree/)
+    expect(calls).toEqual([])
+    expect((await git(workerDir, ["rev-parse", "HEAD"])).trim()).toBe(leadHead)
+  })
+
+  test("removes a child returned after the spawn times out without moving or prompting it", async () => {
+    const { ctx, calls, deps } = setupV2()
+    const started = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const completed = Promise.withResolvers<void>()
+    const create = ctx.session.create
+    const provision = deps.client.createIsolatedSession!
+    ctx.session.create = async (input) => {
+      started.resolve()
+      await release.promise
+      return create(input)
+    }
+    deps.client.createIsolatedSession = (input) => provision(input).finally(() => completed.resolve())
+    const oldTimeout = process.env.SPAWN_TIMEOUT_MS
+    process.env.SPAWN_TIMEOUT_MS = "250"
+    try {
+      const spawn = executeTeamSpawn(deps, { name: "builder", prompt: "Implement change" }, "lead-sess")
+      const rejected = expect(spawn).rejects.toThrow(/timed out/)
+      await Promise.race([started.promise, rejected])
+      await rejected
+      expect(calls).toEqual(["worktree"])
+      release.resolve()
+      await completed.promise
+      expect(calls).toEqual(["worktree", "create", "remove session", "remove worktree"])
+      expect(deps.registry.isTeamSession("child-sess")).toBe(false)
+      expect(deps.db.query("SELECT name FROM team_member WHERE name = ?").get("builder")).toBeNull()
+      expect(await git(root, ["branch", "--list", "ensemble-*"])).toBe("")
+    } finally {
+      release.resolve()
+      if (oldTimeout === undefined) delete process.env.SPAWN_TIMEOUT_MS
+      else process.env.SPAWN_TIMEOUT_MS = oldTimeout
+    }
+  })
 })

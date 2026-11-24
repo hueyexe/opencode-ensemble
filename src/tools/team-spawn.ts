@@ -94,7 +94,8 @@ export async function executeTeamSpawn(
   // never gets a worktree or a shell allow. Fall back to the built-in names.
   const isReadOnly = (await deps.client.agent?.readOnly(agent).catch(() => undefined))
     ?? (agent === "plan" || agent === "explore")
-  const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
+  const isolatedSpawn = args.worktree !== false && !isReadOnly ? deps.client.createIsolatedSession : undefined
+  const useWorktree = args.worktree !== false && !isReadOnly && (!!isolatedSpawn || !isWorktreeDirectory(deps.directory))
   const usePlanApproval = args.plan_approval === true
 
   log(`spawn:start name=${args.name} agent=${agent} worktree=${useWorktree}`)
@@ -103,7 +104,7 @@ export async function executeTeamSpawn(
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
 
-  if (useWorktree) {
+  if (useWorktree && !isolatedSpawn) {
     const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
     const worktreeName = teamWorktreeName(resource.projectName, resource.teamName, resource.teamId, args.name)
     try {
@@ -170,20 +171,16 @@ export async function executeTeamSpawn(
   ] as const
   const permission: PermissionRule[] = []
 
-  if (worktreeDir) {
-    permission.push(
-      { permission: "edit", pattern: `${worktreeDir}/**`, action: "allow" },
-      // V2 checks files inside the session's location as paths relative to
-      // it. session.create above binds the location to the worktree (via
-      // workspaceID, or directory as fallback), so this rule scopes edits
-      // to the worktree. Files outside the worktree remain gated by
-      // external_directory.
+  function worktreePermissions(directory: string): PermissionRule[] {
+    return [
+      { permission: "edit", pattern: `${directory}/**`, action: "allow" },
+      // Paths inside the bound worktree can be relative to the session.
+      // Files outside it are still gated by external_directory.
       { permission: "edit", pattern: "*", action: "allow" },
-    )
-    if (!isReadOnly) {
-      permission.push({ permission: "bash", pattern: "*", action: "allow" })
-    }
+      { permission: "bash", pattern: "*", action: "allow" },
+    ]
   }
+  if (worktreeDir) permission.push(...worktreePermissions(worktreeDir))
 
   if (isReadOnly) {
     permission.push(
@@ -202,30 +199,52 @@ export async function executeTeamSpawn(
   // permissions, so explore stays read-only.
   permission.push({ permission: "execute", pattern: "*", action: "allow" })
 
-  // Create child session — bind to workspace if available (server-enforced CWD isolation).
-  // Falls back to no workspace binding if workspace.create failed.
+  // V2 returns an isolated child only after verifying its checkout and location.
+  // V1 keeps the workspace binding with a directory fallback.
   let childSessionId: string | undefined
+  let rollbackIsolated: (() => Promise<string[]>) | undefined
+  const isolation = isolatedSpawn ? new AbortController() : undefined
+  const title = `${args.name} (@${agent} teammate)`
   try {
     log(`spawn:session:start name=${args.name}`)
-    const createResult = await withTimeout(
-      deps.client.session.create({
-        parentID: sessionId,
-        title: `${args.name} (@${agent} teammate)`,
-        permission,
-        ...(workspaceId
-          ? { workspaceID: workspaceId }
-          // Workspace binding is preferred; when it is unavailable, bind the
-          // session to the worktree directory directly. Without a location,
-          // the teammate's location is the project root, edit paths are
-          // evaluated relative to it, and the `edit * allow` rule below
-          // would grant edits to the whole shared tree (PR #46 review).
-          : worktreeDir ? { directory: worktreeDir } : {}),
-      }),
-      getSpawnTimeout(), `session.create for "${args.name}"`
-    )
-    childSessionId = createResult.data?.id
+    if (isolatedSpawn && isolation) {
+      const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
+      const name = teamWorktreeName(resource.projectName, resource.teamName, resource.teamId, args.name)
+      const result = await withTimeout(
+        isolatedSpawn({
+          parentID: sessionId,
+          title,
+          name,
+          permissions: (directory) => [...worktreePermissions(directory), ...permission],
+          signal: isolation.signal,
+        }),
+        getSpawnTimeout(), `isolated session setup for "${args.name}"`,
+      )
+      if (result) {
+        childSessionId = result.sessionID
+        rollbackIsolated = result.rollback
+        worktreeDir = result.directory
+        worktreeBranch = result.branch
+      }
+    }
+    // V2 can decline isolation before allocation if the lead has no Git commit.
+    if (!childSessionId) {
+      const createResult = await withTimeout(
+        deps.client.session.create({
+          parentID: sessionId,
+          title,
+          permission,
+          ...(workspaceId ? { workspaceID: workspaceId } : worktreeDir ? { directory: worktreeDir } : {}),
+        }),
+        getSpawnTimeout(), `session.create for "${args.name}"`,
+      )
+      childSessionId = createResult.data?.id
+    }
     log(`spawn:session:done name=${args.name} sessionId=${childSessionId}`)
   } catch (err) {
+    // The V2 operation owns cleanup, including a create that settles after
+    // this timeout. Do not remove the worktree while a session move is in flight.
+    isolation?.abort(err)
     log(`spawn:session:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
     // Track failure for circuit breaker
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -317,7 +336,7 @@ export async function executeTeamSpawn(
     context.push(`Other teammates: ${otherMembers.map(m => m.name).join(", ")}`)
   }
 
-  if (worktreeBranch && worktreeDir && !workspaceId) {
+  if (worktreeBranch && worktreeDir && !workspaceId && !isolatedSpawn) {
     // Workspace binding failed — fallback to prompt-based CWD instruction
     context.push(
       `You are working on branch "${worktreeBranch}" in your own worktree at: ${worktreeDir}`,
@@ -455,19 +474,6 @@ export async function executeTeamSpawn(
         )
       }
       const modelInfo = resolvedModel ? ` (model: ${resolvedModel})` : ""
-      deps.client.tui.showToast({
-        title: "Team",
-        message: `Teammate "${args.name}" failed to start${modelInfo}: ${errMsg}`,
-        variant: "error",
-        duration: 8000,
-      }).catch(() => { /* TUI may not be available */ })
-      notifyLead(
-        deps.client,
-        deps.db,
-        teamInfo.teamId,
-        `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
-      )
-
       // promptAsync can reject after the server accepted the prompt, so the
       // teammate may have run and committed. Preserve the branch before abort:
       // session cleanup asynchronously deletes the worktree branch.
@@ -479,13 +485,23 @@ export async function executeTeamSpawn(
           if (preserved) log(`spawn:rollback:branch:preserved src=${worktreeBranch} target=${safeBranch}`)
         } catch { /* best effort — still abort/clean up */ }
       }
-      deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
-      if (workspaceId) {
-        deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
+      const interrupt = deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
+      let recovery = "You may retry the spawn."
+      if (rollbackIsolated) {
+        await interrupt
+        const residuals = await rollbackIsolated()
+        if (residuals.length) recovery = residuals.join(". ")
+      } else {
+        if (workspaceId) {
+          deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
+        }
+        if (worktreeDir) {
+          deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
+        }
       }
-      if (worktreeDir) {
-        deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
-      }
+      const failure = `Teammate "${args.name}" failed to start${modelInfo}: ${errMsg}. ${recovery}`
+      notifyLead(deps.client, deps.db, teamInfo.teamId, failure)
+      deps.client.tui.showToast({ title: "Team", message: failure, variant: "error", duration: 8000 }).catch(() => {})
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })
 
