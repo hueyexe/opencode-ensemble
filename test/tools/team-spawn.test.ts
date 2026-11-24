@@ -1272,6 +1272,30 @@ describe("V2 isolated teammate spawn", () => {
     expect(await git(workerDir, ["symbolic-ref", "--short", "HEAD"])).toMatch(/^ensemble-/)
   })
 
+  test.each([true, false])("releases a rejected first dispatch only if its child can be removed (%s)", async (canRemove) => {
+    const { ctx, calls, deps } = setupV2()
+    ctx.session.switchModel = async () => { throw new Error("Model selection rejected") }
+    if (!canRemove) Object.assign(ctx.session, { remove: undefined })
+    const notified = Promise.withResolvers<void>()
+    deps.client.tui.showToast = async (options) => {
+      if (options.variant === "error") notified.resolve()
+    }
+    await executeTeamSpawn(deps, { name: "builder", prompt: "Implement change", model: "test/model" }, "lead-sess")
+    await notified.promise
+    const msg = deps.db.query("SELECT content FROM team_message WHERE from_name = 'system' AND to_name = 'lead'").get() as { content: string }
+    expect(msg.content).toContain("Model selection rejected")
+    expect(calls).not.toContain(`prompt in ${workerDir}`)
+    if (canRemove) {
+      expect(calls.slice(-2)).toEqual(["remove session", "remove worktree"])
+      expect(await git(root, ["worktree", "list", "--porcelain"])).not.toContain(workerDir)
+    } else {
+      expect(msg.content).toContain("child-sess")
+      expect(msg.content).toContain(workerDir)
+      expect((await git(workerDir, ["rev-parse", "HEAD"])).trim()).toBe(leadHead)
+      expect(calls).not.toContain("remove worktree")
+    }
+  })
+
   test("recognizes a Git worktree path with a different filesystem spelling", async () => {
     const { ctx, dispatched, deps } = setupV2()
     const create = ctx.worktree.create

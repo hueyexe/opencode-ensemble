@@ -222,8 +222,15 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           throw new Error(`Worktree "${directory}" is on "${ref}", expected branch "${branch}"`)
         }
         signal.throwIfAborted()
-        return { sessionID, directory, branch }
+        return { sessionID, directory, branch, rollback }
       } catch (error) {
+        const residuals = await rollback()
+        const message = [String(error), ...residuals].join(". ")
+        if (signal.aborted || residuals.length) vlog(`Isolated spawn "${name}" failed: ${message}`)
+        throw new Error(message)
+      }
+
+      async function rollback(): Promise<string[]> {
         const residuals: string[] = []
         if (unverifiedWorktree) residuals.push(`unverified worktree "${unverifiedWorktree}" was left untouched`)
         let childRemoved = !creatingSession
@@ -262,9 +269,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
             residuals.push(`could not finish cleanup of worktree "${directory}": ${err}`)
           }
         }
-        const message = [String(error), ...residuals].join(". ")
-        if (signal.aborted || residuals.length) vlog(`Isolated spawn "${name}" failed: ${message}`)
-        throw new Error(message)
+        return residuals
       }
     },
     agent: {

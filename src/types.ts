@@ -42,7 +42,7 @@ export interface PluginClient {
     title: string
     permissions(directory: string): PermissionRule[]
     signal: AbortSignal
-  }): Promise<{ sessionID: string; directory: string; branch: string }>
+  }): Promise<{ sessionID: string; directory: string; branch: string; rollback(): Promise<string[]> }>
   /** Optional agent introspection (V2). Undefined answers fall back to name checks. */
   agent?: {
     readOnly(agent: string): Promise<boolean | undefined>

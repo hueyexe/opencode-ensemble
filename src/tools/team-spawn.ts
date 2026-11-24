@@ -202,6 +202,7 @@ export async function executeTeamSpawn(
   // V2 returns an isolated child only after verifying its checkout and location.
   // V1 keeps the workspace binding with a directory fallback.
   let childSessionId: string | undefined
+  let rollbackIsolated: (() => Promise<string[]>) | undefined
   const isolation = isolatedSpawn ? new AbortController() : undefined
   const title = `${args.name} (@${agent} teammate)`
   try {
@@ -220,6 +221,7 @@ export async function executeTeamSpawn(
         getSpawnTimeout(), `isolated session setup for "${args.name}"`,
       )
       childSessionId = result.sessionID
+      rollbackIsolated = result.rollback
       worktreeDir = result.directory
       worktreeBranch = result.branch
     } else {
@@ -468,19 +470,6 @@ export async function executeTeamSpawn(
         )
       }
       const modelInfo = resolvedModel ? ` (model: ${resolvedModel})` : ""
-      deps.client.tui.showToast({
-        title: "Team",
-        message: `Teammate "${args.name}" failed to start${modelInfo}: ${errMsg}`,
-        variant: "error",
-        duration: 8000,
-      }).catch(() => { /* TUI may not be available */ })
-      notifyLead(
-        deps.client,
-        deps.db,
-        teamInfo.teamId,
-        `Teammate "${args.name}" failed to start and was removed${modelInfo}. Error: ${errMsg}. You may retry the spawn.`,
-      )
-
       // promptAsync can reject after the server accepted the prompt, so the
       // teammate may have run and committed. Preserve the branch before abort:
       // session cleanup asynchronously deletes the worktree branch.
@@ -492,13 +481,23 @@ export async function executeTeamSpawn(
           if (preserved) log(`spawn:rollback:branch:preserved src=${worktreeBranch} target=${safeBranch}`)
         } catch { /* best effort — still abort/clean up */ }
       }
-      deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
-      if (workspaceId) {
-        deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
+      const interrupt = deps.client.session.abort({ sessionID: childSessionId }).catch(() => { /* best effort */ })
+      let recovery = "You may retry the spawn."
+      if (rollbackIsolated) {
+        await interrupt
+        const residuals = await rollbackIsolated()
+        if (residuals.length) recovery = residuals.join(". ")
+      } else {
+        if (workspaceId) {
+          deps.client.workspace.remove({ id: workspaceId }).catch(() => { /* best effort */ })
+        }
+        if (worktreeDir) {
+          deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
+        }
       }
-      if (worktreeDir) {
-        deps.client.worktree.remove({ worktreeRemoveInput: { directory: worktreeDir } }).catch(() => { /* best effort */ })
-      }
+      const failure = `Teammate "${args.name}" failed to start${modelInfo}: ${errMsg}. ${recovery}`
+      notifyLead(deps.client, deps.db, teamInfo.teamId, failure)
+      deps.client.tui.showToast({ title: "Team", message: failure, variant: "error", duration: 8000 }).catch(() => {})
     } catch { /* rollback failed — watchdog will clean up stale member */ }
   })
 
