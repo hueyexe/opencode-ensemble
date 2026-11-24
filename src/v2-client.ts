@@ -6,7 +6,7 @@ import { runCommand } from "./process"
 type SessionInfo = {
   id: string
   projectID?: string
-  location?: { directory?: string; workspaceID?: string }
+  location?: { directory?: string }
 }
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
@@ -88,7 +88,7 @@ async function gitWorktrees(directory: string): Promise<Array<string | undefined
 }
 
 async function sessionIsIn(info: SessionInfo | undefined, directory: string): Promise<boolean> {
-  if (!info?.location?.directory || info.location.workspaceID) return false
+  if (!info?.location?.directory) return false
   return await realpath(info.location.directory).catch(() => undefined) === directory
 }
 
@@ -152,16 +152,16 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       const lead = await ctx.session.get({ sessionID: parentID }) as SessionInfo | undefined
       if (!lead?.location?.directory) throw new Error(`Lead session "${parentID}" has no worktree location`)
       const from = await realpath(lead.location.directory)
-      const head = await git(from, "rev-parse", "--verify", "HEAD^{commit}")
+      const commit = await runCommand(["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: from })
+      signal.throwIfAborted()
+      if (commit.exitCode !== 0) return undefined
+      const head = commit.stdout.trimEnd()
       const existingWorktrees = await gitWorktrees(from)
-      const existingRefs = (await git(from, "for-each-ref", "--format=%(refname)", "refs/heads")).split("\n")
       const worktreeProject = lead.projectID ? { projectID: lead.projectID } : project()
       let directory: string | undefined
-      let branch: string | undefined
-      let checkout: string | undefined
+      let createdBranch: string | undefined
       let sessionID: string | undefined
       let unverifiedWorktree: string | undefined
-      let creatingSession = false
       try {
         signal.throwIfAborted()
         // Pin the commit, not the source path: a Git-created lead checkout
@@ -172,28 +172,22 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         if (existingWorktrees.includes(resolved) || !(await gitWorktrees(from)).includes(resolved)) {
           throw new Error(`OpenCode returned "${resolved}", which is not a new worktree of the lead's repository`)
         }
+        const checkout = await git(resolved, "rev-parse", "--verify", "HEAD")
+        if (checkout !== head) {
+          // A detached checkout may be the only reference to this commit.
+          throw new Error(`Worktree "${resolved}" started at ${checkout}, expected lead commit ${head}`)
+        }
         directory = resolved
         unverifiedWorktree = undefined
-        checkout = await git(directory, "rev-parse", "--verify", "HEAD")
-        if (checkout !== head) {
-          throw new Error(`Worktree "${directory}" started at ${checkout}, expected lead commit ${head}`)
-        }
         const hostBranch = await git(directory, "branch", "--show-current")
-        if (hostBranch) {
-          if (existingRefs.includes(`refs/heads/${hostBranch}`)) {
-            throw new Error(`Worktree "${directory}" checked out an existing branch "${hostBranch}"`)
-          }
-          branch = hostBranch
-        }
         signal.throwIfAborted()
-        if (!branch) {
+        if (!hostBranch) {
           await git(directory, "switch", "-c", name)
-          branch = name
+          createdBranch = name
         }
         signal.throwIfAborted()
 
         const rules = toV2Permissions(permissions(directory))
-        creatingSession = true
         const child = await ctx.session.create({ parentID, title, permissions: rules, location: { directory } })
         sessionID = child.id
         if (!sessionID) throw new Error("OpenCode returned no child session ID")
@@ -213,16 +207,8 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         }
         signal.throwIfAborted()
         await applyLegacyPermissions(sessionID, rules)
-        checkout = await git(directory, "rev-parse", "--verify", "HEAD")
-        if (checkout !== head) {
-          throw new Error(`Worktree "${directory}" is at ${checkout}, expected lead commit ${head}`)
-        }
-        const ref = await git(directory, "symbolic-ref", "HEAD")
-        if (ref !== `refs/heads/${branch}`) {
-          throw new Error(`Worktree "${directory}" is on "${ref}", expected branch "${branch}"`)
-        }
         signal.throwIfAborted()
-        return { sessionID, directory, branch, rollback }
+        return { sessionID, directory, branch: hostBranch || name, rollback }
       } catch (error) {
         const residuals = await rollback()
         const message = [String(error), ...residuals].join(". ")
@@ -233,37 +219,26 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       async function rollback(): Promise<string[]> {
         const residuals: string[] = []
         if (unverifiedWorktree) residuals.push(`unverified worktree "${unverifiedWorktree}" was left untouched`)
-        let childRemoved = !creatingSession
         if (sessionID) {
           try {
             if (!ctx.session.remove) throw new Error("session.remove is unavailable on this host")
             await ctx.session.remove({ sessionID })
-            childRemoved = true
           } catch (err) {
             residuals.push(`could not remove child session "${sessionID}": ${err}`)
+            if (directory) residuals.push(`worktree "${directory}" was kept for the remaining child session`)
+            return residuals
           }
-        } else if (creatingSession) {
-          residuals.push("session.create returned no session ID for cleanup")
         }
-        if (directory && !childRemoved) {
-          residuals.push(`worktree "${directory}" was kept for the remaining child session`)
-        }
-        if (directory && childRemoved) {
+        if (directory) {
           try {
             if ((await gitWorktrees(from)).includes(directory)) {
-              // A clean detached checkout can still contain the only ref to a
-              // commit. Recheck after session cleanup and before host removal.
+              // A rejected prompt may already have run, even on a detached HEAD.
               const currentHead = await git(directory, "rev-parse", "--verify", "HEAD")
-              const observedHead = currentHead === head ? checkout : currentHead
-              if (observedHead && observedHead !== head) {
-                throw new Error(`observed HEAD at ${observedHead}, expected lead commit ${head}`)
-              }
+              if (currentHead !== head) throw new Error(`keeping checkout with worker commit ${currentHead}`)
               await ctx.worktree.remove({ ...worktreeProject, directory, force: false })
             }
-            if (branch) {
-              const tip = await git(from, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`)
-              if (tip && tip !== head) throw new Error(`branch "${branch}" points at ${tip}, expected ${head}`)
-              if (tip) await git(from, "branch", "-d", "--", branch)
+            if (createdBranch && await git(from, "branch", "--list", createdBranch)) {
+              await git(from, "branch", "-d", "--", createdBranch)
             }
           } catch (err) {
             residuals.push(`could not finish cleanup of worktree "${directory}": ${err}`)

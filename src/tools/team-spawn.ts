@@ -220,11 +220,15 @@ export async function executeTeamSpawn(
         }),
         getSpawnTimeout(), `isolated session setup for "${args.name}"`,
       )
-      childSessionId = result.sessionID
-      rollbackIsolated = result.rollback
-      worktreeDir = result.directory
-      worktreeBranch = result.branch
-    } else {
+      if (result) {
+        childSessionId = result.sessionID
+        rollbackIsolated = result.rollback
+        worktreeDir = result.directory
+        worktreeBranch = result.branch
+      }
+    }
+    // V2 can decline isolation before allocation if the lead has no Git commit.
+    if (!childSessionId) {
       const createResult = await withTimeout(
         deps.client.session.create({
           parentID: sessionId,
