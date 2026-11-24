@@ -74,11 +74,6 @@ function mockCtx() {
   return { calls, ctx }
 }
 
-/** Fake git branch lookup: dir → branch. */
-function mockGit(map: Record<string, string | null>) {
-  return async (directory: string) => map[directory] ?? null
-}
-
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
   test("session.create re-asserts permissions via rules() so agent denies cannot bury them", async () => {
     const { calls, ctx } = mockCtx()
@@ -223,64 +218,6 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect(emitted).toEqual([{ name: "view", data: { sessionID: "ses_child" } }])
   })
 
-  test("worktree.create discovers the branch via git (V2 reports directory only)", async () => {
-    const { calls, ctx } = mockCtx()
-    const client = createV2Client(ctx as never, {
-      gitBranch: mockGit({ "/wt/ensemble-proj-team-alice": "ensemble-proj-team-alice" }),
-    })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-proj-team-alice" } })
-    expect(calls[0]?.input).toMatchObject({ name: "ensemble-proj-team-alice" })
-    expect(result.data).toMatchObject({
-      name: "ensemble-proj-team-alice",
-      branch: "ensemble-proj-team-alice",
-      directory: "/wt/ensemble-proj-team-alice",
-    })
-  })
-
-  test("worktree.create names a detached worktree after the requested name", async () => {
-    const { ctx } = mockCtx()
-    const created: Array<[string, string]> = []
-    const client = createV2Client(ctx as never, {
-      gitBranch: mockGit({}),
-      gitCreateBranch: async (directory, branch) => {
-        created.push([directory, branch])
-        return branch
-      },
-    })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
-    expect(result.data?.branch).toBe("ensemble-x")
-    expect(created).toEqual([["/wt/ensemble-proj-team-alice", "ensemble-x"]])
-  })
-
-  test("worktree.create leaves a worktree that is already on a branch alone", async () => {
-    const { ctx } = mockCtx()
-    let createCalls = 0
-    const client = createV2Client(ctx as never, {
-      gitBranch: async () => "existing",
-      gitCreateBranch: async () => {
-        createCalls++
-        return null
-      },
-    })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
-    expect(result.data?.branch).toBe("existing")
-    expect(createCalls).toBe(0)
-  })
-
-  test("worktree.create records no branch when branch creation fails entirely (PR #46 review)", async () => {
-    const { ctx } = mockCtx()
-    const client = createV2Client(ctx as never, {
-      gitBranch: mockGit({}),
-      gitCreateBranch: async () => null,
-    })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
-    // Empty string, not "ensemble-x": recording the requested name when no
-    // ref exists made team_merge squash a stale same-named branch and
-    // silently lose the teammate's new work.
-    expect(result.data?.branch).toBe("")
-    expect(result.data?.directory).toBe("/wt/ensemble-proj-team-alice")
-  })
-
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never)
@@ -290,22 +227,6 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect(list.data?.[0]).toMatchObject({ directory: "/wt/ensemble-proj-team-alice" })
     await client.worktree.reset({ worktreeResetInput: { directory: "/wt/ensemble-x" } })
     expect(calls[calls.length - 1]).toMatchObject({ domain: "worktree", method: "refresh" })
-  })
-
-  test("session.create routes a v2dir workspace id to location.directory", async () => {
-    const { calls, ctx } = mockCtx()
-    const client = createV2Client(ctx as never)
-    await client.session.create({ title: "t", workspaceID: "v2dir:/wt/ensemble-x" })
-    expect(calls[0]?.input).toMatchObject({ location: { directory: "/wt/ensemble-x" } })
-  })
-
-  test("workspace.create bridges branch to directory (no workspace domain on V2 ctx)", async () => {
-    const { ctx } = mockCtx()
-    const client = createV2Client(ctx as never, {
-      gitDir: async (_branch: string) => "/wt/ensemble-x",
-    })
-    const result = await client.workspace.create({ branch: "ensemble-x" })
-    expect(result.data?.id).toBe("v2dir:/wt/ensemble-x")
   })
 
   test("workspace.list is empty and workspace.remove resolves (DB is the source of truth)", async () => {
@@ -336,16 +257,12 @@ describe("createV2Client — OpenCode 2.0.19+ compatibility (issue #40)", () => 
 
   test("worktree calls pass the location project id required by 2.0.19+", async () => {
     const { calls, ctx } = mockCtx()
-    const client = createV2Client({ ...ctx, location: { directory: "/p", project: { id: "prj_1" } } } as never, {
-      gitBranch: async () => "b",
-    })
-    await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
+    const client = createV2Client({ ...ctx, location: { directory: "/p", project: { id: "prj_1" } } } as never)
     await client.worktree.remove({ worktreeRemoveInput: { directory: "/wt/ensemble-x" } })
     await client.worktree.list()
     await client.worktree.reset({ worktreeResetInput: { directory: "/wt/ensemble-x" } })
     const worktreeCalls = calls.filter((c) => c.domain === "worktree")
-    expect(worktreeCalls.map((c) => (c.input as { projectID?: string }).projectID)).toEqual(["prj_1", "prj_1", "prj_1", "prj_1"])
-    expect(worktreeCalls[0]?.input).toMatchObject({ projectID: "prj_1", name: "ensemble-x" })
+    expect(worktreeCalls.map((c) => (c.input as { projectID?: string }).projectID)).toEqual(["prj_1", "prj_1", "prj_1"])
   })
 
   test("agent.readOnly reads the agent's last matching edit rule", async () => {

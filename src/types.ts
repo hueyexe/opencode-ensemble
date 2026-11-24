@@ -35,6 +35,14 @@ export interface PermissionRule {
  * Makes mocking trivial in tests.
  */
 export interface PluginClient {
+  /** V2 provisions and verifies a local worktree and child before either can run. */
+  createIsolatedSession?(options: {
+    parentID: string
+    name: string
+    title: string
+    permissions(directory: string): PermissionRule[]
+    signal: AbortSignal
+  }): Promise<{ sessionID: string; directory: string; branch: string }>
   /** Optional agent introspection (V2). Undefined answers fall back to name checks. */
   agent?: {
     readOnly(agent: string): Promise<boolean | undefined>
